@@ -1,177 +1,143 @@
 # Pip — technical build plan
 
-**Pip** (Personal Interactive Partner): a visual AI companion that looks along with you, points at the right thing, and guides you through a physical task one step at a time.
+Version 0.3 (draft), 30 October 2026. **What** we build is in `product-brief.md`; this document covers **how**.
+Items marked **OPEN** still need a decision.
 
-Version 0.2 (draft), 30 October 2026. Companion to `productdefinitie-visuele-taakbegeleider.md` (product definition, Dutch).
-This plan covers the technical build for the Meta Global AI Developer Hackathon. Items marked **OPEN** still need a decision.
+## 1. Deliverables
 
-## 1. What we deliver
+1. **Pip PWA** at `pip.unveil.be`: an installable iPhone web app that runs the power-outage scenario live on a real panel.
+2. **"How Pip sees"**: an in-app trace of the three Meta models per turn.
+3. **Test report**: measured detection accuracy, lever-state accuracy, wrong-pointer rate and latency on held-out panel photos, plus a short user test.
+4. **Submission package**: public repo, English README with architecture diagram, demo video of about 3 minutes, and the write-up.
 
-1. **Pip on iPhone**, live at `pip.unveil.be`. You point the camera, ask a question by voice, and Pip highlights the exact part, says what to do, and tracks your progress. It works on fresh camera frames, not on scripted answers.
-2. **Overlays that stay on the object.** When you move the phone, the highlight stays on the part. This is the depth-aware anchoring that will later drive the glasses view.
-3. **Pip for Meta Ray-Ban Display**: a glasses heads-up view built as an official Ray-Ban Display web app. It is demonstrated in Meta's own Display Simulator and labelled as a simulation.
-4. **"How Pip sees"**: a live trace of the three Meta models working together, as a panel in the app and as a scene in the demo video.
-5. **Evidence**: a test report with measured accuracy, latency and a small user test.
-6. **Submission package**: a public repo with an English README and architecture diagram, a demo video of about 3 minutes, and the write-up.
+Not delivered: native apps, glasses, and the water and heating scenarios. These appear in the vision only.
 
 ## 2. Hackathon constraints
 
 | Item | Value |
 |---|---|
-| Track / theme | Indie Developer ("creativity, technical ambition, and whether it works") / Build for Your World |
-| Submission deadline | 4 Nov 2026, 21:00 ET = **5 Nov 2026, 03:00 CET**. Internal target: **4 Nov, 18:00 CET** |
-| Judging | 4–8 Nov, live finals, winners 9 Nov |
-| Budget | $150 Meta Model API credits (plus partner credits: Modal, Baseten, Fireworks) |
+| Track / theme | Indie Developer / Build for Your World |
+| Deadline | 4 Nov 2026, 21:00 ET = **5 Nov, 03:00 CET**. Internal target: **4 Nov, 18:00 CET** |
+| Judging (public sources) | Impact 30%, creative use of Meta AI tooling 25%, demo (live + video) 25%, technical depth 20% |
+| Budget | $150 Meta Model API credits |
 
-Judging weights reported by several public sources: **Impact 30%**, **creative use of Meta AI tooling 25%**, **demo, live + video, 25%**, **technical depth 20%**. The official rules are not visible on the public event page.
-**OPEN:** copy the rules and the submission form from the participant dashboard or Discord. We need the video length, whether a public URL is required, the repo rules, and the policy on pre-existing code.
+**OPEN:** the official rules and the submission form. They are not on the public page, so they must be copied from the participant dashboard or Discord.
 
-## 3. Model capability check
+## 3. Model capability check (to be measured on day 1)
 
-What the official documentation says, and what we still have to prove on our own object in the day-1 spike.
-
-| Need | Model | Documented capability | Verdict / what we test |
-|---|---|---|---|
-| Understand the question, the scene and the task; choose the next action | **Muse Spark 1.3** (`muse-spark-1.3`) | Multimodal input (image, video, audio, PDF), 1M context, reasoning effort levels, JSON-schema structured output combined with images, up to 50 images per request | Strong fit. To test: latency at low effort, and quality in English and Dutch |
-| Find the part in the frame | **Muse Spark 1.3** grounding | Returns boxes and points on a 0–1000 grid, and counts by pointing | A good fit for the semantics, for example "the long panel with three holes". Box precision is not pixel-exact. To test: hit rate on our parts |
-| Precise outline of the part | **SAM 3.1** (`sam-3.1`) | Text noun-phrase, box and point prompts on images and video. Returns pixel boxes and masks with confidence. 3,000 RPM, $2.50 per 1,000 images | Strong fit for refining a box into a mask. Weak spot: look-alike hardware such as dowels and screws, so the semantic choice stays with Spark. To test: mask quality, plus the text prompt per part |
-| Voice input | **Muse Voice Transcribe** (`muse-voice-transcribe-1.0`) | Recordings through `/v1/asr/transcribe`, WAV only, up to 10 minutes. Also a realtime WebSocket. Dutch is supported | Fit. Safari records AAC, so we encode WAV ourselves. To test: Dutch accuracy and latency |
-| Distance to the part | No hosted depth model in the Meta Model API | Muse Spark can estimate it from the image; SAM 3D Objects (open weights) includes depth, but would have to be self-hosted | Primary: **geometry from known part dimensions** (section 5). Backup: the Spark estimate. SAM 3D on Modal only as an optional experiment |
-| Speech output | — | No Meta text-to-speech model. Browser `speechSynthesis` works on iPhone and on Ray-Ban Display | Fit |
-| Companion visuals | **Muse Image** (`muse-image-1.0`) | Image generation, $0.01 per image | Optional: Pip's character states. No generated assembly images |
-
-Conclusion: the hosted models cover everything we need for v1, except metric depth, which we solve with geometry. The real uncertainty is quality on *our* parts and latency. Day 1 is a measured go/no-go on exactly that.
-
-## 4. Glasses: what is possible today
-
-| Device | Display | Camera for developers | World-locked AR | Usable now |
+| Need | Model | Documented | Risk on our task | Day-1 test |
 |---|---|---|---|---|
-| **Meta Ray-Ban Display** (newest Meta glasses with a display) | 600×600 additive display in one lens, small field of view, head-locked | Not in web apps. The native iOS/Android **Device Access Toolkit** streams the glasses camera to a phone app, but cannot draw on the display | No SLAM; web apps only get device orientation (IMU) | Yes: web apps + the official **Display Simulator** (Chrome extension with a live webcam background) + the `meta/meta-wearables-webapp` AI toolkit |
-| Meta VR Glasses (announced at Connect 2026) | 70×66° per eye, Quest OS | Through the Quest platform SDKs | Yes, on the Quest platform | Ships spring 2027. SDKs and WebXR exist, but no hardware |
-| iPhone 15 Pro (Safari) | Phone screen | Yes (getUserMedia) | No WebXR in iOS Safari, and LiDAR is not reachable from the web | Our test device |
+| Find every device on the DIN rail | SAM 3.1, text prompt (e.g. "circuit breaker") | Instance boxes and masks with confidence | Adjacent identical devices merge or get split | Count accuracy on 10 panel photos |
+| Device type, lever state, label | Muse Spark 1.3 (vision + grounding, 0–1000 coordinates) | Detection, pointing, reading text, structured output | Small levers; handwritten labels; glare | Per-device state and label accuracy |
+| Which device is meant | Spark reasoning over the SAM instances | Structured output with images | Choosing the wrong neighbour | Wrong-pointer rate (target: 0) |
+| Voice input | Muse Voice Transcribe | WAV, Dutch supported | Safari records AAC | WAV encoding; transcript quality in English and Dutch |
+| Speed | All | — | Two sequential model calls per turn | Median and p90 per stage |
 
-The honest conclusion is that no Meta glasses available today can pin a graphic exactly onto a real object. Ray-Ban Display can still point visually, in two ways:
-- show the analysed frame with the outlined part as a small heads-up card;
-- show a direction cue ("look down-left") that turns into a marker once the part is inside the display area.
+Approaches compared in the spike for tying Spark to the SAM instances:
+- **(a)** the image plus a text list of numbered SAM boxes on the 0–1000 grid;
+- **(b)** an image with numbered marks drawn on it ("set-of-marks");
+- **(c)** cropping each device and classifying the crops in one multi-image request.
 
-Architecture for real glasses:
-1. A phone app with the Device Access Toolkit sends glasses camera frames to Pip's server.
-2. Pip's Ray-Ban Display web app shows the guidance on the glasses.
-3. Both connect to the same session.
+We pick whichever measures best.
+**Go/no-go:** if lever-state accuracy is too low, the fallback is to ask the user to confirm the state ("I think breaker 3 is down, is that right?"), and to keep pointing based on positions only.
 
-For the hackathon, the iPhone camera stands in for the glasses camera, and the glasses web app runs in Meta's simulator. We present this explicitly as a simulation. The Ray-Ban Display hardware and the Device Access Toolkit phone app come after the hackathon.
-
-## 5. Depth and anchoring (the "it stays on the object" feature)
-
-The aim is for the highlight to stay on the part when the camera or head moves. This is the same mechanism the glasses view needs.
-
-1. **Direction.** When a frame is captured, the target's pixel position and the camera's field of view give a 3D ray from the camera. The field of view is calibrated once for the iPhone 15 Pro main camera.
-2. **Depth.**
-   - Primary: the task pack stores the real dimensions of each part, for example a 40 cm panel or an 8 mm dowel. The apparent size of the SAM mask, using the pinhole model, gives a metric distance.
-   - Fallback: Muse Spark's estimate of the distance, with a lower confidence.
-   - Depth turns the ray into a 3D point.
-3. **Motion.** iPhone Safari and Ray-Ban Display both expose `DeviceOrientationEvent` (permission-gated). Rotation is applied to the 3D point and the overlay is projected again at about 30 Hz.
-   - Rotation alone does not need depth.
-   - Depth matters for small translations, and on glasses for the offset between camera and display. This is the reason it is in the design.
-4. **Correction.** While the overlay is live, Pip runs SAM again on a new frame every 1–2 seconds ($0.0025 per frame). This corrects drift and translation.
-   - If the part is not found, or the confidence drops, the overlay fades and Pip asks for a new look.
-   - A stale highlight never stays on screen.
-5. **On glasses** the same 3D point is projected into the display area. If it falls outside, Pip shows a direction cue.
-
-This replaces the "frozen frame only" rule from the product definition with a stricter one: an overlay is shown only while its position is backed by fresh detection.
-Fallback if anchoring is not stable by the end of day 3: overlays stay on the frozen frame, which is the behaviour of product definition v1.
-
-## 6. Architecture
+## 4. Architecture
 
 ```
-iPhone Safari (React)                      Cloudflare Worker (Hono) at pip.unveil.be         Meta Model API
-┌────────────────────────────┐   HTTPS    ┌─────────────────────────────────────┐          ┌───────────────────────┐
-│ camera, WAV recorder       │──────────▶ │ /api/transcribe                     │────────▶ │ muse-voice-transcribe │
-│ session state machine      │            │ /api/turn: Spark → SAM refine        │────────▶ │ muse-spark-1.3        │
-│ overlay + anchoring (IMU)  │ ◀──────────│ /api/track: SAM re-detect            │────────▶ │ sam-3.1               │
-│ "How Pip sees" trace panel │            │ validation against the task pack     │          └───────────────────────┘
-└────────────────────────────┘            │ session relay (Durable Object, WS)   │
-                                          │ static assets, secrets, rate limits  │
-Ray-Ban Display web app (600×600) ◀───────│                                     │
-(in Meta's Display Simulator)    WS       └─────────────────────────────────────┘
+iPhone PWA (React, Vite)                   Cloudflare Worker (Hono) — pip.unveil.be          Meta Model API
+┌─────────────────────────────┐  HTTPS   ┌──────────────────────────────────────┐        ┌───────────────────────┐
+│ camera + torch, WAV recorder│────────▶ │ POST /api/transcribe                 │──────▶ │ muse-voice-transcribe │
+│ procedure engine (state m.) │          │ POST /api/look   → SAM + Spark        │──────▶ │ sam-3.1               │
+│ overlays, speech output     │ ◀────────│ POST /api/summary → Spark             │──────▶ │ muse-spark-1.3        │
+│ panel map (localStorage)    │   JSON   │ schema validation, safety rules       │        └───────────────────────┘
+│ "How Pip sees" trace        │          │ rate limit, spend cap, secrets        │
+└─────────────────────────────┘          └──────────────────────────────────────┘
 ```
 
-- **A stateless turn API.** The client sends the session context with each request; the server validates it against the task pack. Progress only changes through explicit user actions.
-- **Session relay.** A Durable Object holds a WebSocket per session, so the glasses view mirrors the phone. The two are paired with a short code.
-- **Standard mode for model calls**, not Contributor mode, so user photos are not used for model training. Estimated cost is about $0.01–0.02 per turn.
-- **Secrets.** `MODEL_API_KEY` lives in `.dev.vars` locally (gitignored) and as a Worker secret in production.
-- **Abuse protection.** Rate limiting per IP and a daily spend cap. An access code for judges is optional.
+- **The procedure is code, not a prompt.** A deterministic state machine (`shared/procedures/`) defines the steps, the expected device states, the transitions and the hard stops. The models only perceive and explain. They never change the step or override a safety rule.
+- **A stateless server.** Each request carries the procedure state and the panel map; the server validates them.
+- **Standard API mode** (not Contributor), so home photos are not used for training. The key is kept in `.dev.vars` locally and as a Worker secret in production.
+- **Stack:** TypeScript, React + Vite (PWA manifest + service worker), Hono on Cloudflare Workers, one shared package (types, JSON schemas, procedures), and Vitest.
 
-## 7. The core turn
+## 5. The "look" turn
 
-1. The client captures a frame (JPEG, long side ~1280 px, about 1,400 tokens) and records voice as 16 kHz WAV. The voice recording is transcribed; typed text skips this step.
-2. **Muse Spark** receives the frame, the question, the current step, the part catalogue with dimensions, and a short history. It returns structured JSON: `intent`, `reply`, `targets[]` (`part_id`, box on the 0–1000 grid, point), `confidence`, `needs_better_view`, `clarification`, `source_ref`, and `distance_estimate_cm`.
-3. **SAM 3.1** refines each target with a **box prompt**, which gives a precise mask. For counting or "which one" questions it runs a text prompt per part, in parallel.
-4. **Validation and selection.** The server checks that each `part_id` exists in the step and that the Spark box and the SAM mask agree. The result is one of:
-   - **highlight**: one clear match;
-   - **clarify**: several plausible matches, numbered for tap-to-select;
-   - **better_view**: no reliable match, so no arrow is drawn.
-5. **Depth** comes from the mask size and the known dimensions. The response contains the overlays (mask outline, label, 3D anchor), the reply text, the source reference, and timings per stage for the trace panel.
-6. The client draws the overlay, speaks the reply, and starts anchoring.
+1. The client captures a frame (JPEG, long side about 1280 px) with the torch on if available. Voice is recorded as 16 kHz WAV and transcribed; typed text skips this step.
+2. **SAM 3.1** segments all panel devices, which gives instances (box, mask, confidence).
+3. **Muse Spark 1.3** receives:
+   - the frame, the instances (using the method chosen in §3), the question and the current procedure step;
+   - the panel map, if one was scanned.
 
-The latency target is a median of 8 seconds or less from releasing the talk button to the answer. Every stage is measured.
+   It returns structured JSON:
+   - `devices[]`: instance id, type (`main_switch`, `rcd`, `breaker`, `other`), state (`on`, `off`, `tripped`, `unclear`), label text and confidence;
+   - `answer` and `target_instance`;
+   - `hazard_signals[]` and `needs_better_view`.
+4. **Server checks:**
+   - schema and instance ids;
+   - device states against what the current step expects;
+   - hazard keywords in the transcript and in Spark's output, which trigger a stop.
 
-## 8. Task pack
+   The result is one of: `highlight` (one device), `clarify` (show the candidates, the user taps one), `better_view`, or `stop`.
+5. The client draws the mask outline and label on the frozen frame and speaks the answer. The trace panel shows the output of each model and the timings.
+6. **Verifying a step** is a new `look` with `expect: {instance, state}`. The step only completes when the state is seen as expected *and* the user confirms. If the state is unclear, the user's confirmation is recorded as "confirmed by user", not as "seen".
 
-`taskpacks/<id>/pack.json` plus images. It is authored from the official manual and checked by hand.
+The latency target is a median of 8 s or less per turn, measured per stage.
 
-- **parts**: id, name (en/nl), `sam_prompt`, `dimensions_mm`, `expected_count`, `reference_image`.
-- **steps**: id, title and instruction (en/nl), parts, tools, `source_ref` (manual page or figure), `reference_image`, `check` (`visible_criteria`, `not_visually_verifiable`), and `cautions`.
+## 6. Procedures
 
-The format is generic, so a second task only needs data, not code.
+`shared/procedures/` is typed data plus transition logic, with unit tests.
 
-## 9. "How Pip sees": showing the models at work
+- **`safety_gate`**: smell, smoke, heat, water, damage, sparks → `stop` with escalation (electrician; 112 for fire or smoke).
+- **`identify`**: map the panel and find the tripped device(s).
+- **`breaker_trip`**: reduce the load → reset the breaker → verify → if it trips again, leave it off and go to the summary.
+- **`rcd_trip`**:
+  1. switch off every breaker under that RCD;
+  2. reset the RCD (if it trips again with all breakers off → `stop`);
+  3. switch the breakers back on one at a time, verifying each;
+  4. the breaker that causes a trip is the faulty circuit: leave it off;
+  5. optionally, unplug the appliances on that circuit and retry.
+- **`summary`**: Spark writes the electrician hand-over from the recorded event log only. It cannot invent events.
 
-A collapsible panel in the app, also used as a scene in the video, shows each turn:
-- the transcript;
-- Spark's structured decision: target, step, confidence;
-- Spark's box and the SAM mask on top;
-- the distance estimate and its method;
-- what was validated;
-- the latency per model.
+Every step has `back`, `pause` and resume, with the state kept on the device.
 
-This makes the "creative use of Meta tooling" criterion visible: three models with distinct roles, combined, and checked against each other.
+## 7. Panel map (optional scan)
 
-## 10. Evaluation
+A first scan stores the devices in left-to-right, row-by-row order, with type, the label read from the panel and the RCD grouping. The user can correct each entry. The map is stored in `localStorage`, can be deleted, and never leaves the device except as context for a request.
+Without a map, Pip works from the live frame only.
 
-- **Accuracy:** about 20 held-out photos of the real object, never used for tuning, each with a ground-truth part box. We measure correct highlights, clarifications, and wrong confident highlights. Targets: at least 80% correct and 0 wrong confident highlights.
-- **Anchoring:** how far the overlay drifts after rotating and moving the phone, in pixels, with and without re-detection.
-- **Latency:** median and p90 per stage.
-- **User test:** 1–2 people who have never seen the object build it with Pip. We note completion, where they got stuck and how often they asked for help. The result is exploratory.
-- Everything goes into `docs/test-report.md`. Only measured numbers are reported.
+## 8. Evaluation
 
-## 11. Schedule
+- **Dataset:** about 25 held-out photos of real panels (the demo panel at different angles and in different light, plus other panels if we can get them), with ground-truth device boxes, types and states. They are never used for prompt tuning.
+- **Metrics:**
+  - device recall;
+  - type and state accuracy;
+  - label reading;
+  - **confident wrong pointers (target 0)**;
+  - clarification rate;
+  - latency (median and p90).
+- **Runner:** `eval/run.ts` calls the same pipeline as the app and writes `docs/test-report.md`.
+- **User test:** 1–2 people who do not know the panel. We record completion, where they got stuck and how often they asked for help. The result is exploratory.
+
+## 9. Schedule
 
 | Day | Date | Goal | Exit criterion |
 |---|---|---|---|
-| 0 | Thu 30 Oct | Plan agreed; repo scaffold; key verified | Spark, SAM and Transcribe each answer from the Worker |
-| 1 | Fri 31 Oct | **Capability spike** on our own object photos: Spark grounding, SAM box/text prompts, Dutch transcription, latency. End-to-end on the iPhone over HTTPS. Object chosen, pack started | Measured go/no-go per model; one correct overlay on the iPhone |
-| 2 | Sat 1 Nov | Task pack complete; state machine; guidance UI; clarification; deployed on `pip.unveil.be` | A whole task can be walked through on the public URL |
-| 3 | Sun 2 Nov | Anchoring (IMU + depth + re-detection); trace panel; step check; Dutch | The overlay stays on the part while the phone moves, or we fall back to frozen frames |
-| 4 | Mon 3 Nov | Ray-Ban Display web app + session relay, in the simulator; eval set; user test; polish | Glasses view mirrors the phone; test report filled in. Feature freeze in the evening |
-| 5 | Tue 4 Nov | Demo video, write-up, README, final checks. **Submit by 18:00 CET** | Submitted |
+| 0 | Thu 30 Oct | Brief and plan agreed; repo scaffold; key verified | Each model answers from the Worker |
+| 1 | Fri 31 Oct | **Capability spike** on 10–15 photos of the real panel (approaches a/b/c); WAV transcription; iPhone camera, torch and speech on HTTPS; deployed to `pip.unveil.be` | Measured go/no-go; one correct highlight on the iPhone |
+| 2 | Sat 1 Nov | Procedure engine + `look` turn + verification; full `rcd_trip` and `breaker_trip` flows | A full outage scenario runs end to end on the real panel |
+| 3 | Sun 2 Nov | Safety gate and stops; summary; panel scan; trace panel; Dutch | Every path works, including stop and clarify |
+| 4 | Mon 3 Nov | Eval set + report; user test; UI polish (Pip's states); README + diagram | Feature freeze in the evening |
+| 5 | Tue 4 Nov | Film and edit the video, write-up, final checks; **submit by 18:00 CET** | Submitted |
 
-Priority if time runs short: core phone loop > trace panel > anchoring > glasses view > Dutch.
+Priority if time runs short: `rcd_trip` + verification > safety gate > trace panel > summary > panel scan > Dutch.
 
-## 12. Risks
+## 10. Risks
 
 | Risk | Mitigation |
 |---|---|
-| Look-alike parts | Spark makes the semantic choice, SAM refines the shape, the expected count comes from the pack, and the app asks for clarification instead of guessing |
-| Latency | Low reasoning effort, downscaled frames, parallel SAM calls, timing per stage |
-| Anchoring drift | Re-detection every 1–2 s, the overlay fades when confidence drops, and frozen-frame fallback |
-| iOS Safari: orientation and motion permission, audio unlock, speech synthesis | Tested on the iPhone 15 Pro on day 1; permissions requested on the first tap |
-| Glasses claims judged as overstated | The simulation is labelled clearly; the limits of each device are stated in the README and the video |
-| Rules differ from our assumptions | Confirm from the participant dashboard before day 2 |
-
-## 13. Open questions
-
-1. **The demo object**, physically available with its manual: 5–10 steps and visually distinct parts, ideally with one pair of parts that look alike.
-2. **Official rules and submission form**, from the dashboard or Discord.
-3. **Handover with the unveil.be Claude**: I deliver a Wrangler project with a Durable Object; the route `pip.unveil.be` gets bound on the existing zone.
-4. **Story choices for the video**: who is the user on screen (an older person, someone who reads poorly, a new technician)? And do we show the professional angle, such as onboarding new lift technicians, as the vision?
+| Lever state misread | Fresh-frame verification, `unclear` → clarify, user confirmation recorded separately, measured in eval |
+| Wrong neighbour pointed at | SAM instances + Spark choice + panel-map order; clarify when confidence is low |
+| Low light / glare | Torch via camera constraints if Safari supports it, otherwise ask for light; tested on day 1 |
+| Unsafe advice | Procedures and stops in code; the model cannot change the step; no instructions behind the cover |
+| Latency | Downscaled frames, low reasoning effort, per-stage timing, parallel calls where possible |
+| Demo needs a real trip | RCD test button or a real overload on one circuit; no simulated states |
+| Rules differ from our assumptions | Confirm from the dashboard before day 2 |
