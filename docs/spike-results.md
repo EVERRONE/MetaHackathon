@@ -31,3 +31,23 @@ These are single runs on one image, so they show direction, not reliability. The
 5. **Expected per-look latency:** transcription ~2 s + SAM ~1.5 s + Spark ~3 s ≈ **6–7 s**, within the 8 s target. Measured end to end on the iPhone on day 1.
 6. **Honesty works in our favour.** At lower effort, Spark answers "unclear" rather than guessing. The runtime maps "unclear" to *better view* or *clarify*.
 7. **Dense rows of identical objects are the hardest case.** SAM can merge neighbours. Mitigations: a second SAM pass with a box prompt per Spark-chosen region, and a clarify step when Spark's choice spans two instances.
+
+## Talking while pointing (streaming test)
+
+**Goal:** Pip speaks and draws annotations at the same moment.
+
+**Native tool calling while streaming.** Spark streams a sentence, emits `point(mark=13, style=outline)`, and then **ends its turn** (`finish_reason: tool_calls`). Interleaving speech with tool calls would cost a full model round trip per annotation, which is too slow.
+
+**Inline cue tags in the streamed text** (`reasoning_effort: minimal`, one call). First token after **2.9 s**; the complete answer arrived 0.06 s later. Spark picked the correct mark and the correct direction:
+
+```
+Found it.
+This is [[outline:13]] the 10F breaker.
+It's off right now.
+Flip [[arrow:13:up]] it upward to switch it back on.
+```
+
+**Design consequences:**
+- Pip's speech is one streamed text with cue tags.
+- The client parses the tags while streaming, speaks the clean text sentence by sentence, and shows each annotation at the moment its words are spoken. On iOS this is driven by the speech synthesizer's word-range callbacks.
+- Tool calls are reserved for actions that change state (for example "request a new look"), which go through the runtime.
