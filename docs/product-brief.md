@@ -45,7 +45,7 @@ The models perceive, compile and explain. A deterministic runtime owns progress 
 ## 4. Scope for the hackathon
 
 **In scope**
-- Installable iPhone web app (PWA) at `pip.unveil.be`, with camera, voice, text and spoken answers.
+- Native iPhone app (Swift, ARKit + LiDAR) with hands-free voice, spoken answers and annotations anchored on the objects in 3D; a small server at `pip.unveil.be` keeps the API key safe.
 - The procedure compiler (from PDF, images, text, or no source).
 - Scene mapping, pointing with overlays, clarify and better-view paths, and step verification.
 - The guided runtime: steps, questions, back, pause and resume, all stored on the device.
@@ -55,7 +55,7 @@ The models perceive, compile and explain. A deterministic runtime owns progress 
 - Evaluation across at least 3 different task domains.
 
 **Out of scope**
-- Native apps, glasses, accounts, a marketplace or sharing of procedures.
+- Android, glasses, accounts, a marketplace or sharing of procedures.
 - Continuous video monitoring.
 - Medical and health tasks (excluded by policy).
 
@@ -65,7 +65,16 @@ The models perceive, compile and explain. A deterministic runtime owns progress 
 - Stop and escalate on smoke, fire, sparks, burning smell, gas smell, water near electricity, or injury.
 - Never claim something is safe: Pip reports what it saw and what the user confirmed.
 
-## 5. Success criteria
+## 5. Where Pip stands apart
+
+No existing product combines, with no authoring, on a phone:
+- **(a)** meaningful AI-chosen annotations (outline, motion arrow, target state, danger) anchored on the exact part and timed to speech;
+- **(b)** a stateful procedure with camera-verified steps and safety gates;
+- **(c)** a memory of the user's own devices that records where every fact came from.
+
+General assistants (Gemini Live, ChatGPT) draw at most a box. Enterprise tools need authored content or a remote human expert. See `research.md` §4.
+
+## 6. Success criteria
 
 - One engine, no task-specific code. A new task needs only a source (or none), not new code.
 - It works live on fresh camera frames on an iPhone 15 Pro, with no scripted answers.
