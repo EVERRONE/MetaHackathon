@@ -224,7 +224,7 @@ Target: **median ≤ 5 s**. A short acknowledgement ("Let me look…") is spoken
 
 ## 11. Evaluation
 
-- **Three domains** from what we can physically access (**DECIDE**, e.g. electrical panel, a household appliance, one mechanical object), with 10–15 held-out photos each and ground truth: target box, state, label.
+- **Three to four domains**: electrical panel, household appliance, mechanical object, lift installation, with 10–15 held-out photos each and ground truth: target box, state, label.
 - **`PipEval` (macOS)** runs the same PipCore pipeline through the Worker and measures:
   - target localisation;
   - state accuracy;
@@ -258,9 +258,9 @@ Target: **median ≤ 5 s**. A short acknowledgement ("Let me look…") is spoken
 | Apple ID in Xcode (free Personal Team, 7-day signing) | Today; re-sign on 3/4 Nov |
 | iPhone 15 Pro: Developer Mode, trust the Mac, enhanced voices (English + Dutch) | Today |
 | XcodeGen (`brew install xcodegen`) | I install it |
-| Cloudflare: Worker on `pip.unveil.be` + secrets | **DECIDE**: I deploy with `wrangler login` on this Mac, or hand over to the unveil.be Claude |
+| Cloudflare: Worker on `pip.unveil.be` + secrets | I deploy; the user runs `wrangler login` once on this Mac |
 | Meta API key | ✓ in `.dev.vars` |
-| Physical test objects for 3 domains + instructions we may use | **DECIDE** |
+| Physical test objects | Electrical panel, household appliance, mechanical object, lift installation ✓ |
 | 2–3 test users | Mon 3 Nov |
 | Budget | ~$0.01–0.02 per turn; $150 is ample. A spend cap in the Worker |
 
@@ -277,9 +277,9 @@ Target: **median ≤ 5 s**. A short acknowledgement ("Let me look…") is spoken
 | Model overclaims verification | `verified` only from runtime evidence; provenance wording; eval checks it |
 | Banned category "simple image analyser" | The product is the closed loop: procedure → point → act → watch → verify → remember |
 
-## 15. Decisions needed now
+## 15. Decisions (30 Oct 2026)
 
-1. **Approve:** native Swift app + TypeScript Worker, no Rust.
-2. **Cloudflare deploy route** for `pip.unveil.be` (me via `wrangler login`, or the unveil.be Claude).
-3. **Default listening mode:** hands-free with a mute button (recommended), or push-to-talk.
-4. **Test domains:** which 3 real objects can we use this week?
+1. **Platform:** native Swift app + TypeScript Worker, no Rust. ✅ Approved.
+2. **Deploy:** I deploy the Worker to `pip.unveil.be` myself (`wrangler login` on this Mac). ✅
+3. **Listening:** hands-free by default, with a mute button; push-to-talk as fallback. ✅
+4. **Test domains:** electrical panel, household appliance, mechanical object, lift / technical installation (Verolift). ✅ Four domains are available; the eval uses at least three.
