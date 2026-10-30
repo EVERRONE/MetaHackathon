@@ -34,7 +34,7 @@ Principles:
 ```
 Procedure  { id, title, goal, source: {kind: pdf|images|text|none, ref, verified: bool},
              objects: ObjectSpec[], steps: Step[], cautions: string[], language }
-ObjectSpec { id, name, description, sam_prompt, expected_count?, size_mm? }
+ObjectSpec { id, name, description, sam_prompts: string[], expected_count?, size_mm? }
 Step       { id, instruction, why?, targets: objectId[], tools?: string[],
              expect: Check[], cautions?: string[], source_ref? }
 Check      { kind: visual|user_confirm, object?: objectId, state: string, description }
@@ -55,12 +55,21 @@ Event      { t, type: look|highlight|clarify|verified|user_confirmed|question|st
 - **No source:** `verified: false`, a stricter policy applies, and the UI labels the procedure as such.
 - **Latency budget:** under 30 s, once per task, with a progress indicator.
 
-**4.2 Perception** (inside `/api/look`), given a frame and the object specs that matter for the current step:
-1. **SAM 3.1** runs text prompts for each relevant `sam_prompt`, in parallel. It returns instances (box, mask, confidence).
-2. **Muse Spark** receives the frame, the instance list and the step. It returns per instance which object it is (or none), its visible state, any label text and a confidence, plus hazard signals and image-quality issues.
-3. **Fusion:** an object counts as found only when SAM and Spark agree. Spark can also propose a box that SAM missed; SAM then refines it with a box prompt.
+**4.2 Perception** (inside `/api/look`), given a frame and the object specs that matter for the current step. Based on the measurements in `spike-results.md`:
+1. **SAM 3.1** runs 2–3 noun-phrase variants per target object in parallel (`ObjectSpec.sam_prompts[]`) and merges overlapping instances. Each instance has a box, a mask and a confidence. Takes about 1.5 s.
+2. **Set-of-marks:** the server draws numbered marks for the instances on the frame (image library running in the Worker).
+3. **Muse Spark** (`reasoning_effort: minimal`) receives the marked frame and a **focused** question about the current step's targets. It returns:
+   - the chosen mark per target, or 0;
+   - the visible state, any label text and a confidence;
+   - hazard signals and image-quality issues.
 
-The spike compares three ways of tying Spark to the instances: numbered boxes on the 0–1000 grid as text, set-of-marks drawn on the image, and cropped instances sent as multiple images.
+   Takes about 3 s.
+4. **Fusion rules:**
+   - Pointing always uses SAM geometry; Spark's own boxes are never drawn.
+   - If Spark's choice is uncertain or spans merged instances, the result is `clarify`.
+   - If Spark finds the object but SAM did not, a SAM box-prompt pass refines Spark's rough box; if that fails, the result is `better_view`.
+
+**Scene scan** (all objects and states at once) uses `reasoning_effort: medium` and takes 11–21 s. It runs once at the start, with a progress indicator, or as parallel focused calls.
 
 **4.3 Guidance runtime** (shared; runs on the client and is validated on the server)
 - **Per step:** look → highlight the target(s) → user acts → verify.
