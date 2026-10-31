@@ -11,10 +11,18 @@ export interface ChatUsage {
   prompt_tokens_details?: { cached_tokens?: number } | null;
 }
 
-export function sparkCost(usage: ChatUsage): number {
+// Muse Wonder, Meta's most capable model: about four times Spark's price.
+const WONDER_INPUT = 4.0 / 1e6;
+const WONDER_CACHED_INPUT = 0.2 / 1e6;
+const WONDER_OUTPUT = 20.0 / 1e6;
+
+export function sparkCost(usage: ChatUsage, model = "muse-spark-1.3"): number {
   const prompt = usage.prompt_tokens ?? 0;
   const cached = Math.min(usage.prompt_tokens_details?.cached_tokens ?? 0, prompt);
   const output = usage.completion_tokens ?? 0;
+  if (model.startsWith("muse-wonder")) {
+    return (prompt - cached) * WONDER_INPUT + cached * WONDER_CACHED_INPUT + output * WONDER_OUTPUT;
+  }
   return (prompt - cached) * SPARK_INPUT + cached * SPARK_CACHED_INPUT + output * SPARK_OUTPUT;
 }
 

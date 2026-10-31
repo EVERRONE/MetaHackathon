@@ -2,7 +2,7 @@ import { sparkCost, sparkFallbackCost, type ChatUsage } from "./cost";
 import { HttpError } from "./http";
 import { META_API, UpstreamError } from "./upstream";
 
-const ALLOWED_MODELS = new Set(["muse-spark-1.3"]);
+const ALLOWED_MODELS = new Set(["muse-spark-1.3", "muse-wonder-1.0"]);
 
 /**
  * Passes an SSE stream through unchanged while watching for the final `usage` chunk.
@@ -68,6 +68,7 @@ export async function chat(
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
     throw new HttpError(400, "invalid_request", "messages must be a non-empty array");
   }
+  const model = body.model;
   body.store = false;
   const stream = body.stream === true;
   if (stream) {
@@ -84,12 +85,12 @@ export async function chat(
 
   if (!stream || !upstream.body) {
     const json = (await upstream.json()) as { usage?: ChatUsage };
-    charge(json.usage ? sparkCost(json.usage) : sparkFallbackCost(requestBytes, 0, imageCount));
+    charge(json.usage ? sparkCost(json.usage, model) : sparkFallbackCost(requestBytes, 0, imageCount));
     return Response.json(json);
   }
 
   const tapped = upstream.body.pipeThrough(
-    usageTap((usage, bytes) => charge(usage ? sparkCost(usage) : sparkFallbackCost(requestBytes, bytes, imageCount))),
+    usageTap((usage, bytes) => charge(usage ? sparkCost(usage, model) : sparkFallbackCost(requestBytes, bytes, imageCount))),
   );
   return new Response(tapped, {
     headers: {

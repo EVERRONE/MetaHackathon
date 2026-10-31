@@ -36,7 +36,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// Lifts one grounded instance into 3D. Returns how it was anchored, for the trace.
     @discardableResult
     func addMark(_ inst: SegmentInstance, snapshot: FrameSnapshot) -> String {
-        guard let m = AnchoredMark(inst, snapshot: snapshot) else { return "no depth" }
+        // Clean, regular shapes: a raw mask outline looks hand-drawn once stroked on screen.
+        guard let m = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return "no outline" }
         marks[inst.id] = m
         return m.method
     }

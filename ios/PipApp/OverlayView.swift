@@ -171,32 +171,23 @@ final class OverlayView: UIView {
         shape(polygonPath(polys), stroke: color, fill: nil, width: width, alpha: alpha, dash: dash)
     }
 
-    /// The refined pointer: a soft glow, a crisp light core and a faint tint inside the contour.
+    /// The pointer: a thin, crisp line on the object's edge, a dark rim for contrast on any
+    /// background, and a faint tint inside that briefly brightens when the cue appears.
     private func highlight(_ polys: [[CGPoint]], pop: CGFloat, alpha: CGFloat, fill tint: CGFloat) {
-        let path = polygonPath(polys)
-        let glow = CAShapeLayer()
-        glow.path = path.cgPath
-        glow.fillColor = Self.action.withAlphaComponent(tint).cgColor
-        glow.strokeColor = Self.action.withAlphaComponent(0.55).cgColor
-        glow.lineWidth = 7 + 10 * pop
-        glow.lineJoin = .round
-        glow.opacity = Float(alpha)
-        layer.addSublayer(glow)
-        // A wider, fainter stroke instead of a shadow: shadows are re-rendered off-screen on every
-        // frame, strokes are cheap.
-        let halo = CAShapeLayer()
-        halo.path = path.cgPath
-        halo.fillColor = UIColor.clear.cgColor
-        halo.strokeColor = Self.action.withAlphaComponent(0.18).cgColor
-        halo.lineWidth = glow.lineWidth + 10
-        halo.lineJoin = .round
-        halo.opacity = Float(alpha)
-        layer.insertSublayer(halo, below: glow)
+        let path = polygonPath(polys).cgPath
+        let fill = CAShapeLayer()
+        fill.path = path
+        fill.fillColor = Self.action.withAlphaComponent(tint + 0.25 * pop).cgColor
+        fill.strokeColor = UIColor.black.withAlphaComponent(0.45).cgColor
+        fill.lineWidth = 4.5
+        fill.lineJoin = .round
+        fill.opacity = Float(alpha)
+        layer.addSublayer(fill)
         let core = CAShapeLayer()
-        core.path = path.cgPath
+        core.path = path
         core.fillColor = UIColor.clear.cgColor
-        core.strokeColor = UIColor(red: 0.85, green: 1, blue: 1, alpha: 1).cgColor
-        core.lineWidth = 2.2
+        core.strokeColor = UIColor(red: 0.55, green: 1, blue: 1, alpha: 1).cgColor
+        core.lineWidth = 2
         core.lineJoin = .round
         core.opacity = Float(alpha)
         layer.addSublayer(core)

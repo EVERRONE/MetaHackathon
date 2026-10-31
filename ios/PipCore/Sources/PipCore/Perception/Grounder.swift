@@ -202,7 +202,7 @@ public struct Grounder: Sendable {
         var area = numbered.reduce(CGRect.null) { $0.union($1.boxRect) }
         let pad = max(area.width, area.height) * 0.25 + 12
         area = area.insetBy(dx: -pad, dy: -pad).intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height)).integral
-        let zoom = min(3, 768 / max(area.width, area.height))
+        let zoom = min(3, 560 / max(area.width, area.height))
         guard let view = SetOfMarks.crop(image, to: area, scale: zoom),
               let marked = SetOfMarks.render(view, instances: numbered.map { $0.mapped(into: area, scale: zoom) }),
               let jpeg = SetOfMarks.jpeg(marked, quality: 0.85) else { return .failed }

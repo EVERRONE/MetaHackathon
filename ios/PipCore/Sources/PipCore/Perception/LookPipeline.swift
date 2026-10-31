@@ -63,6 +63,10 @@ public struct LookPipeline: Sendable {
     public var language: String
     /// How long a finished sentence may wait for its targets before it is spoken without them.
     public var groundingTimeout: TimeInterval = 8.0
+    /// Muse Wonder: on real keyboards Spark answered from PC habit at every reasoning level; Wonder
+    /// read the device correctly at the lowest level, about one second slower (spike-results, day 1).
+    public var model = "muse-wonder-1.0"
+    public var effort: ChatRequest.ReasoningEffort = .minimal
 
     public init(client: PipClient, validator: CueValidator = CueValidator(), language: String = "English") {
         self.client = client
@@ -70,7 +74,7 @@ public struct LookPipeline: Sendable {
         self.language = language
     }
 
-    var promptCacheKey: String { "pip-\(PipPrompt.version)-\(language.lowercased())" }
+    var promptCacheKey: String { "pip-\(PipPrompt.version)-\(model)-\(language.lowercased())" }
 
     public func run(_ request: LookRequest) -> AsyncThrowingStream<LookEvent, Error> {
         AsyncThrowingStream { continuation in
@@ -120,8 +124,9 @@ public struct LookPipeline: Sendable {
             message = PipPrompt.lookMessage(goal: request.goal, step: request.step, facts: request.facts, utterance: request.utterance, frameJPEG: context)
         }
 
-        let chat = ChatRequest(messages: [.system(system)] + request.history + [message], stream: true, reasoningEffort: .minimal,
-                               promptCacheKey: promptCacheKey, maxCompletionTokens: 2000)
+        var chat = ChatRequest(messages: [.system(system)] + request.history + [message], stream: true, reasoningEffort: effort,
+                               promptCacheKey: promptCacheKey, maxCompletionTokens: 4000)
+        chat.model = model
         // The frame is at most 1280 px already, so Spark and SAM can share one encoding.
         let grounder = Grounder(client: client, frameJPEG: context)
         let (inputs, feed) = AsyncStream<Input>.makeStream()

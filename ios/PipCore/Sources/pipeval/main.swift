@@ -56,6 +56,29 @@ if args.first == "listen", args.count >= 2 {
     exit(0)
 }
 
+// pipeval outline <frame.jpg> <instances.json> <out.jpg>: draws recorded outlines, raw (red) and cleaned up (cyan).
+if args.first == "outline", args.count >= 4 {
+    guard let data = FileManager.default.contents(atPath: args[1]), let frame = SetOfMarks.load(data, maxSide: 4000),
+          let json = FileManager.default.contents(atPath: args[2]),
+          let insts = try? JSONDecoder().decode([SegmentInstance].self, from: json) else { fail("cannot read inputs") }
+    let ctx = CGContext(data: nil, width: frame.width, height: frame.height, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.draw(frame, in: CGRect(x: 0, y: 0, width: frame.width, height: frame.height))
+    ctx.translateBy(x: 0, y: CGFloat(frame.height))
+    ctx.scaleBy(x: 1, y: -1)
+    for (inst, color) in insts.flatMap({ [($0, CGColor(red: 1, green: 0.2, blue: 0.2, alpha: 1)), ($0.regularized(), CGColor(red: 0.2, green: 1, blue: 1, alpha: 1))] }) {
+        for ring in inst.outlinePoints where ring.count >= 3 {
+            ctx.addLines(between: ring)
+            ctx.closePath()
+            ctx.setStrokeColor(color)
+            ctx.setLineWidth(1.5)
+            ctx.strokePath()
+        }
+    }
+    try? SetOfMarks.jpeg(ctx.makeImage()!)?.write(to: URL(fileURLWithPath: args[3]))
+    exit(0)
+}
+
 guard args.first == "look", args.count >= 3 else {
     fail("usage: pipeval look <image> \"<utterance>\" [--prompts a,b] [--lang English|Dutch] [--goal \"…\"] [--out dir]")
 }
@@ -74,11 +97,15 @@ let base = URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!
 guard let data = FileManager.default.contents(atPath: imagePath), let frame = SetOfMarks.load(data) else { fail("cannot read \(imagePath)") }
 
 let client = PipClient(baseURL: base, token: token)
-let pipeline = LookPipeline(client: client, language: options["lang"] ?? "English")
+var pipeline = LookPipeline(client: client, language: options["lang"] ?? "English")
+if let m = options["model"] { pipeline.model = m }
+if let e = options["effort"].flatMap(ChatRequest.ReasoningEffort.init(rawValue:)) { pipeline.effort = e }
+let history: [ChatMessage] = options["history"].map { $0.components(separatedBy: " || ").enumerated().map { $0.offset % 2 == 0 ? .user($0.element) : .assistant($0.element) } } ?? []
 let request = LookRequest(
     frame: frame,
     prompts: options["prompts"].map { $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } },
     goal: options["goal"],
+    history: history,
     utterance: utterance
 )
 let outDir = URL(fileURLWithPath: options["out"] ?? FileManager.default.currentDirectoryPath)
