@@ -41,6 +41,11 @@ final class GuideModel: ObservableObject {
     static let cloudVoices = ["Dutch": "g7B5PNoscIXomLNUmHAb", "English": "Xb7hH8MSUJpSbSDYk0k2"]
 
     let ar = ARController()
+    /// Long-term memory: the room map, places and facts, only with the user's consent.
+    let memory = SpaceMemory()
+    var awaitingConsent = false
+    var pendingPlaces: [SpaceMemory.Place] = []
+    var pendingFacts: [(key: String, value: String, source: String)] = []
     private let audio = AudioIO()
     let speaker: Speaker
     let client: PipClient
@@ -119,7 +124,10 @@ final class GuideModel: ObservableObject {
             self?.caption = s.text
             self?.spokenThisTurn.append(s.text)
         }
-        speaker.onCue = { [weak self] c in self?.ar.show(c.cue) }
+        speaker.onCue = { [weak self] c in
+            self?.ar.show(c.cue)
+            if case .landmark(let mark, let name) = c.cue { self?.rememberPlace(name: name, mark: mark) }
+        }
         speaker.onIdle = { [weak self] in
             guard let self, self.phase == .speaking, !self.lookActive else { return }
             self.phase = self.muted ? .muted : .listening
@@ -133,7 +141,9 @@ final class GuideModel: ObservableObject {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try? session.setActive(true)
-        ar.start()
+        ar.start(initialMap: memory.loadMap())
+        ar.restore(memory.places)
+        for (key, fact) in memory.facts { facts[key] = Fact(value: fact.value, source: fact.source) }
         // Accurate text recognition unloads after a pause and then takes ~25 s to load: keep it warm.
         Task.detached(priority: .utility) { await Grounder.warmUp() }
         warmTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
@@ -282,8 +292,11 @@ final class GuideModel: ObservableObject {
             recorder?.log(line)
         }
         let pipeline = LookPipeline(client: client, language: language)
-        let known = facts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.value) (\($0.value.source == "seen" ? "you saw it" : "the user said so"))" }
+        var known = facts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.value) (\($0.value.source == "seen" ? "you saw it" : "the user said so"))" }
+        let places = ar.placeDescriptions()
+        if !places.isEmpty { known.append("Remembered places (point with m=number): " + places.joined(separator: " | ")) }
         var request = LookRequest(frame: snapshot.image, facts: known, history: history, utterance: utterance, directive: directive)
+        request.knownMarks = ar.placeMarks
         if let rt = runtime, rt.isActive, let step = rt.current {
             request.goal = rt.procedure.title
             request.step = PipPrompt.Step(index: rt.index + 1, count: rt.procedure.steps.count, instruction: step.instruction,
@@ -311,7 +324,8 @@ final class GuideModel: ObservableObject {
                 case .sentence(var s, let traces):
                     firstWord = firstWord ?? Date().timeIntervalSince(started)
                     phase = .speaking
-                    s.cues = s.cues.map { TimedCue(cue: $0.cue.mappingMarks { $0 + offset }, anchor: $0.anchor, raw: $0.raw) }
+                    // Remembered places keep their own numbers; this look's marks get the look's offset.
+                    s.cues = s.cues.map { TimedCue(cue: $0.cue.mappingMarks { $0 >= ARController.placeMarkBase ? $0 : $0 + offset }, anchor: $0.anchor, raw: $0.raw) }
                     speaker.enqueue(s)
                     note("say: \(s.text)")
                     for t in traces { note("  cue \(t.raw): \(t.decision)") }
@@ -326,6 +340,7 @@ final class GuideModel: ObservableObject {
                     if runtime?.isActive != true { pendingTask = (goal, product) }
                 case .sideChannel(.remember(let key, let value, let source)):
                     facts[key] = Fact(value: value, source: source)
+                    rememberLongTerm(key, value, source: source)
                     note("remember \(key) = \(value) (\(source))")
                 case .sideChannel(let cue):
                     note("side: \(cue)")

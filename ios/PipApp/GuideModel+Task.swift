@@ -22,6 +22,10 @@ extension GuideModel {
             return
         }
         let command = Command.parse(text)
+        if awaitingConsent, command == .yes || command == .no {
+            answerConsent(command == .yes, heard: text)
+            return
+        }
         if pageReader != nil {
             let lower = text.lowercased()
             if command == .done || command == .stop || command == .skip || ["dat was het", "dat was alles", "that's all", "that was all"].contains(where: { lower.contains($0) }) {

@@ -17,8 +17,19 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     private var currentOffset = 0
     private var replacePending = false
 
-    func start() {
+    // MARK: Remembered places
+
+    /// Mark numbers from here on are remembered places; they are never replaced by a new look.
+    static let placeMarkBase = 900_001
+    private var nextPlaceMark = ARController.placeMarkBase
+    private(set) var places: [Int: SpaceMemory.Place] = [:]
+    /// Places from the saved map waiting for ARKit to restore their anchors.
+    private var pendingPlaces: [UUID: SpaceMemory.Place] = [:]
+
+    func start(initialMap: ARWorldMap? = nil) {
         let config = ARWorldTrackingConfiguration()
+        // A saved room map: ARKit recognises the room again and restores the remembered places.
+        config.initialWorldMap = initialMap
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             config.frameSemantics.insert(.sceneDepth)
         }
@@ -137,15 +148,124 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         renderNow()
     }
 
+    func session(_ session: ARSession, didAdd added: [ARAnchor]) {
+        for anchor in added { restorePlace(anchor) }
+    }
+
     func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
-        if case .normal = camera.trackingState { trackingNormal = true } else { trackingNormal = false }
+        switch camera.trackingState {
+        case .normal:
+            relocalisingSince = nil
+            trackingNormal = true
+        case .limited(.relocalizing):
+            // Wait a while for ARKit to recognise the room; in another room it never will.
+            let since = relocalisingSince ?? Date()
+            relocalisingSince = since
+            trackingNormal = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.relocaliseWait) { [weak self] in
+                guard let self, self.relocalisingSince == since else { return }
+                self.trackingNormal = true
+                self.overlay.isHidden = false
+            }
+        case .limited(.initializing):
+            trackingNormal = false
+        case .limited, .notAvailable:
+            // Fast motion or few features: keep drawing; the outlines may lag briefly.
+            trackingNormal = true
+        }
         overlay.isHidden = !trackingNormal
     }
+
+    static let relocaliseWait: TimeInterval = 10
+    private var relocalisingSince: Date?
 
 
     private func renderNow() {
         let now = CACurrentMediaTime()
         board.tick(now)
         overlay.render(board.annotations, now: now, marks: marks) { [arView] p in arView.project(p) }
+    }
+
+    // MARK: Remembered places
+
+    /// Turns a pointed-at object into a remembered place with its own ARKit anchor.
+    func rememberPlace(name: String, mark: Int) -> SpaceMemory.Place? {
+        guard let m = marks[mark] else { return nil }
+        let world = m.polygons
+        var t = matrix_identity_float4x4
+        t.columns.3 = simd_float4(m.centroid, 1)
+        let anchor = ARAnchor(name: "pip-place", transform: t)
+        arView.session.add(anchor: anchor)
+        let inverse = simd_inverse(t)
+        let local = world.map { ring in ring.map { p -> SIMD3<Float> in let q = inverse * simd_float4(p, 1); return SIMD3(q.x, q.y, q.z) } }
+        let place = SpaceMemory.Place(id: UUID(), name: name, anchorID: anchor.identifier, outline: local, created: Date())
+        install(place, anchor: anchor)
+        return place
+    }
+
+    /// Places from memory: they appear once ARKit has restored their anchors from the room map.
+    func restore(_ saved: [SpaceMemory.Place]) {
+        for p in saved { pendingPlaces[p.anchorID] = p }
+        for anchor in arView.session.currentFrame?.anchors ?? [] { restorePlace(anchor) }
+    }
+
+    private func restorePlace(_ anchor: ARAnchor) {
+        guard let place = pendingPlaces.removeValue(forKey: anchor.identifier) else { return }
+        install(place, anchor: anchor)
+    }
+
+    private func install(_ place: SpaceMemory.Place, anchor: ARAnchor) {
+        let id = nextPlaceMark
+        nextPlaceMark += 1
+        let t = anchor.transform
+        let world = place.outline.map { ring in ring.map { p -> simd_float3 in let q = t * simd_float4(p, 1); return simd_float3(q.x, q.y, q.z) } }
+        marks[id] = AnchoredMark(id: id, world: world)
+        anchors[id] = (anchor, t)
+        places[id] = place
+    }
+
+    func forgetPlace(_ placeID: UUID) {
+        guard let (id, _) = places.first(where: { $0.value.id == placeID }) else { return }
+        removeMarks { $0 == id }
+        places[id] = nil
+    }
+
+    /// Remembered places as marks the model may point at.
+    var placeMarks: [Int: MarkInfo] {
+        Dictionary(uniqueKeysWithValues: places.keys.filter { marks[$0] != nil }.map { ($0, MarkInfo(id: $0, confidence: 0.95)) })
+    }
+
+    /// Where each remembered place is from the user right now, in words the model can pass on.
+    func placeDescriptions() -> [String] {
+        guard let frame = arView.session.currentFrame else { return [] }
+        let cam = frame.camera.transform
+        let pos = simd_float3(cam.columns.3.x, cam.columns.3.y, cam.columns.3.z)
+        let forward = -simd_float3(cam.columns.2.x, 0, cam.columns.2.z)
+        let right = simd_float3(cam.columns.0.x, 0, cam.columns.0.z)
+        return places.sorted { $0.key < $1.key }.compactMap { id, place in
+            guard let m = marks[id] else { return nil }
+            let v = m.centroid - pos
+            let flat = simd_float3(v.x, 0, v.z)
+            let angle = atan2(simd_dot(flat, simd_normalize(right)), simd_dot(flat, simd_normalize(forward))) * 180 / .pi
+            let side: String
+            switch abs(angle) {
+            case ..<25: side = "ahead"
+            case ..<70: side = angle > 0 ? "ahead to the right" : "ahead to the left"
+            case ..<125: side = angle > 0 ? "to the right" : "to the left"
+            default: side = angle > 0 ? "behind you, to the right" : "behind you, to the left"
+            }
+            let height = v.y > 0.5 ? ", higher up" : (v.y < -0.6 ? ", lower down" : "")
+            let p = arView.project(m.centroid)
+            let inView = p.map { arView.bounds.contains($0) } ?? false && abs(angle) < 60
+            return String(format: "%d: %@ — %.1f m, %@%@; %@", id, place.name, simd_length(v), side, height, inView ? "in view" : "not in view")
+        }
+    }
+
+    /// Saves the room map with its anchors, once ARKit has mapped enough of the room.
+    func saveMap(_ store: @escaping (ARWorldMap) -> Void) {
+        arView.session.getCurrentWorldMap { map, _ in
+            guard let map else { return }
+            DispatchQueue.main.async { store(map) }
+        }
     }
 }

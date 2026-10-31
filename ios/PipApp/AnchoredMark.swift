@@ -76,6 +76,19 @@ struct AnchoredMark {
         self.method = method
     }
 
+    /// A remembered place, rebuilt from its saved outline in world space.
+    init(id: Int, world polygons: [[simd_float3]]) {
+        self.id = id
+        method = "remembered"
+        rawPolygons = polygons
+        let all = polygons.flatMap { $0 }
+        let centre = all.isEmpty ? .zero : all.reduce(.zero, +) / Float(all.count)
+        rawCentroid = centre
+        imageCentre = .zero
+        imageExtent = 0
+        lift = { _ in centre }
+    }
+
     /// Start and end of a straight arrow for `move`, in world space.
     func arrow(_ direction: MoveDirection) -> (simd_float3, simd_float3) {
         let len = max(40, imageExtent * 0.55)

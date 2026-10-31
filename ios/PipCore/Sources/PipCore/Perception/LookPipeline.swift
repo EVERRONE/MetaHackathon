@@ -41,6 +41,8 @@ public struct LookRequest: Sendable {
     public var utterance: String
     /// What Pip must do now instead of answering the user: give a step, or check one.
     public var directive: String?
+    /// Marks Pip already knows (remembered places), which it can point at with m=N.
+    public var knownMarks: [Int: MarkInfo] = [:]
 
     public init(frame: CGImage, prompts: [String]? = nil, goal: String? = nil, step: PipPrompt.Step? = nil, facts: [String] = [], history: [ChatMessage] = [], utterance: String, directive: String? = nil) {
         self.frame = frame
@@ -106,8 +108,8 @@ public struct LookPipeline: Sendable {
         let frame = request.frame
         guard let context = SetOfMarks.resize(frame, maxSide: 1280).flatMap({ SetOfMarks.jpeg($0, quality: 0.8) }) else { throw LookError.encoding }
 
-        var marks: [Int: MarkInfo] = [:]
-        var resolved = Set<Int>()
+        var marks: [Int: MarkInfo] = request.knownMarks
+        var resolved = Set(request.knownMarks.keys)
         let message: ChatMessage
         let system: String
 

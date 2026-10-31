@@ -68,6 +68,8 @@ public enum Cue: Equatable, Sendable {
     case danger(mark: Int?, reason: String)
     case offscreen(mark: Int)
     case verified(mark: Int)
+    /// "This is the water stopcock": Pip outlines it and remembers where it is.
+    case landmark(mark: Int, name: String)
     case clear
     // Side channel for the runtime; never drawn.
     case state([String: String])
@@ -90,7 +92,7 @@ public enum Cue: Equatable, Sendable {
     /// Every mark the cue refers to.
     public var marks: [Int] {
         switch self {
-        case .outline(let m), .ring(let m, _), .move(let m, _), .rotate(let m, _, _), .place(let m), .offscreen(let m), .verified(let m):
+        case .outline(let m), .ring(let m, _), .move(let m, _), .rotate(let m, _, _), .place(let m), .offscreen(let m), .verified(let m), .landmark(let m, _):
             return [m]
         case .candidates(let ms), .sequence(let ms):
             return ms
@@ -114,6 +116,7 @@ public enum Cue: Equatable, Sendable {
         case .danger(let m, let r): return .danger(mark: m.map(f), reason: r)
         case .offscreen(let m): return .offscreen(mark: f(m))
         case .verified(let m): return .verified(mark: f(m))
+        case .landmark(let m, let n): return .landmark(mark: f(m), name: n)
         case .clear, .state, .locate, .needView, .remember, .task, .readPages: return self
         }
     }
@@ -169,6 +172,10 @@ extension Cue {
         case "verified":
             guard let m = mark() else { return fail("needs m") }
             return .success(.verified(mark: m))
+        case "landmark":
+            guard let m = mark() else { return fail("needs a position") }
+            guard let name = a["name"]?.trimmingCharacters(in: .whitespaces), !name.isEmpty else { return fail("needs name") }
+            return .success(.landmark(mark: m, name: name))
         case "clear":
             return .success(.clear)
         case "state":

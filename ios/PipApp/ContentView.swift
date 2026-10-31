@@ -11,6 +11,7 @@ struct ContentView: View {
     @StateObject private var model = GuideModel()
     @State private var showDebug = false
     @State private var showSteps = false
+    @State private var showMemory = false
 
     var body: some View {
         ZStack {
@@ -28,6 +29,9 @@ struct ContentView: View {
                         model.language = model.language == "Dutch" ? "English" : "Dutch"
                     }
                     .buttonStyle(.bordered).tint(.white)
+                    Button { showMemory = true } label: { Image(systemName: "brain.head.profile") }
+                        .buttonStyle(.bordered).tint(.white)
+                        .accessibilityLabel("Memory")
                     Button { showDebug.toggle() } label: { Image(systemName: "eye") }
                         .buttonStyle(.bordered).tint(.white)
                     Button { model.resetConversation() } label: { Image(systemName: "arrow.counterclockwise") }
@@ -68,6 +72,7 @@ struct ContentView: View {
             }
         }
         .onAppear { model.start() }
+        .sheet(isPresented: $showMemory) { MemorySheet(model: model, memory: model.memory) }
         .sheet(isPresented: $showSteps) {
             if let task = model.taskView { StepsSheet(task: task) }
         }
@@ -194,6 +199,46 @@ struct StepsSheet: View {
                 }
             }
             .navigationTitle(task.title)
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+/// Everything Pip remembers, where it came from, and a way to delete it.
+struct MemorySheet: View {
+    @ObservedObject var model: GuideModel
+    @ObservedObject var memory: SpaceMemory
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Toggle("Remember across sessions", isOn: Binding(get: { memory.consent == true }, set: { memory.setConsent($0) }))
+                } footer: {
+                    Text("Stored only on this iPhone: the room map, the places you showed Pip, and facts about your devices.")
+                }
+                Section("Places") {
+                    if model.ar.places.isEmpty { Text("Show Pip something and say what it is.").foregroundStyle(.secondary) }
+                    ForEach(model.ar.places.values.sorted { $0.created < $1.created }) { place in
+                        Label(place.name, systemImage: "mappin.circle")
+                            .swipeActions { Button("Forget", role: .destructive) { model.forget(place: place.id) } }
+                    }
+                }
+                Section("Facts") {
+                    ForEach(model.facts.keys.sorted(), id: \.self) { key in
+                        VStack(alignment: .leading) {
+                            Text(model.facts[key]?.value ?? "")
+                            Text("\(key) · \(model.facts[key]?.source == "seen" ? "seen" : "you said so")").font(.caption).foregroundStyle(.secondary)
+                        }
+                        .swipeActions { Button("Forget", role: .destructive) { model.forget(fact: key) } }
+                    }
+                }
+                Section {
+                    Button("Forget everything", role: .destructive) { model.forgetEverything() }
+                }
+            }
+            .navigationTitle("What Pip remembers")
             .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDetents([.medium, .large])

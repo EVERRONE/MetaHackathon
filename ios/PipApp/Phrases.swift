@@ -35,6 +35,11 @@ struct Phrases {
     var paused: String { dutch ? "Ik wacht. Zeg 'ga verder' als je klaar bent." : "I'll wait. Say 'continue' when you're ready." }
     var resumed: String { dutch ? "We gaan verder." : "Let's continue." }
     var stopped: String { dutch ? "De taak is gestopt." : "The task is stopped." }
+    var askMemory: String {
+        dutch ? "Zal ik dit ook onthouden voor de volgende keer? Alleen op je iPhone." : "Shall I remember this for next time too? Only on your iPhone."
+    }
+    var memoryYes: String { dutch ? "Goed, ik onthoud het." : "Good, I'll remember it." }
+    var memoryNo: String { dutch ? "Oké, ik vergeet het na deze sessie." : "Okay, I'll forget it after this session." }
     func page(_ n: Int) -> String { dutch ? "Pagina \(n)." : "Page \(n)." }
     func readingStatus(_ n: Int) -> String { dutch ? "Ik lees mee: \(n) pagina's. Zeg 'klaar' als je alles getoond hebt." : "Reading along: \(n) pages. Say 'done' when you've shown them all." }
     var noPages: String { dutch ? "Ik heb nog geen pagina gezien. Houd een pagina even stil in beeld." : "I haven't seen a page yet. Hold a page still in view for a moment." }

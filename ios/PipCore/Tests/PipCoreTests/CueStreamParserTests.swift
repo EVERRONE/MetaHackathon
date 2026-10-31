@@ -128,6 +128,17 @@ private func word(at anchor: Int, in text: String) -> String {
         #expect(events.contains(.sideChannel(.task(goal: "assemble the wardrobe", product: "IKEA PAX"), raw: "[[task goal=\"assemble the wardrobe\" product=\"IKEA PAX\"]]")))
     }
 
+    @Test func landmarkRegistersATargetAndBindsToIt() {
+        let events = run(["This is [[landmark at=400,600 obj=\"valve\" name=\"water stopcock\"]] the stopcock. I will remember it."])
+        #expect(events.contains(.target(id: 1, spec: TargetSpec(x: 400, y: 600, phrase: "valve"))))
+        #expect(sentences(events).first?.cues.first?.cue == .landmark(mark: 1, name: "water stopcock"))
+    }
+
+    @Test func rememberedPlacesArePointedAtByNumber() {
+        let s = sentences(run(["It is over there [[outline m=900001]] under the sink."]))
+        #expect(s.first?.cues.first?.cue == .outline(mark: 900001))
+    }
+
     @Test func singleObjectCuesUseTheFirstPoint() {
         let events = run(["Press [[outline at=100,100;900,900 obj=\"button\"]] this."])
         let targets = events.filter { if case .target = $0 { return true } else { return false } }

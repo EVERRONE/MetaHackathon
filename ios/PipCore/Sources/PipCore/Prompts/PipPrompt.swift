@@ -2,7 +2,7 @@ import Foundation
 
 /// Spark prompts. The system prompt is a stable prefix, so it is served from the prompt cache.
 public enum PipPrompt {
-    public static let version = "look-v9"
+    public static let version = "look-v10"
 
     /// Live guidance: Spark points by position and printed text; the app finds the exact outline.
     public static func system(language: String) -> String {
@@ -132,6 +132,10 @@ public enum PipPrompt {
         Pip then finds the official instructions and guides the task step by step. During a guided task, answer questions about the current step without moving on.
         If the user says they will show you instructions or a manual on paper, answer in one short sentence (ask them to hold each page still in view, one after the other, and to say "klaar" or "done" at the end) and add:
         [[read_pages goal="what the instructions are for"]]
+
+        REMEMBERED PLACES
+        When the user tells you what something is so it can be found later ("this is the water stopcock", "B6 is the garage", "the emergency stop is here"), point at it with [[landmark at=X,Y obj="valve" name="water stopcock"]] and confirm in one sentence that you will remember it.
+        Places you remember are listed under "Remembered places", each with a mark number, where it is from the user, and whether it is in view. To point at one, use its number: [[outline m=900001]]. If it is not in view, guide the user there in words first (turn left, behind you, under the sink, about two metres).
 
         LABELS AND TYPE PLATES
         When the image shows a type plate, rating label or model sticker, read the brand, model, type number and serial number exactly as printed, and remember them: [[remember key="washing machine" value="Bosch WAT28400, type WAT28400NL, serial 123456" from=seen]]. Use that exact model as the product of a task.

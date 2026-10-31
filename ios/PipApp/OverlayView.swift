@@ -95,6 +95,11 @@ final class OverlayView: UIView {
                     if let c = marks[m].flatMap({ project($0.centroid) }) { badge("!", at: c, color: Self.danger, alpha: 1) }
                 }
                 generalDanger = reason
+            case .landmark(let m, let name):
+                guard let mark = marks[m], let p = screenPolygons(mark, project) else { continue }
+                highlight(p, pop: pop(a, now), alpha: alpha, fill: 0.15)
+                let b = bounds(p)
+                stepBadge(name, at: CGPoint(x: b.midX, y: b.minY - 22), alpha: alpha)
             case .offscreen(let m):
                 edgeHint(marks[m], project, color: Self.action, force: true)
             case .verified(let m):
@@ -220,7 +225,7 @@ final class OverlayView: UIView {
         l.foregroundColor = UIColor.black.cgColor
         l.backgroundColor = Self.action.cgColor
         l.contentsScale = traitCollection.displayScale
-        let w = max(26, CGFloat(text.count) * 10 + 14)
+        let w = max(26, CGFloat(text.count) * 9 + 18)
         l.frame = CGRect(x: c.x - w / 2, y: c.y - 13, width: w, height: 26)
         l.cornerRadius = 13
         l.borderColor = UIColor.white.cgColor

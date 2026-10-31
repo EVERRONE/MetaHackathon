@@ -59,7 +59,7 @@ public struct CueValidator: Sendable {
             if case .sequence = rebuilt, known.count < 2 { return .downgrade(.outline(mark: known[0]), reason: "sequence reduced to one known mark") }
             return known.count == ms.count ? .accept(rebuilt) : .downgrade(rebuilt, reason: "dropped unknown marks")
 
-        case .offscreen(let m):
+        case .offscreen(let m), .landmark(let m, _):
             return marks[m] == nil ? .reject(reason: "unknown mark \(m)") : .accept(cue)
 
         case .outline(let m), .ring(let m, _), .move(let m, _), .rotate(let m, _, _), .place(let m):
@@ -118,7 +118,7 @@ public struct AnnotationBoard: Sendable {
         switch cue {
         case .danger: lifetime = .untilResolved
         case .candidates: lifetime = .transient(until: now + Self.candidateSeconds)
-        case .verified: lifetime = .transient(until: now + Self.transientSeconds)
+        case .verified, .landmark: lifetime = .transient(until: now + Self.transientSeconds)
         default: lifetime = .untilVerified
         }
 
@@ -143,7 +143,7 @@ public struct AnnotationBoard: Sendable {
 
     private static func sameFamily(_ a: Cue, _ b: Cue) -> Bool {
         switch (a, b) {
-        case (.outline, .outline), (.ring, .ring), (.candidates, .candidates), (.offscreen, .offscreen), (.verified, .verified):
+        case (.outline, .outline), (.ring, .ring), (.candidates, .candidates), (.offscreen, .offscreen), (.verified, .verified), (.landmark, .landmark):
             return true
         case (.move, .move), (.rotate, .rotate), (.place, .place), (.sequence, .sequence),
              (.move, .rotate), (.rotate, .move):

@@ -134,7 +134,8 @@ extension GuideModel {
     /// back onto them when the user returns to the room.
     private func refreshTick() async {
         guard !refreshing, !lookActive, ar.trackingNormal, let snapshot = ar.snapshot() else { return }
-        let targets = ar.visibleMarkBoxes(in: snapshot).prefix(3)
+        // Remembered places stay on their saved anchors; only this look's marks are re-measured.
+        let targets = ar.visibleMarkBoxes(in: snapshot).filter { $0.id < ARController.placeMarkBase }.prefix(3)
         guard !targets.isEmpty else { return }
         refreshing = true
         defer { refreshing = false }
