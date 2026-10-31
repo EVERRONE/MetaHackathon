@@ -112,6 +112,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// The saved room was not recognised: ARKit tries another saved room's map.
     func restart(initialMap: ARWorldMap) {
         awaitingFirstRelocalisation = true
+        recognitionWait = Self.nextRelocaliseWait
         relocalisingSince = nil
         removeMarks { _ in true }
         places = [:]
@@ -499,6 +500,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         onFrame?(frame)
         followObjects(frame)
         edgeSpike.frame(frame, viewSize: arView.bounds.size, markExists: edgeSpike.markID.map { marks[$0] != nil } ?? false)
+        if case .normal = frame.camera.trackingState, (frame.lightEstimate?.ambientIntensity ?? 1000) >= 80 {} else {
+            lastTrackingTrouble = CACurrentMediaTime()
+        }
         relocalisation.frame(frame, awaitingRecognition: awaitingFirstRelocalisation)
         // ARKit moves anchors when it corrects its map (loop closure, relocalisation); the drawn
         // outline eases towards the new place in `renderNow`.
@@ -540,7 +544,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             trackingNormal = false
             trackingLost = true
             let firstTry = awaitingFirstRelocalisation
-            DispatchQueue.main.asyncAfter(deadline: .now() + (firstTry ? Self.firstRelocaliseWait : Self.relocaliseWait)) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + (firstTry ? recognitionWait : Self.relocaliseWait)) { [weak self] in
                 guard let self, self.relocalisingSince == since else { return }
                 if firstTry, self.awaitingFirstRelocalisation {
                     // The saved room is not this one: another saved room, or start fresh.
@@ -561,8 +565,12 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     static let relocaliseWait: TimeInterval = 10
-    /// At start with a saved room: ARKit recognises it within a few seconds when Pip is in it.
-    static let firstRelocaliseWait: TimeInterval = 6
+    /// At start with a saved room: ARKit often recognises it within a few seconds, sometimes only
+    /// after the user looked around. A question ends the trying at once (see GuideModel.giveUpRecognising).
+    static let firstRelocaliseWait: TimeInterval = 12
+    /// For the next saved room, when the first was not it.
+    static let nextRelocaliseWait: TimeInterval = 8
+    private var recognitionWait = ARController.firstRelocaliseWait
     private var relocalisingSince: Date?
     private(set) var awaitingFirstRelocalisation = false
     /// ARKit lost the room since tracking was last normal (`trackingNormal` may already be true
@@ -822,30 +830,54 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// Saves the room map with the places' anchors only (outline anchors are for this session).
     /// ARKit needs to have mapped enough of the room first: Pip waits and tries again. `store`
     /// gets nil when Pip gives up.
-    func saveMap(attempt: Int = 0, _ store: @escaping (ARWorldMap?) -> Void) {
+    /// `store` gets the map, or nil with the reason it was not good enough.
+    func saveMap(attempt: Int = 0, _ store: @escaping (ARWorldMap?, String) -> Void) {
         // While ARKit is still recognising the saved room, this session's map is in a frame of
         // its own: saving it would spoil the room's map.
-        guard !awaitingFirstRelocalisation else { store(nil); return }
+        guard !awaitingFirstRelocalisation else { store(nil, "the saved room is not recognised yet"); return }
         let status = arView.session.currentFrame?.worldMappingStatus
-        // Only a map ARKit itself calls good (as MultiSet keeps its maps clean): a limited one is
-        // never written over the last good one.
-        guard status == .mapped || status == .extending else {
+        // Only a map ARKit itself calls good (as MultiSet keeps its maps clean), and only after a
+        // while of steady tracking in enough light: in the dark or after a loss ARKit's map drifts
+        // (31 Oct: saved at 74 × 118 m after the camera had been dark, and never recognised).
+        let steady = CACurrentMediaTime() - lastTrackingTrouble >= Self.steadyBeforeSave
+        guard steady, status == .mapped || status == .extending else {
             if attempt < 5 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.saveMap(attempt: attempt + 1, store) }
             } else {
-                store(nil)
+                store(nil, steady ? "the map is not good enough yet" : "tracking was not steady")
             }
             return
         }
         arView.session.getCurrentWorldMap { [weak self] map, _ in
             DispatchQueue.main.async {
                 guard let map else {
-                    if attempt < 5, let self { self.saveMap(attempt: attempt + 1, store) } else { store(nil) }
+                    if attempt < 5, let self { self.saveMap(attempt: attempt + 1, store) } else { store(nil, "ARKit gave no map") }
+                    return
+                }
+                // A home is not that large: such a map has drifted.
+                let size = Self.robustExtent(map.rawFeaturePoints.points)
+                guard max(size.x, size.y) <= Self.maxMapExtent else {
+                    store(nil, String(format: "it has drifted (%.0f × %.0f m)", size.x, size.y))
                     return
                 }
                 map.anchors = map.anchors.filter { $0.name == "pip-place" }
-                store(map)
+                store(map, String(format: "%.1f × %.1f m", size.x, size.y))
             }
         }
+    }
+
+    /// Steady tracking this long before a map is saved.
+    static let steadyBeforeSave: TimeInterval = 5
+    /// No home map is wider than this (2nd to 98th percentile of its feature points, across the floor).
+    static let maxMapExtent: Float = 25
+    /// When tracking was last limited, lost or in the dark.
+    private var lastTrackingTrouble: CFTimeInterval = 0
+
+    /// The span of the points across the floor (x and z), ignoring the 2 % furthest on each side.
+    static func robustExtent(_ points: [simd_float3]) -> SIMD2<Float> {
+        guard points.count >= 10 else { return .zero }
+        let xs = points.map(\.x).sorted(), zs = points.map(\.z).sorted()
+        let lo = points.count / 50, hi = points.count - 1 - points.count / 50
+        return SIMD2(xs[hi] - xs[lo], zs[hi] - zs[lo])
     }
 }

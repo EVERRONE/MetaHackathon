@@ -28,7 +28,7 @@ extension GuideModel {
         var continuing: MapPiece?
         while worldMap == nil, !order.isEmpty {
             let p = order.removeFirst()
-            worldMap = MapStore.loadWorldMap(p.id)
+            worldMap = usableMap(p)
             if worldMap != nil { continuing = p }
         }
         mapCandidates = order
@@ -85,7 +85,7 @@ extension GuideModel {
         // Another saved room first, if there is one.
         while let next = mapCandidates.first {
             mapCandidates.removeFirst()
-            guard let map = MapStore.loadWorldMap(next.id) else { continue }
+            guard let map = usableMap(next) else { continue }
             log("map: not the room of last time; trying another saved room")
             ar.restart(initialMap: map)
             let others = mapKeeper.others.filter { $0.id != next.id } + (mapKeeper.current.keyframes.isEmpty ? [] : [mapKeeper.current])
@@ -100,6 +100,17 @@ extension GuideModel {
         mapKeeper.startNewPiece()
         keyframes.pieceChanged(to: mapKeeper.current.id)
         ar.relocalisation.trying(nil, detail: "after the saved rooms")
+    }
+
+    /// A saved room's map, unless it drifted when it was saved (older versions saved such maps).
+    private func usableMap(_ p: MapPiece) -> ARWorldMap? {
+        guard let map = MapStore.loadWorldMap(p.id) else { return nil }
+        let size = ARController.robustExtent(map.rawFeaturePoints.points)
+        guard max(size.x, size.y) <= ARController.maxMapExtent else {
+            Relocalisation.log(String(format: "piece %@ skipped: its map has drifted (%.0f × %.0f m)", String(p.id.uuidString.prefix(4)), size.x, size.y))
+            return nil
+        }
+        return map
     }
 
     private func describe(_ p: MapPiece) -> String {
@@ -253,10 +264,10 @@ extension GuideModel {
         }
         keyframes.saveIndex()
         let id = mapKeeper.current.id
-        ar.saveMap { [weak self] map in
+        ar.saveMap { [weak self] map, detail in
             if let map { MapStore.saveWorldMap(map, for: id) }
-            self?.ar.relocalisation.saved(map != nil, detail: map.map { String(format: "piece %@, %d feature points, %.1f×%.1f m",
-                String(id.uuidString.prefix(4)), $0.rawFeaturePoints.points.count, $0.extent.x, $0.extent.z) } ?? "not good enough yet, or the room not recognised yet")
+            self?.ar.relocalisation.saved(map != nil, detail: map.map { String(format: "piece %@, %d feature points, %@",
+                String(id.uuidString.prefix(4)), $0.rawFeaturePoints.points.count, detail) } ?? detail)
             background.done()
         }
     }
