@@ -77,7 +77,7 @@ struct FrameSnapshot {
         sensorSize = frame.camera.imageResolution
         intrinsics = frame.camera.intrinsics
         cameraTransform = frame.camera.transform
-        depth = DepthCopy(frame.sceneDepth ?? frame.smoothedSceneDepth)
+        depth = DepthCopy(frame.smoothedSceneDepth ?? frame.sceneDepth)
     }
 
     /// Snapshot pixel (upright, scaled) → captured-image pixel. The upright image is the sensor

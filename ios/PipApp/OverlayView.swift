@@ -34,8 +34,18 @@ final class OverlayView: UIView {
         layer.sublayers?.filter { $0 !== dangerBanner.layer }.forEach { $0.removeFromSuperlayer() }
         var generalDanger: String?
 
+        var hinted = Set<Int>()
         for a in annotations {
             let alpha = opacity(a, now: now)
+            // Off screen: a wedge at the edge points the way back, for every kind of cue.
+            if let first = a.cue.marks.first, let mark = marks[first],
+               !a.cue.marks.contains(where: { screenPolygons(marks[$0], project) != nil }) {
+                if case .danger(_, let reason) = a.cue { generalDanger = reason }
+                if hinted.insert(first).inserted {
+                    edgeHint(mark, project, color: { if case .danger = a.cue { return Self.danger } else { return Self.action } }(), force: true)
+                }
+                continue
+            }
             switch a.cue {
             case .outline(let m):
                 if let p = screenPolygons(marks[m], project) { highlight(p, pop: pop(a, now), alpha: alpha, fill: 0.10) }
@@ -91,7 +101,7 @@ final class OverlayView: UIView {
                 guard let mark = marks[m] else { continue }
                 if let p = screenPolygons(mark, project) { stroke(p, color: Self.verified, width: 4, alpha: alpha) }
                 if let c = project(mark.centroid) { badge("✓", at: c, color: Self.verified, alpha: alpha) }
-            case .clear, .state, .locate, .needView:
+            case .clear, .state, .locate, .needView, .remember:
                 break
             }
         }

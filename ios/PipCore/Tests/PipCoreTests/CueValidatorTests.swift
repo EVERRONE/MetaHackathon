@@ -37,13 +37,12 @@ import Testing
 }
 
 @Suite struct AnnotationBoardTests {
-    @Test func transientCuesFade() {
+    @Test func pointingStaysButConfirmationsFade() {
         var board = AnnotationBoard()
         board.show(.outline(mark: 1), at: 0)
-        board.tick(AnnotationBoard.transientSeconds - 0.1)
-        #expect(board.annotations.count == 1)
-        board.tick(AnnotationBoard.transientSeconds)
-        #expect(board.annotations.isEmpty)
+        board.show(.verified(mark: 2), at: 0)
+        board.tick(600)
+        #expect(board.annotations.map(\.cue) == [.outline(mark: 1)])
     }
 
     @Test func actionCuesStayUntilVerified() {

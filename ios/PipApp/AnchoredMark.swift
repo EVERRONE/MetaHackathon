@@ -24,7 +24,9 @@ struct AnchoredMark {
         let origin = simd_float3(snapshot.cameraTransform.columns.3.x, snapshot.cameraTransform.columns.3.y, snapshot.cameraTransform.columns.3.z)
 
         // Depth samples inside the object, and on the surface around it.
-        let inside = Self.samples(in: box, keep: { Self.contains(outer, $0) }, snapshot: snapshot, grid: 12)
+        // The object's own depth from high-confidence samples when there are enough.
+        let confident = Self.samples(in: box, keep: { Self.contains(outer, $0) }, snapshot: snapshot, grid: 14, minConfidence: 2)
+        let inside = confident.count >= 4 ? confident : Self.samples(in: box, keep: { Self.contains(outer, $0) }, snapshot: snapshot, grid: 14)
         let around = Self.samples(in: box.insetBy(dx: -box.width * 1.2, dy: -box.height * 1.2), keep: { _ in true }, snapshot: snapshot, grid: 20)
         // Without usable LiDAR depth (a black or glossy surface, too far, the first frames) the
         // outline still goes up, at an assumed arm's length, rather than not at all.
@@ -81,7 +83,7 @@ struct AnchoredMark {
 
     private struct Sample { let depth: Float; let world: simd_float3 }
 
-    private static func samples(in rect: CGRect, keep: (CGPoint) -> Bool, snapshot: FrameSnapshot, grid n: Int) -> [Sample] {
+    private static func samples(in rect: CGRect, keep: (CGPoint) -> Bool, snapshot: FrameSnapshot, grid n: Int, minConfidence: UInt8 = 1) -> [Sample] {
         let bounds = CGRect(x: 0, y: 0, width: snapshot.image.width, height: snapshot.image.height)
         let r = rect.intersection(bounds)
         guard !r.isNull, r.width > 1, r.height > 1 else { return [] }
@@ -91,7 +93,7 @@ struct AnchoredMark {
                 let p = CGPoint(x: r.minX + (CGFloat(i) + 0.5) / CGFloat(n) * r.width, y: r.minY + (CGFloat(j) + 0.5) / CGFloat(n) * r.height)
                 guard keep(p) else { continue }
                 let q = snapshot.sensorPoint(p)
-                guard let d = snapshot.depth(atSensor: q, minConfidence: 1) else { continue }
+                guard let d = snapshot.depth(atSensor: q, minConfidence: minConfidence) else { continue }
                 out.append(Sample(depth: d, world: snapshot.worldPoint(sensor: q, depth: d)))
             }
         }

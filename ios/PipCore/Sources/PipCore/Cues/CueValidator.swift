@@ -37,7 +37,7 @@ public struct CueValidator: Sendable {
 
     public func validate(_ cue: Cue, marks: [Int: MarkInfo], hasEvidence: (Int) -> Bool) -> Decision {
         switch cue {
-        case .clear, .state, .locate, .needView:
+        case .clear, .state, .locate, .needView, .remember:
             return .accept(cue)
 
         case .danger(let m, let reason):
@@ -102,7 +102,7 @@ public struct AnnotationBoard: Sendable {
         case .clear:
             annotations.removeAll { $0.lifetime != .untilResolved }
             return
-        case .state, .locate, .needView:
+        case .state, .locate, .needView, .remember:
             return
         case .verified(let m):
             // A verified mark ends the action cues on it.
@@ -111,13 +111,15 @@ public struct AnnotationBoard: Sendable {
             break
         }
 
+        // Pointing stays on the object while the user works, also when they look away and back;
+        // it is replaced by the next answer's cues. A question between look-alikes and a
+        // confirmation fade on their own.
         let lifetime: Lifetime
         switch cue {
         case .danger: lifetime = .untilResolved
-        // A numbered step ("hold 1, then press 2") stays until done, so the whole sequence is visible.
-        case .move, .rotate, .place, .sequence, .ring(_, .some): lifetime = .untilVerified
         case .candidates: lifetime = .transient(until: now + Self.candidateSeconds)
-        default: lifetime = .transient(until: now + Self.transientSeconds)
+        case .verified: lifetime = .transient(until: now + Self.transientSeconds)
+        default: lifetime = .untilVerified
         }
 
         // A new cue on the same marks replaces the old one of the same family.

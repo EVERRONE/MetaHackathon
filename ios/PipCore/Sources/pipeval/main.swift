@@ -105,6 +105,7 @@ let request = LookRequest(
     frame: frame,
     prompts: options["prompts"].map { $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } },
     goal: options["goal"],
+    facts: options["facts"].map { $0.components(separatedBy: " || ") } ?? [],
     history: history,
     utterance: utterance
 )

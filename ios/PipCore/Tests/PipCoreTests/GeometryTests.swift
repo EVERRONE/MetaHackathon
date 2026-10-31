@@ -60,7 +60,7 @@ import Testing
         let out = OutlineShape.regularize(jaggedRect(angle: angle))
         #expect(out.count == 24)
         let area = abs(OutlineShape.signedArea(out))
-        #expect(area > 60 * 40 * 0.9 && area < 60 * 40 * 1.05)
+        #expect(area > 60 * 40 * 0.85 && area < 60 * 40 * 1.05)
     }
 
     @Test func concaveShapesAreOnlySmoothed() {

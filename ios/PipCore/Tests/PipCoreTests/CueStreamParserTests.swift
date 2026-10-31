@@ -117,6 +117,12 @@ private func word(at anchor: Int, in text: String) -> String {
         #expect(marks == [1, 2, 1, 3, 4])
     }
 
+    @Test func rememberIsASideChannel() {
+        let events = run(["Got it, a Mac. [[remember key=\"computer\" value=\"Mac\" from=said]]"])
+        #expect(sentences(events).map(\.text) == ["Got it, a Mac."])
+        #expect(events.contains(.sideChannel(.remember(key: "computer", value: "Mac", source: "said"), raw: "[[remember key=\"computer\" value=\"Mac\" from=said]]")))
+    }
+
     @Test func singleObjectCuesUseTheFirstPoint() {
         let events = run(["Press [[outline at=100,100;900,900 obj=\"button\"]] this."])
         let targets = events.filter { if case .target = $0 { return true } else { return false } }

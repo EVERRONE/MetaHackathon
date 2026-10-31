@@ -6,6 +6,12 @@ public struct TimedCue: Equatable, Sendable {
     /// UTF-16 offset in the sentence's clean text where the bound word starts.
     public var anchor: Int
     public var raw: String
+
+    public init(cue: Cue, anchor: Int, raw: String) {
+        self.cue = cue
+        self.anchor = anchor
+        self.raw = raw
+    }
 }
 
 /// One sentence ready to speak: clean text plus the cues to show while it is spoken.

@@ -50,6 +50,16 @@ final class GuideModel: ObservableObject {
     private var task: Task<Void, Never>?
     private var spokenThisTurn: [String] = []
     private var lookActive = false
+    /// Mark numbers restart in every look; an offset per look keeps earlier marks apart, so their
+    /// cues can stay on screen.
+    private var lookCount = 0
+
+    /// What Pip knows for this session, with where each fact came from.
+    struct Fact: Equatable {
+        var value: String
+        var source: String
+    }
+    @Published private(set) var facts: [String: Fact] = [:]
     /// Speech started while Pip was busy; Pip stops once it is clearly the user (see `handle`).
     private var bargeInPending = false
     private var reconnectDelay: TimeInterval = 0.5
@@ -216,14 +226,17 @@ final class GuideModel: ObservableObject {
         defer { lookActive = false }
         phase = .looking
         spokenThisTurn = []
-        ar.beginLook()
+        lookCount += 1
+        let offset = lookCount * 1000
+        ar.beginLook(markOffset: offset)
         let recorder = LookRecorder(utterance: utterance, language: language, frame: snapshot.image)
         func note(_ line: String) {
             log(line)
             recorder?.log(line)
         }
         let pipeline = LookPipeline(client: client, language: language)
-        let request = LookRequest(frame: snapshot.image, history: history, utterance: utterance)
+        let known = facts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.value) (\($0.value.source == "seen" ? "you saw it" : "the user said so"))" }
+        let request = LookRequest(frame: snapshot.image, facts: known, history: history, utterance: utterance)
         var firstWord: Double?
         var raw: String?
         do {
@@ -234,21 +247,25 @@ final class GuideModel: ObservableObject {
                     note("target \(id): \(spec.phrase) \(spec.text) @\(Int(spec.x)),\(Int(spec.y))")
                 case .grounded(let id, let inst, let method, let seconds):
                     if let inst {
-                        let anchoring = ar.addMark(inst, snapshot: snapshot)
+                        let anchoring = ar.addMark(inst.renumbered(id + offset), snapshot: snapshot)
                         recorder?.grounded(inst)
                         note(String(format: "grounded %d via %@ in %.1fs, anchored on %@", id, method, seconds, anchoring))
                     } else {
                         note(String(format: "target %d not grounded (%@)", id, method))
                     }
                 case .segmented(let s, let marked):
-                    for inst in s.instances { ar.addMark(inst, snapshot: snapshot) }
+                    for inst in s.instances { ar.addMark(inst.renumbered(inst.id + offset), snapshot: snapshot) }
                     markedImage = UIImage(data: marked)
-                case .sentence(let s, let traces):
+                case .sentence(var s, let traces):
                     firstWord = firstWord ?? Date().timeIntervalSince(started)
                     phase = .speaking
+                    s.cues = s.cues.map { TimedCue(cue: $0.cue.mappingMarks { $0 + offset }, anchor: $0.anchor, raw: $0.raw) }
                     speaker.enqueue(s)
                     note("say: \(s.text)")
                     for t in traces { note("  cue \(t.raw): \(t.decision)") }
+                case .sideChannel(.remember(let key, let value, let source)):
+                    facts[key] = Fact(value: value, source: source)
+                    note("remember \(key) = \(value) (\(source))")
                 case .sideChannel(let cue):
                     note("side: \(cue)")
                 case .invalidTag(let e):
@@ -263,24 +280,25 @@ final class GuideModel: ObservableObject {
             if !speaker.isSpeaking, phase == .looking || phase == .speaking { phase = muted ? .muted : .listening }
         } catch {
             note("error: \(error)")
+            remember(utterance)
             if !Task.isCancelled { phase = .failed("Look failed: \(error)") }
         }
         recorder?.finish(rawText: raw)
     }
 
-    /// Keeps the last few turns as they were heard, for follow-up questions.
+    /// Keeps the recent turns as they were heard, for follow-up questions. The user's words are
+    /// always kept, also when Pip was interrupted before answering ("A Mac." must not be lost).
     private func remember(_ utterance: String) {
         let said = spokenThisTurn.joined(separator: " ")
-        // A turn interrupted before Pip said anything leaves no trace.
-        guard !said.isEmpty else { return }
         history.append(.user(utterance))
-        history.append(.assistant(said))
-        if history.count > 8 { history.removeFirst(history.count - 8) }
+        history.append(.assistant(said.isEmpty ? "(interrupted before answering)" : said))
+        if history.count > 16 { history.removeFirst(history.count - 16) }
     }
 
     func resetConversation() {
         interrupt()
         history = []
+        facts = [:]
         caption = ""
         heard = ""
         ar.clearCues()

@@ -10,11 +10,17 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     private(set) var board = AnnotationBoard()
     private var marks: [Int: AnchoredMark] = [:]
+    private var currentOffset = 0
+    private var replacePending = false
 
     func start() {
         let config = ARWorldTrackingConfiguration()
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             config.frameSemantics.insert(.sceneDepth)
+        }
+        // Depth averaged over recent frames: less noise, so outlines sit more exactly.
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+            config.frameSemantics.insert(.smoothedSceneDepth)
         }
         arView.renderOptions.insert(.disableMotionBlur)
         arView.session.delegate = self
@@ -25,12 +31,11 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         arView.session.currentFrame.flatMap { FrameSnapshot(frame: $0) }
     }
 
-    /// A new look: marks from the previous one no longer apply. Mark numbers restart each look,
-    /// so a danger from the last look must go too, or it would land on this look's mark 1.
-    func beginLook() {
-        marks = [:]
-        board.show(.clear, at: CACurrentMediaTime())
-        board.resolveDanger()
+    /// A new look. The previous look's cues stay on their objects until this look shows its first
+    /// cue, so the user keeps their bearings while Pip thinks, or when the answer points at nothing.
+    func beginLook(markOffset: Int) {
+        currentOffset = markOffset
+        replacePending = true
     }
 
     /// Lifts one grounded instance into 3D. Returns how it was anchored, for the trace.
@@ -43,6 +48,13 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func show(_ cue: Cue) {
+        if replacePending, cue.isDrawn {
+            // The new answer points somewhere: earlier cues and their marks give way.
+            replacePending = false
+            board.show(.clear, at: CACurrentMediaTime())
+            board.resolveDanger()
+            marks = marks.filter { $0.key >= currentOffset }
+        }
         board.show(cue, at: CACurrentMediaTime())
         renderNow()
     }

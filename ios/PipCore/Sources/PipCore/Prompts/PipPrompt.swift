@@ -2,7 +2,7 @@ import Foundation
 
 /// Spark prompts. The system prompt is a stable prefix, so it is served from the prompt cache.
 public enum PipPrompt {
-    public static let version = "look-v6"
+    public static let version = "look-v7"
 
     /// Live guidance: Spark points by position and printed text; the app finds the exact outline.
     public static func system(language: String) -> String {
@@ -68,6 +68,13 @@ public enum PipPrompt {
     User: "How do I make a backslash?" (a keyboard with both Mac and PC legends; the user has not said which computer)
     This keyboard works with both. Is it connected to a Mac or to a Windows PC?
     [[state seen="dual Mac/PC keyboard" conf=0.5 step=unknown]]
+    [[remember key="keyboard" value="dual Mac/PC legends" from=seen]]
+
+    EXAMPLE (the answer to that question)
+    User: "A Mac."
+    Then the backslash is option, shift and the slash key together. Hold [[ring at=200,850 obj="key" text="opt|alt" label="1"]] the option key, and [[ring at=90,780 obj="key" text="shift" label="2"]] shift, then press [[ring at=640,780 obj="key" text="/|:" label="3"]] the slash key.
+    [[state seen="Mac keyboard" conf=0.8 step=not_done]]
+    [[remember key="computer" value="Mac" from=said]]
 
     EXAMPLE (already done)
     User: "Is the pump valve closed now?"
@@ -90,7 +97,7 @@ public enum PipPrompt {
         \(seeing)
 
         DECIDE BEFORE YOU SPEAK
-        1. Which device is this, exactly? Brand, model, layout, and what it is used with (a keyboard with ⌘ cmd and opt keys belongs to a Mac; alt gr and a Windows key mean a PC). Use what you see and what the user told you earlier. The image may be rotated; read it as it is.
+        1. Which device is this, exactly? Brand, model, layout, and what it is used with (a keyboard with ⌘ cmd and opt keys belongs to a Mac; alt gr and a Windows key mean a PC). Use what you see, the facts under "What you know" and what the user said earlier. Never ask again for something listed there. The image may be rotated; read it as it is.
         2. What exactly does the user need to do on this device? Work it out from the legends and labels you can read, not from memory of a typical model: devices differ by country, brand, model and operating system.
         3. If the right answer depends on something you cannot see or are not sure of (Mac or PC with a keyboard that has both legends, which appliance programme, which breaker is which room), do not guess: ask one short question first, and give no instructions yet.
         4. If the user points with a finger or says "this one", look at what the finger touches and answer about that object.
@@ -119,6 +126,10 @@ public enum PipPrompt {
         STATE FOR THE APP
         End every reply with exactly one short tag, after your last sentence (keep seen under 12 words):
         [[state seen="what you observe about the main object" conf=0.0-1.0 step=done|not_done|unknown]]
+        MEMORY
+        When the user tells you something lasting, or you identify it for sure, add one tag per fact after the state tag: the computer or operating system, the device's brand and model, its layout, which breaker or switch is which room, a preference. Use a short key and value, and say where it comes from:
+        [[remember key="computer" value="Mac" from=said]]   [[remember key="keyboard" value="Logitech MX Keys, French AZERTY" from=seen]]
+        Do not repeat facts that are already under "What you know", unless they changed.
 
         \(examples)
         """
@@ -158,7 +169,7 @@ public enum PipPrompt {
             lines.append(s)
         }
         if !facts.isEmpty {
-            lines.append("What you know:")
+            lines.append("What you know (do not ask again):")
             lines += facts.map { "- \($0)" }
         }
         if !marks.isEmpty {

@@ -16,7 +16,10 @@ public enum OutlineShape {
         let area = abs(signedArea(ring))
         let hull = convexHull(ring)
         guard hull.count >= 3, area > 0 else { return ring }
-        if let rect = minAreaRect(hull), area / (rect.width * rect.height) >= rectangularity {
+        if var rect = minAreaRect(hull), area / (rect.width * rect.height) >= rectangularity {
+            // The hull includes the mask's outermost stray pixels; pull the edge in by a pixel.
+            rect.width = max(2, rect.width - 2)
+            rect.height = max(2, rect.height - 2)
             return roundedRect(rect, radius: min(rect.width, rect.height) * 0.18)
         }
         if area / abs(signedArea(hull)) >= solidity {

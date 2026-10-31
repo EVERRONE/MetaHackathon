@@ -73,10 +73,12 @@ public enum Cue: Equatable, Sendable {
     case state([String: String])
     case locate(x: Int, y: Int, label: String?)
     case needView(reason: String, hint: String?)
+    /// A durable fact to remember for the rest of the session, e.g. computer = Mac.
+    case remember(key: String, value: String, source: String)
 
     public var isDrawn: Bool {
         switch self {
-        case .state, .locate, .needView: return false
+        case .state, .locate, .needView, .remember: return false
         default: return true
         }
     }
@@ -90,8 +92,25 @@ public enum Cue: Equatable, Sendable {
             return ms
         case .danger(let m, _):
             return m.map { [$0] } ?? []
-        case .clear, .state, .locate, .needView:
+        case .clear, .state, .locate, .needView, .remember:
             return []
+        }
+    }
+
+    /// The same cue with its mark numbers changed, e.g. to keep marks of different looks apart.
+    public func mappingMarks(_ f: (Int) -> Int) -> Cue {
+        switch self {
+        case .outline(let m): return .outline(mark: f(m))
+        case .ring(let m, let l): return .ring(mark: f(m), label: l)
+        case .candidates(let ms): return .candidates(marks: ms.map(f))
+        case .move(let m, let d): return .move(mark: f(m), direction: d)
+        case .rotate(let m, let d, let a): return .rotate(mark: f(m), direction: d, amount: a)
+        case .place(let m): return .place(mark: f(m))
+        case .sequence(let ms): return .sequence(marks: ms.map(f))
+        case .danger(let m, let r): return .danger(mark: m.map(f), reason: r)
+        case .offscreen(let m): return .offscreen(mark: f(m))
+        case .verified(let m): return .verified(mark: f(m))
+        case .clear, .state, .locate, .needView, .remember: return self
         }
     }
 }
@@ -157,6 +176,10 @@ extension Cue {
             return .success(.locate(x: x, y: y, label: a["label"]))
         case "need_view", "needview":
             return .success(.needView(reason: a["reason"] ?? "unclear", hint: a["hint"]))
+        case "remember":
+            guard let key = a["key"]?.trimmingCharacters(in: .whitespaces), !key.isEmpty,
+                  let value = a["value"]?.trimmingCharacters(in: .whitespaces), !value.isEmpty else { return fail("needs key and value") }
+            return .success(.remember(key: key.lowercased(), value: value, source: (a["from"] ?? a["source"] ?? "said").lowercased()))
         default:
             return fail("unknown cue")
         }
