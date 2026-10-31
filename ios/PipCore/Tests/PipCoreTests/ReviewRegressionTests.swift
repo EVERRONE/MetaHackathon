@@ -203,5 +203,8 @@ private func gated() -> Procedure {
         let events = p.feed(#"Press [[ring at=498,534 obj="button" text="II" on="Remote Control"]] the pause key."#) + p.finish()
         let targets = events.compactMap { e -> TargetSpec? in if case .target(_, let spec) = e { return spec } else { return nil } }
         #expect(targets.first?.on == "remote control")
+        // The cue itself still comes through, bound to its sentence.
+        let sentences = events.compactMap { e -> SpokenSentence? in if case .sentence(let s) = e { return s } else { return nil } }
+        #expect(sentences.first?.cues.count == 1)
     }
 }

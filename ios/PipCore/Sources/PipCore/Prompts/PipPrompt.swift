@@ -2,7 +2,7 @@ import Foundation
 
 /// Spark prompts. The system prompt is a stable prefix, so it is served from the prompt cache.
 public enum PipPrompt {
-    public static let version = "look-v12"
+    public static let version = "look-v13"
 
     /// Live guidance: Spark points by position and printed text; the app finds the exact outline.
     public static func system(language: String) -> String {
