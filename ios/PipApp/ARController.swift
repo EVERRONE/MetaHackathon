@@ -233,6 +233,30 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     // MARK: Locking outlines to their object (ARKit image tracking)
 
+    private var lockChecks: [Int: (count: Int, last: TimeInterval)] = [:]
+
+    /// A locked, tracked mark with a cue on screen, due for an accuracy check: its outline's box in
+    /// this snapshot (where the lock draws it, in the same frame) and how far away it is.
+    func lockCheckCandidate(in snapshot: FrameSnapshot) -> (id: Int, box: CGRect, centre: CGPoint, distance: Float)? {
+        let now = CACurrentMediaTime()
+        let shown = Set(board.annotations.flatMap { $0.cue.marks })
+        for lock in imageLocks.values where lock.tracked && shown.contains(lock.markID) {
+            let id = lock.markID
+            let state = lockChecks[id] ?? (0, 0)
+            guard state.count < 20, now - state.last > 3, let m = marks[id] else { continue }
+            let pts = m.polygons.flatMap { $0 }.compactMap(snapshot.project)
+            guard pts.count >= 3 else { continue }
+            let xs = pts.map(\.x), ys = pts.map(\.y)
+            let box = CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
+            guard box.width > 3, CGRect(x: 0, y: 0, width: snapshot.image.width, height: snapshot.image.height).contains(box),
+                  let centre = snapshot.project(m.centroid) else { continue }
+            let cam = snapshot.cameraTransform.columns.3
+            lockChecks[id] = (state.count + 1, now)
+            return (id, box, centre, simd_distance(simd_float3(cam.x, cam.y, cam.z), m.centroid))
+        }
+        return nil
+    }
+
     /// Hands ARKit a reference image of the object a mark is on; once ARKit has checked it has
     /// enough texture, it follows the object and the mark goes with it.
     func lock(markID: Int, image: CGImage, physicalWidth: CGFloat, local: [[simd_float3]]) {

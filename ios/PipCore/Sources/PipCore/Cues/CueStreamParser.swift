@@ -53,6 +53,11 @@ public struct CueStreamParser: Sendable {
     private var held: SpokenSentence?
     /// Dropping the rest of a runaway tag until its "]]".
     private var skipping = false
+    /// Where in the current sentence's text each target's words begin ("[[ring …]] the power
+    /// symbol"), and those words once known: what the model says the object is, used to check
+    /// buttons that have no printed text.
+    private var describing: [Int: Int] = [:]
+    public private(set) var descriptions: [Int: String] = [:]
 
     /// Longer than any real tag: a `[[` this far from its `]]` is not a tag.
     static let maxTagLength = 400
@@ -60,6 +65,7 @@ public struct CueStreamParser: Sendable {
     public init() {}
 
     public mutating func feed(_ delta: String) -> [CueStreamEvent] {
+        defer { updateDescriptions() }
         pending += delta
         var events: [CueStreamEvent] = []
         while !pending.isEmpty {
@@ -103,6 +109,7 @@ public struct CueStreamParser: Sendable {
 
     /// Flushes the rest of the stream as a final sentence.
     public mutating func finish() -> [CueStreamEvent] {
+        defer { updateDescriptions() }
         var events: [CueStreamEvent] = []
         if !pending.isEmpty && !skipping {
             if pending.hasPrefix("[[") {
@@ -163,7 +170,7 @@ public struct CueStreamParser: Sendable {
         for pair in at.split(separator: ";").prefix(many ? 6 : 1) {
             let xy = pair.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
             guard xy.count == 2, (0...1000).contains(xy[0]), (0...1000).contains(xy[1]) else { return nil }
-            let spec = TargetSpec(x: xy[0], y: xy[1], phrase: phrase, text: text, on: on)
+            let spec = TargetSpec(x: xy[0], y: xy[1], phrase: phrase, text: text, on: on, small: tag.name == "ring")
             // The same object named again: same kind, same printed text, about the same place.
             // Different texts are different objects, however close (Ctrl and Fn).
             if let same = targets.first(where: { t in
@@ -174,6 +181,7 @@ public struct CueStreamParser: Sendable {
             } else {
                 let id = targets.count + 1
                 targets.append((id, spec))
+                describing[id] = self.text.utf16.count
                 events.append(.target(id: id, spec: spec))
                 ids.append(id)
             }
@@ -229,7 +237,25 @@ public struct CueStreamParser: Sendable {
         return nil
     }
 
+    /// The words after each open target's tag, up to the end of its sentence (at most 12).
+    private mutating func updateDescriptions() {
+        let units = Array(text.utf16)
+        for (id, start) in describing where start <= units.count {
+            let tail = String(decoding: units[start...], as: UTF16.self)
+            let clause = tail.split(whereSeparator: { ".!?…\n".contains($0) }).first.map(String.init) ?? tail
+            var parts = clause.split(whereSeparator: \.isWhitespace).prefix(12).map(String.init)
+            // Trailing words about the action, not the object ("the power symbol there once").
+            let filler: Set<String> = ["there", "here", "once", "twice", "now", "again", "together", "down", "first", "then",
+                                       "briefly", "gently", "firmly", "quickly", "too", "daar", "hier", "eens", "nu", "opnieuw", "samen", "even"]
+            while let last = parts.last, filler.contains(last.lowercased().trimmingCharacters(in: .punctuationCharacters)) { parts.removeLast() }
+            let words = parts.joined(separator: " ")
+            if !words.isEmpty { descriptions[id] = words }
+            if clause.count < tail.count { describing[id] = nil }
+        }
+    }
+
     private mutating func emitSentence(upTo end: String.Index, into events: inout [CueStreamEvent]) {
+        updateDescriptions()
         let head = String(text[..<end])
         let rest = String(text[end...])
         let headUTF16 = head.utf16.count
@@ -248,6 +274,8 @@ public struct CueStreamParser: Sendable {
         let restLeading = rest.prefix(while: { $0.isWhitespace })
         let consumed = headUTF16 + restLeading.utf16.count
         text = String(rest.dropFirst(restLeading.count))
+        // Targets of this sentence are described; those of the next keep their place in it.
+        for (id, start) in describing { describing[id] = start >= consumed ? start - consumed : nil }
 
         if trimmed.isEmpty {
             // Nothing to speak: carry the cues over to the next sentence's first word.

@@ -19,9 +19,12 @@ if args.first == "ground", args.count >= 5 {
     let env = ProcessInfo.processInfo.environment
     guard let data = FileManager.default.contents(atPath: args[1]), let frame = SetOfMarks.load(data) else { fail("cannot read \(args[1])") }
     let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
-    let spec = TargetSpec(x: Double(args[2])!, y: Double(args[3])!, phrase: args[4], text: args.count > 5 ? CueTag.alternatives(args[5]) : [])
+    // ground <image> <x> <y> <phrase> [text or -] [description] [small]
+    let text = args.count > 5 && args[5] != "-" ? CueTag.alternatives(args[5]) : []
+    let description = args.count > 6 ? args[6] : nil
+    let spec = TargetSpec(x: Double(args[2])!, y: Double(args[3])!, phrase: args[4], text: text, small: args.count > 7 && args[7] == "small")
     let t0 = Date()
-    let r = await Grounder(client: client, frameJPEG: SetOfMarks.jpeg(frame)!).ground(spec, id: 1, frame: frame)
+    let r = await Grounder(client: client, frameJPEG: SetOfMarks.jpeg(frame)!).ground(spec, id: 1, frame: frame, describe: { description })
     print(String(format: "%.2fs", Date().timeIntervalSince(t0)), r.method, r.instance.map { "box \($0.box) conf \($0.confidence)" } ?? "nil")
     exit(0)
 }

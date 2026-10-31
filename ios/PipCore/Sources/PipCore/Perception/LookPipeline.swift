@@ -134,6 +134,8 @@ public struct LookPipeline: Sendable {
         chat.model = model
         // The frame is at most 1280 px already, so Spark and SAM can share one encoding.
         let grounder = Grounder(client: client, frameJPEG: context)
+        // What the model says each target is, as its words stream in (for objects without text).
+        let notes = TargetNotes()
         let (inputs, feed) = AsyncStream<Input>.makeStream()
         let chatTask = Task {
             do {
@@ -171,7 +173,7 @@ public struct LookPipeline: Sendable {
                 case .target(let id, let spec):
                     emit(.target(id: id, spec: spec))
                     groundTasks.append(Task {
-                        let r = await grounder.ground(spec, id: id, frame: frame)
+                        let r = await grounder.ground(spec, id: id, frame: frame, describe: { notes.get(id) })
                         feed.yield(.grounded(id, r))
                     })
                 case .sentence(let s):
@@ -211,6 +213,7 @@ public struct LookPipeline: Sendable {
                 firstToken = firstToken ?? since(t0)
                 raw += text
                 handle(parser.feed(text))
+                notes.set(parser.descriptions)
             case .chat(.usage(let u)):
                 usage = u
             case .chat(.finished):
@@ -218,6 +221,7 @@ public struct LookPipeline: Sendable {
             case .chatEnded(let error):
                 if let error { throw LookError.chat(error) }
                 handle(parser.finish())
+                notes.set(parser.descriptions)
                 chatDone = true
             case .grounded(let id, let result):
                 resolved.insert(id)
@@ -237,4 +241,19 @@ public struct LookPipeline: Sendable {
 public enum LookError: Error {
     case encoding
     case chat(String)
+}
+
+/// The model's words for each target, shared with the grounding tasks.
+final class TargetNotes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var notes: [Int: String] = [:]
+
+    func set(_ all: [Int: String]) {
+        lock.lock(); notes = all; lock.unlock()
+    }
+
+    func get(_ id: Int) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return notes[id]
+    }
 }

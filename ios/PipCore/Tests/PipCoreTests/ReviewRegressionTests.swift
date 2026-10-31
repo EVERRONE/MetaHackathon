@@ -208,3 +208,14 @@ private func gated() -> Procedure {
         #expect(sentences.first?.cues.count == 1)
     }
 }
+
+@Suite struct TargetDescriptionTests {
+    @Test func theWordsAfterATagDescribeItsObject() {
+        var p = CueStreamParser()
+        _ = p.feed("Your finger is on [[outline at=496,423 obj=\"button\"]] the play triangle, left of the 180 ")
+        _ = p.feed("degrees. So press [[ring at=474,529 obj=\"button\"]] the power symbol there once. Done.")
+        _ = p.finish()
+        #expect(p.descriptions[1] == "the play triangle, left of the 180 degrees")
+        #expect(p.descriptions[2] == "the power symbol")
+    }
+}

@@ -138,7 +138,31 @@ extension GuideModel {
     /// comes back into view it is found again from scratch (the full grounding, with its printed
     /// text), and the drift that shows is applied to the other objects in the room; from a new
     /// viewpoint it is re-measured and fused, so its position gets firmer with every view.
+    /// While an outline is locked to its object, measures every few seconds how far it is from the
+    /// object in the same camera frame (SAM measures the object afresh where the lock draws it),
+    /// in pixels and millimetres: the evidence that the lock holds, also while the object moves.
+    private func lockCheck() async -> Bool {
+        guard !lookActive, let snapshot = ar.snapshot(), let c = ar.lockCheckCandidate(in: snapshot) else { return false }
+        let grounder = Grounder(client: client, frameJPEG: Data())
+        guard let inst = await grounder.reground(box: c.box, id: c.id, frame: snapshot.image),
+              Self.sameObject(expected: c.box, found: inst.boxRect, reason: .check) else {
+            log("lock check mark \(c.id % 1000): not measured")
+            return true
+        }
+        let px = hypot(inst.centre.x - c.centre.x, inst.centre.y - c.centre.y)
+        let focal = CGFloat(snapshot.intrinsics[0][0]) * CGFloat(snapshot.image.height) / snapshot.sensorSize.width
+        let mm = px * CGFloat(c.distance) / focal * 1000
+        log(String(format: "lock check mark %d: %.1f px = %.1f mm off at %.2f m", c.id % 1000, px, mm, c.distance))
+        return true
+    }
+
     private func refreshTick() async {
+        if !refreshing {
+            refreshing = true
+            let checked = await lockCheck()
+            refreshing = false
+            if checked { return }
+        }
         guard !refreshing, !lookActive, ar.trackingNormal, ar.hasPointedMarks, let snapshot = ar.snapshot() else { return }
         let candidates = ar.remeasureCandidates(in: snapshot, taskActive: runtime?.isActive == true)
         guard !candidates.isEmpty else { return }

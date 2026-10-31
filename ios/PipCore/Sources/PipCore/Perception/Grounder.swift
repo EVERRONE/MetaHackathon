@@ -14,13 +14,16 @@ public struct TargetSpec: Equatable, Sendable {
     /// The object a small target is part of ("remote control" for a key on it): Pip locks the
     /// outline to that object in 3D, so it stays on the key when the remote moves.
     public var on: String?
+    /// A small target (a ring: a key, a button, an LED), not a whole object.
+    public var small = false
 
-    public init(x: Double, y: Double, phrase: String, text: [String] = [], on: String? = nil) {
+    public init(x: Double, y: Double, phrase: String, text: [String] = [], on: String? = nil, small: Bool = false) {
         self.x = x
         self.y = y
         self.phrase = phrase
         self.text = text
         self.on = on
+        self.small = small
     }
 
     public func point(in size: CGSize) -> CGPoint {
@@ -52,7 +55,9 @@ public struct Grounder: Sendable {
         self.wholeFrame = WholeFrameSegments(client: client, jpeg: frameJPEG)
     }
 
-    public func ground(_ spec: TargetSpec, id: Int, frame: CGImage) async -> GroundingResult {
+    /// `describe`: what the model said the object is ("the power symbol"), once its words are in;
+    /// used to check objects without printed text.
+    public func ground(_ spec: TargetSpec, id: Int, frame: CGImage, describe: (@Sendable () -> String?)? = nil) async -> GroundingResult {
         let t0 = Date()
         let size = CGSize(width: frame.width, height: frame.height)
         let p = spec.point(in: size)
@@ -66,7 +71,12 @@ public struct Grounder: Sendable {
         let local = CGPoint(x: (p.x - region.minX) * scale, y: (p.y - region.minY) * scale)
         let object = SegmentObjectPrompt(id: 1, points: [.init(x: min(max(Int(local.x), 0), crop.width - 1), y: min(max(Int(local.y), 0), crop.height - 1))])
 
-        async let segmented = Result { try await client.segment(SegmentRequest(jpeg: jpeg, prompts: [spec.phrase], objects: [object], width: crop.width, height: crop.height, minConfidence: 0.25, maxInstances: 120)) }
+        // A small target may be a printed symbol (a power icon on a panel) rather than a part of
+        // its own: SAM also looks for icons around it.
+        // Only for targets without printed text: on keys, SAM would find the printed letters.
+        let iconLike = spec.small && spec.text.isEmpty
+        let prompts = iconLike && spec.phrase != "icon" ? [spec.phrase, "icon"] : [spec.phrase]
+        async let segmented = Result { try await client.segment(SegmentRequest(jpeg: jpeg, prompts: prompts, objects: [object], width: crop.width, height: crop.height, minConfidence: 0.25, maxInstances: 120)) }
         async let whole = wholeFrame.instances(for: spec.phrase)
         let debug = ProcessInfo.processInfo.environment["PIP_DEBUG_GROUND"] != nil
         // Text recognition runs alongside SAM: the fast pass always (≈0.05 s), the accurate pass
@@ -134,17 +144,29 @@ public struct Grounder: Sendable {
             method = "nearest"
         }
 
-        // Look-alikes around a point the text could not confirm (small keys, rows of breakers):
-        // ask Spark to pick between them on an enlarged crop.
-        if let current = chosen, method != "text", !spec.text.isEmpty {
+        // Look-alikes around a point the text could not confirm (small keys, rows of breakers), or
+        // an object without printed text that the model described ("the power symbol"): ask Spark
+        // to pick between them on an enlarged crop, by the printed text or the description.
+        let description = spec.text.isEmpty ? describe?() : nil
+        if let current = chosen, method != "text", !spec.text.isEmpty || description != nil {
             // An outsized pick (the space bar for a key) is compared with objects of the usual size.
             let reference = min(Double(current.area), 2.5 * typical * typical)
-            let lookalikes = concept
+            var lookalikes = concept
                 .filter { $0.id != current.id && Double($0.area) > 0.4 * reference && Double($0.area) < 2.5 * reference }
                 .filter { Grounding.distance(local, $0.boxRect) <= 2.2 * reach }
                 .sorted { Grounding.distance(local, $0.boxRect) < Grounding.distance(local, $1.boxRect) }
-            if !lookalikes.isEmpty {
-                switch await verify(spec, candidates: [current] + lookalikes.prefix(10), in: crop) {
+            // A small target may hide inside a bigger pick (the power symbol on a shaver's panel):
+            // smaller things under or next to the point are candidates too, and SAM's own mask
+            // for the point.
+            if iconLike {
+                let inner = (concept + instances.filter { $0.objectId == 1 })
+                    .filter { $0.id != current.id && Double($0.area) < 0.6 * Double(current.area) && Double($0.area) > 0.02 * Double(current.area) }
+                    .filter { Grounding.distance(local, $0.boxRect) <= reach }
+                    .filter { inner in !lookalikes.contains { $0.id == inner.id } }
+                lookalikes += inner.prefix(4)
+            }
+            if !lookalikes.isEmpty || description != nil {
+                switch await verify(spec, description: description, candidates: [current] + lookalikes.prefix(10), in: crop) {
                 case .picked(let picked):
                     method = picked.id == current.id ? "verified" : "verified (moved)"
                     chosen = picked
@@ -262,7 +284,7 @@ public struct Grounder: Sendable {
         return inter / (Double(a.width * a.height) + Double(b.width * b.height) - inter)
     }
 
-    func verify(_ spec: TargetSpec, candidates: [SegmentInstance], in image: CGImage) async -> Verdict {
+    func verify(_ spec: TargetSpec, description: String? = nil, candidates: [SegmentInstance], in image: CGImage) async -> Verdict {
         let numbered = candidates.enumerated().map { $0.element.renumbered($0.offset + 1) }
         var area = numbered.reduce(CGRect.null) { $0.union($1.boxRect) }
         let pad = max(area.width, area.height) * 0.25 + 12
@@ -272,7 +294,12 @@ public struct Grounder: Sendable {
               let marked = SetOfMarks.render(view, instances: numbered.map { $0.mapped(into: area, scale: zoom) }),
               let jpeg = SetOfMarks.jpeg(marked, quality: 0.85) else { return .failed }
         let printed = spec.text.joined(separator: " / ")
-        let question = "Which numbered \(spec.phrase) has \(printed) printed on it? Read the printed characters on each numbered \(spec.phrase) carefully. Answer with its number, or 0 if none of them does."
+        let question: String
+        if let description, spec.text.isEmpty {
+            question = "The user must use \"\(description)\" (a \(spec.phrase)). Which numbered outline contains exactly that? The numbers are labels next to the outlines; look at what is inside each outline. Answer with its number, or 0 if none of them does."
+        } else {
+            question = "Which numbered \(spec.phrase) has \(printed) printed on it? Read the printed characters on each numbered \(spec.phrase) carefully. Answer with its number, or 0 if none of them does."
+        }
         let schema: JSONValue = .object([
             "type": .string("object"),
             "properties": .object(["mark": .object(["type": .string("integer")])]),
