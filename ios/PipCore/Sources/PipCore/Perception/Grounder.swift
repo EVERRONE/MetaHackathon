@@ -184,6 +184,35 @@ public struct Grounder: Sendable {
         return out
     }
 
+    /// The object named `phrase` ("keys", "cup") at a point of an image (an earlier snapshot):
+    /// SAM looks for that kind of object in the region around the point, and the instance under
+    /// the point (or nearest, within about a hand's width in the image) is it. nil when SAM finds
+    /// no such object there: then it was a different thing, and Pip does not point.
+    public func object(named phrase: String, at point: CGPoint, in image: CGImage, id: Int) async -> SegmentInstance? {
+        guard !phrase.isEmpty else { return nil }
+        let size = CGSize(width: image.width, height: image.height)
+        // Close up first (small things like keys), then the whole image (a laptop, a chair).
+        for fraction in [0.4, 1.0] {
+            let side = max(size.width, size.height) * fraction
+            let region = CGRect(x: point.x - side / 2, y: point.y - side / 2, width: side, height: side).intersection(CGRect(origin: .zero, size: size)).integral
+            let scale = min(2.0, 1024 / max(region.width, region.height))
+            guard let crop = SetOfMarks.crop(image, to: region, scale: scale), let jpeg = SetOfMarks.jpeg(crop, quality: 0.85),
+                  let seg = try? await client.segment(SegmentRequest(jpeg: jpeg, prompts: [phrase], width: crop.width, height: crop.height, minConfidence: 0.3, maxInstances: 40))
+            else { continue }
+            let local = CGPoint(x: (point.x - region.minX) * scale, y: (point.y - region.minY) * scale)
+            let reach = 0.08 * Double(max(crop.width, crop.height))
+            let maxArea = (fraction < 1 ? 0.5 : 0.8) * Double(crop.width * crop.height)
+            let candidates = seg.instances.filter { Double($0.area) < maxArea }
+            let hit = candidates.filter { Grounding.contains($0, local) }.min { $0.area < $1.area }
+                ?? candidates.filter { Grounding.distance(local, $0.boxRect) < reach }.min { Grounding.distance(local, $0.boxRect) < Grounding.distance(local, $1.boxRect) }
+            guard var inst = hit?.unmapped(from: region, scale: scale) else { continue }
+            inst.id = id
+            inst.objectId = nil
+            return inst
+        }
+        return nil
+    }
+
     /// SAM's mask for the object at a point of an image (an earlier snapshot).
     public func object(at point: CGPoint, in image: CGImage, id: Int) async -> SegmentInstance? {
         guard let jpeg = SetOfMarks.jpeg(image, quality: 0.85) else { return nil }

@@ -45,8 +45,10 @@ extension GuideModel {
                 }
                 guard let image = UIImage(data: readable[s.index].1)?.cgImage else { continue }
                 let point = CGPoint(x: s.x / 1000 * Double(frame.width), y: s.y / 1000 * Double(frame.height))
-                // Confirmation: SAM has to find an object there, with depth to place it in the room.
-                let confirmed = await grounder.object(at: point, in: image, id: 1)
+                // Confirmation: SAM has to find that kind of object there (not just anything), with
+                // depth to place it in the room.
+                let confirmed = phrase.isEmpty ? await grounder.object(at: point, in: image, id: 1)
+                    : await grounder.object(named: phrase, at: point, in: image, id: 1)
                 if Task.isCancelled { return }
                 guard let inst = confirmed, let depth = frame.depth(atPixel: inst.centre) ?? frame.depth(atPixel: point) else {
                     log("sighting not confirmed")

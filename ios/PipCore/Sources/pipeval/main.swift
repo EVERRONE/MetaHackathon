@@ -26,6 +26,18 @@ if args.first == "ground", args.count >= 5 {
 }
 
 // pipeval listen <16 kHz wav>: streams it through the live transcription relay at real-time pace.
+// pipeval confirm <image.jpg> <phrase> <x 0-1000> <y 0-1000>: is that kind of object at that point?
+if args.first == "confirm", args.count >= 5 {
+    let env = ProcessInfo.processInfo.environment
+    let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
+    guard let data = FileManager.default.contents(atPath: args[1]), let image = SetOfMarks.load(data) else { fail("cannot read \(args[1])") }
+    let p = CGPoint(x: Double(args[3])! / 1000 * Double(image.width), y: Double(args[4])! / 1000 * Double(image.height))
+    let t0 = Date()
+    let inst = await Grounder(client: client, frameJPEG: Data()).object(named: args[2], at: p, in: image, id: 1)
+    print(String(format: "%.1fs  %@", Date().timeIntervalSince(t0), inst.map { "found \(args[2]): box \($0.box), confidence \(String(format: "%.2f", $0.confidence))" } ?? "no \(args[2]) there"))
+    exit(0)
+}
+
 if args.first == "listen", args.count >= 2 {
     let env = ProcessInfo.processInfo.environment
     guard let wav = FileManager.default.contents(atPath: args[1]) else { fail("cannot read \(args[1])") }
