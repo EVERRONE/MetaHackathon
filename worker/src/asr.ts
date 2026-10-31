@@ -87,6 +87,8 @@ export function relayAsr(apiKey: string, onEnd: (seconds: number) => void): Resp
   const pair = new WebSocketPair();
   const client = pair[0];
   const server = pair[1];
+  // Recent runtimes deliver binary frames as Blob by default; PCM must stay an ArrayBuffer.
+  server.binaryType = "arraybuffer";
   server.accept();
 
   let upstream: WebSocket | null = null;
@@ -130,6 +132,7 @@ export function relayAsr(apiKey: string, onEnd: (seconds: number) => void): Resp
       end();
       return;
     }
+    ws.binaryType = "arraybuffer";
     ws.accept();
     ws.send(JSON.stringify(config));
     ws.addEventListener("message", (e) => {
