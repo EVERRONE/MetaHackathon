@@ -342,9 +342,12 @@ extension GuideModel {
         } else if let product {
             preparing = phrases.searching(product)
             say(phrases.searching(product))
-            let manual = try? await compiler.findManual(for: product)
+            // The task says what kind of device it is ("use steam on this iron"): it helps the
+            // search when the product is only a brand and range ("Philips Azur").
+            let found = try? await compiler.findSource(for: "\(product), for this task: \(goal)")
             if Task.isCancelled { preparing = nil; return }
-            if let manual {
+            log("manual search for \(product): \(found?.note ?? "the search failed")")
+            if let manual = found?.manual {
                 source = .manual(manual)
                 preparing = phrases.reading(manual.publisher)
                 say(phrases.reading(manual.publisher))
@@ -387,7 +390,7 @@ extension GuideModel {
         refreshTaskView()
         if let note = compiled.mismatch { say(phrases.mismatch(note)) }
         offering = true
-        say(phrases.offer(compiled.procedure.steps.count, verified: compiled.procedure.source.verified))
+        say(phrases.offer(compiled.procedure.steps.count, source: compiled.procedure.source.kind))
     }
 
     func startTask(heard: String) async {
@@ -439,7 +442,9 @@ extension GuideModel {
         }
         let finished = rt.mode == .finished
         taskView = TaskView(title: rt.procedure.title,
-                            source: rt.procedure.source.verified ? (rt.procedure.source.reference ?? "") : (language == "Dutch" ? "Geen gecontroleerde bron" : "Not from a verified source"),
+                            source: rt.procedure.source.verified ? (rt.procedure.source.reference ?? "")
+                                : rt.procedure.source.kind == .web ? (language == "Dutch" ? "Van het web, niet gecontroleerd: " : "From the web, not verified: ") + (rt.procedure.source.reference ?? "")
+                                : (language == "Dutch" ? "Geen gecontroleerde bron" : "Not from a verified source"),
                             steps: steps, index: rt.index, finished: finished,
                             report: finished ? sessionLog.report(for: rt) : taskView?.report)
     }

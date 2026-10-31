@@ -1,4 +1,5 @@
 import Foundation
+import PipCore
 
 /// Fixed sentences Pip says during a task, in the conversation language. They come from the
 /// runtime, not from a model, so they are instant and always the same.
@@ -14,13 +15,20 @@ struct Phrases {
         dutch ? "Gevonden, bij \(publisher). Ik lees de handleiding en maak een stappenplan." : "Found it, from \(publisher). I'm reading it and making a step plan."
     }
     var noManual: String {
-        dutch ? "Ik vind geen officiële handleiding. Ik maak een plan uit algemene kennis, niet uit een gecontroleerde bron."
-              : "I can't find an official manual. I'll make a plan from general knowledge, not from a verified source."
+        dutch ? "Ik vind geen officiële handleiding. Ik zoek verder online en maak er een plan van, niet uit een gecontroleerde bron."
+              : "I can't find an official manual. I'll search further online and make a plan, not from a verified source."
     }
     var drafting: String { dutch ? "Ik maak een stappenplan." : "I'm making a step plan." }
-    func offer(_ steps: Int, verified: Bool) -> String {
-        dutch ? "Het plan heeft \(steps) stappen\(verified ? ", uit de officiële handleiding" : ""). Zullen we beginnen?"
-              : "The plan has \(steps) steps\(verified ? ", from the official manual" : ""). Shall we start?"
+    func offer(_ steps: Int, source: Procedure.SourceKind) -> String {
+        let from: String
+        switch source {
+        case .pdf: from = dutch ? ", uit de officiële handleiding" : ", from the official manual"
+        case .page: from = dutch ? ", van de officiële supportpagina" : ", from the official support page"
+        case .web: from = dutch ? ", uit wat ik online vond (niet gecontroleerd)" : ", from what I found online (not verified)"
+        case .images, .text: from = dutch ? ", uit jouw instructies" : ", from your instructions"
+        case .none: from = ""
+        }
+        return dutch ? "Het plan heeft \(steps) stappen\(from). Zullen we beginnen?" : "The plan has \(steps) steps\(from). Shall we start?"
     }
     func mismatch(_ note: String) -> String { dutch ? "Let op: \(note)" : "Note: \(note)" }
     var manualUnreadable: String {

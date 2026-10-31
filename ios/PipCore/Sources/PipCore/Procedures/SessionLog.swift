@@ -25,7 +25,9 @@ public struct SessionLog: Codable, Sendable {
     public func report(for runtime: ProcedureRuntime) -> String {
         let procedure = runtime.procedure
         var lines = ["Task: \(procedure.title)", "Goal: \(procedure.goal)",
-                     "Source: " + (procedure.source.verified ? (procedure.source.reference ?? procedure.source.kind.rawValue) : "none (drafted by Pip, not from a verified source)"), ""]
+                     "Source: " + (procedure.source.verified ? (procedure.source.reference ?? procedure.source.kind.rawValue)
+                        : procedure.source.kind == .web ? "web pages, not verified: \(procedure.source.reference ?? "")"
+                        : "none (drafted by Pip, not from a verified source)"), ""]
         for (i, step) in procedure.steps.enumerated() {
             let status: String
             switch runtime.statuses[i] {

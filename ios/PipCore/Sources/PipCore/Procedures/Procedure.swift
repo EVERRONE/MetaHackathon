@@ -3,15 +3,17 @@ import Foundation
 /// A guided task: what to do, on which objects, and how each step is checked.
 /// Compiled from the user's goal and an optional source (photos, PDF, text), or drafted without one.
 public struct Procedure: Codable, Equatable, Sendable {
-    public enum SourceKind: String, Codable, Sendable { case images, pdf, text, none }
+    /// `page`: the manufacturer's own web page; `web`: found by searching the web (not verified).
+    public enum SourceKind: String, Codable, Sendable { case images, pdf, page, text, web, none }
 
     public struct Source: Codable, Equatable, Sendable {
         public var kind: SourceKind
         /// What the source is, e.g. "manual page 12" or the user's own words.
         public var reference: String?
 
-        /// Only a procedure taken from a source the user gave counts as verified.
-        public var verified: Bool { kind != .none }
+        /// Only a procedure taken from the user's own instructions or the manufacturer's counts as
+        /// verified; one drafted from web search results or general knowledge does not.
+        public var verified: Bool { kind != .none && kind != .web }
 
         public init(kind: SourceKind, reference: String? = nil) {
             self.kind = kind
