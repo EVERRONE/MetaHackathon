@@ -3,7 +3,11 @@
   "name": "pip",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
-  "routes": [{ "pattern": "pip.unveil.be", "custom_domain": true }],
+  "routes": [
+    { "pattern": "pip.unveil.be", "custom_domain": true },
+    // The zone also has a *.unveil.be/* route for other demos; this more specific one wins.
+    { "pattern": "pip.unveil.be/*", "zone_name": "unveil.be" }
+  ],
   "workers_dev": false,
   "observability": { "enabled": true },
   "vars": {
