@@ -8,3 +8,8 @@ Pip.xcodeproj/
 build/
 build-check/
 build-release/
+
+# Preview images pipeval writes next to where it runs: never commit (they show the user's home).
+PipCore/cues.jpg
+PipCore/*.jpg
+PipCore/*.png
