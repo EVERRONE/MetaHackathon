@@ -84,6 +84,19 @@ final class GuideModel: ObservableObject {
     var sessionLog = SessionLog()
     var offering = false
     var pendingTask: (goal: String, product: String?)?
+
+    // MARK: Watching, following objects, speakers (see GuideModel+Watch.swift)
+
+    /// The speaker label of the person Pip talks with; others are ignored unless they say "Pip".
+    var primarySpeaker: String?
+    @Published var watching = false
+    var watchTimer: Timer?
+    var refreshTimer: Timer?
+    var watchHits = 0
+    var watchStep = -1
+    var watchChecks = 0
+    var checking = false
+    var refreshing = false
     /// Speech started while Pip was busy; Pip stops once it is clearly the user (see `handle`).
     private var bargeInPending = false
     private var reconnectDelay: TimeInterval = 0.5
@@ -120,6 +133,7 @@ final class GuideModel: ObservableObject {
         warmTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
             Task.detached(priority: .background) { await Grounder.warmUp() }
         }
+        startWatching()
         AVAudioApplication.requestRecordPermission { granted in
             Task { @MainActor in
                 guard granted else { self.phase = .failed("Microphone access is off"); return }
@@ -161,6 +175,8 @@ final class GuideModel: ObservableObject {
                                       languages: language == "Dutch" ? ["Dutch", "English"] : ["English", "Dutch"])
         transcriber = asr
         audio.sink = asr
+        // Speaker labels start again in every session.
+        primarySpeaker = nil
         if !lookActive && !speaker.isSpeaking { phase = .connecting }
         asr.connect()
         listenTask = Task { [weak self] in
@@ -201,8 +217,9 @@ final class GuideModel: ObservableObject {
             if !busy { heard = text }
         case .speechEnd:
             break
-        case .final(_, let text):
+        case .final(_, let text, let speaker):
             bargeInPending = false
+            guard acceptSpeaker(speaker, text: text) else { return }
             guard !muted, text.count >= 2, !isEcho(text), !busy else {
                 if phase == .hearing { phase = .listening }
                 return
@@ -338,6 +355,7 @@ final class GuideModel: ObservableObject {
         interrupt()
         history = []
         facts = [:]
+        primarySpeaker = nil
         endTask(silently: true)
         caption = ""
         heard = ""

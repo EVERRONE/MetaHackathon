@@ -164,6 +164,26 @@ public struct Grounder: Sendable {
     static let fastTextBudget: TimeInterval = 0.8
     static let accurateTextBudget: TimeInterval = 1.5
 
+    /// Re-measures an object around where it was last seen (a box in frame pixels): SAM segments
+    /// the object under that box on an enlarged crop. Used to follow objects that moved and to
+    /// snap outlines back after the user returns.
+    public func reground(box: CGRect, id: Int, frame: CGImage) async -> SegmentInstance? {
+        let bounds = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
+        let pad = max(box.width, box.height) * 0.6 + 24
+        let region = box.insetBy(dx: -pad, dy: -pad).intersection(bounds).integral
+        guard region.width > 16, region.height > 16 else { return nil }
+        let scale = min(2.5, 1024 / max(region.width, region.height))
+        guard let crop = SetOfMarks.crop(frame, to: region, scale: scale), let jpeg = SetOfMarks.jpeg(crop, quality: 0.85) else { return nil }
+        let local = box.intersection(bounds).offsetBy(dx: -region.minX, dy: -region.minY)
+        let scaled = [Int(local.minX * scale), Int(local.minY * scale), Int(local.maxX * scale), Int(local.maxY * scale)]
+        let prompt = SegmentObjectPrompt(id: 1, box: scaled)
+        guard let seg = try? await client.segment(SegmentRequest(jpeg: jpeg, objects: [prompt], width: crop.width, height: crop.height, minConfidence: 0.3)),
+              let inst = seg.instances.first(where: { $0.objectId == 1 }) else { return nil }
+        var out = inst.unmapped(from: region, scale: scale).renumbered(id)
+        out.objectId = nil
+        return out
+    }
+
     /// Loads the accurate text recognition models, which otherwise take ~25 s on first use after a
     /// pause. Call at launch and every half minute while the app is in use.
     public static func warmUp() async {

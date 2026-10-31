@@ -18,7 +18,7 @@ struct ContentView: View {
 
             VStack(spacing: 12) {
                 HStack {
-                    Text(model.phase.label)
+                    Text(model.watching && model.phase == .listening ? (model.language == "Dutch" ? "Ik kijk mee…" : "Watching your work…") : model.phase.label)
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .background(.black.opacity(0.55), in: Capsule())

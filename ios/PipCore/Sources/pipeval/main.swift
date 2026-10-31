@@ -49,7 +49,7 @@ if args.first == "listen", args.count >= 2 {
     }
     for await e in asr.events {
         print(String(format: "%5.2fs", Date().timeIntervalSince(t0)), e)
-        if case .final = e { break }
+        if case .final = e, !args.contains("--all") { break }
         if case .closed = e { break }
     }
     asr.close()
@@ -111,6 +111,18 @@ if args.first == "plan", args.count >= 2 {
         }
         if !p.cautions.isEmpty { print("cautions: " + p.cautions.joined(separator: " | ")) }
     } catch { fail("compile failed: \(error)") }
+    exit(0)
+}
+
+// pipeval check <image> "<expected>" [x0 y0 x1 y1]: the watching-mode check, optionally on a work area.
+if args.first == "check", args.count >= 3 {
+    let env = ProcessInfo.processInfo.environment
+    guard let data = FileManager.default.contents(atPath: args[1]), let frame = SetOfMarks.load(data) else { fail("cannot read \(args[1])") }
+    let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
+    let focus = args.count >= 7 ? CGRect(x: Double(args[3])!, y: Double(args[4])!, width: Double(args[5])! - Double(args[3])!, height: Double(args[6])! - Double(args[4])!) : nil
+    let t0 = Date()
+    let r = try await StepChecker(client: client).check(frame, expected: args[2], focus: focus)
+    print(String(format: "%.2fs", Date().timeIntervalSince(t0)), r.done ? "DONE" : "not done", String(format: "%.2f", r.confidence), r.seen)
     exit(0)
 }
 

@@ -10,10 +10,23 @@ import simd
 /// the outline falls back to a plane facing the camera at the median depth.
 struct AnchoredMark {
     let id: Int
-    let polygons: [[simd_float3]]
-    let centroid: simd_float3
     /// How the plane was found, for the trace.
     let method: String
+    /// ARKit's correction since the mark was placed: when it relocalises after the user comes
+    /// back into the room, the mark's anchor moves and the outline moves with it.
+    var correction = matrix_identity_float4x4
+    private let rawPolygons: [[simd_float3]]
+    private let rawCentroid: simd_float3
+
+    var polygons: [[simd_float3]] { rawPolygons.map { $0.map(apply) } }
+    var centroid: simd_float3 { apply(rawCentroid) }
+    /// Where the mark was placed, for its ARKit anchor.
+    var placement: simd_float3 { rawCentroid }
+
+    private func apply(_ p: simd_float3) -> simd_float3 {
+        let q = correction * simd_float4(p, 1)
+        return simd_float3(q.x, q.y, q.z)
+    }
     private let lift: (CGPoint) -> simd_float3
     private let imageCentre: CGPoint
     private let imageExtent: CGFloat
@@ -55,8 +68,8 @@ struct AnchoredMark {
         }
 
         id = instance.id
-        polygons = instance.outlinePoints.map { $0.map(lift) }
-        centroid = lift(instance.centre)
+        rawPolygons = instance.outlinePoints.map { $0.map(lift) }
+        rawCentroid = lift(instance.centre)
         imageCentre = instance.centre
         imageExtent = max(box.width, box.height)
         self.lift = lift
@@ -74,7 +87,7 @@ struct AnchoredMark {
         case .right: (dx, dy) = (1, 0)
         case .in, .out: (dx, dy) = (0, 0)
         }
-        return (centroid, lift(CGPoint(x: imageCentre.x + dx * len, y: imageCentre.y + dy * len)))
+        return (centroid, apply(lift(CGPoint(x: imageCentre.x + dx * len, y: imageCentre.y + dy * len))))
     }
 
     // MARK: Depth

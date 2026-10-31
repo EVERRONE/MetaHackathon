@@ -10,8 +10,8 @@ public final class RealtimeTranscriber: NSObject, @unchecked Sendable, URLSessio
         case speechStart(turn: Int)
         case partial(String)
         case speechEnd(turn: Int)
-        /// A finished turn, punctuated.
-        case final(turn: Int, text: String)
+        /// A finished turn, punctuated, with the speaker's label ("A", "B") when diarization is on.
+        case final(turn: Int, text: String, speaker: String?)
         case error(String)
         case closed(code: Int, reason: String)
     }
@@ -25,12 +25,15 @@ public final class RealtimeTranscriber: NSObject, @unchecked Sendable, URLSessio
     private let lock = NSLock()
     private var open = false
     private var currentTurn = 0
+    /// The label of the most recent `speaker` event; it comes just before the turn completes.
+    private var lastSpeaker: String?
     /// Audio captured before the service acknowledged the handshake (at most 10 s).
     private var backlog: [Data] = []
     private var backlogBytes = 0
 
-    /// `sampleRate` is 16 000 or 24 000.
-    public init(baseURL: URL, token: String, sampleRate: Int = 16_000, languages: [String] = ["English", "Dutch"], keywords: [String] = []) {
+    /// `sampleRate` is 16 000 or 24 000. Diarization labels each turn with its speaker, at the same
+    /// latency as plain endpointing (measured), so Pip can keep to the person it talks with.
+    public init(baseURL: URL, token: String, sampleRate: Int = 16_000, languages: [String] = ["English", "Dutch"], keywords: [String] = [], diarization: Bool = true) {
         var components = URLComponents(url: baseURL.appendingPathComponent("v1/asr"), resolvingAgainstBaseURL: false)!
         components.scheme = components.scheme == "http" ? "ws" : "wss"
         var r = URLRequest(url: components.url!)
@@ -38,7 +41,7 @@ public final class RealtimeTranscriber: NSObject, @unchecked Sendable, URLSessio
         request = r
         var hs: [String: Any] = [
             "audioEncoding": sampleRate == 24_000 ? "PCM_24KHZ" : "PCM_16KHZ",
-            "mode": "ENDPOINTING",
+            "mode": diarization ? "DIARIZATION" : "ENDPOINTING",
             "partialMode": "CUMULATIVE",
             "languageBias": languages,
         ]
@@ -134,9 +137,11 @@ public final class RealtimeTranscriber: NSObject, @unchecked Sendable, URLSessio
             if let t = json["transcript"] as? String { continuation.yield(.partial(t.trimmingCharacters(in: .whitespaces))) }
         case "speechEnd":
             continuation.yield(.speechEnd(turn: json["turnId"] as? Int ?? currentTurn))
+        case "speaker":
+            lastSpeaker = json["label"] as? String
         case "speechComplete":
             let t = (json["transcript"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            continuation.yield(.final(turn: json["turnId"] as? Int ?? currentTurn, text: t))
+            continuation.yield(.final(turn: json["turnId"] as? Int ?? currentTurn, text: t, speaker: lastSpeaker))
         case "error":
             continuation.yield(.error(json["message"] as? String ?? text))
         default:

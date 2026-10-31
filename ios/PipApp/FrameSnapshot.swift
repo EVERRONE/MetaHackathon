@@ -65,6 +65,8 @@ struct FrameSnapshot {
     let intrinsics: simd_float3x3
     let cameraTransform: simd_float4x4
     let depth: DepthCopy?
+    /// The camera at capture time, to project world points back into this image.
+    let camera: ARCamera
 
     private static let context = CIContext(options: [.cacheIntermediates: false])
 
@@ -77,6 +79,7 @@ struct FrameSnapshot {
         sensorSize = frame.camera.imageResolution
         intrinsics = frame.camera.intrinsics
         cameraTransform = frame.camera.transform
+        camera = frame.camera
         depth = DepthCopy(frame.smoothedSceneDepth ?? frame.sceneDepth)
     }
 
@@ -85,6 +88,13 @@ struct FrameSnapshot {
     func sensorPoint(_ p: CGPoint) -> CGPoint {
         let s = sensorSize.width / CGFloat(image.height)
         return CGPoint(x: p.y * s, y: sensorSize.height - p.x * s)
+    }
+
+    /// A world point in this image's pixels, or nil when it is behind the camera.
+    func project(_ world: simd_float3) -> CGPoint? {
+        let inCamera = simd_inverse(cameraTransform) * simd_float4(world, 1)
+        guard inCamera.z < -0.01 else { return nil }
+        return camera.projectPoint(world, orientation: .portrait, viewportSize: CGSize(width: image.width, height: image.height))
     }
 
     func depth(atSensor q: CGPoint, minConfidence: UInt8 = 1) -> Float? {
