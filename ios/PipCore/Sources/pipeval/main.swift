@@ -121,8 +121,9 @@ if args.first == "check", args.count >= 3 {
     let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
     let focus = args.count >= 7 ? CGRect(x: Double(args[3])!, y: Double(args[4])!, width: Double(args[5])! - Double(args[3])!, height: Double(args[6])! - Double(args[4])!) : nil
     let t0 = Date()
-    let r = try await StepChecker(client: client).check(frame, expected: args[2], focus: focus)
-    print(String(format: "%.2fs", Date().timeIntervalSince(t0)), r.done ? "DONE" : "not done", String(format: "%.2f", r.confidence), r.seen)
+    let step = StepChecker.StepContext(instruction: ProcessInfo.processInfo.environment["PIP_STEP"] ?? "Do the step.", expected: args[2])
+    let r = try await StepChecker(client: client).check(frame, step: step, focus: focus)
+    print(String(format: "%.2fs", Date().timeIntervalSince(t0)), r.done ? "DONE" : "not done", String(format: "%.2f", r.confidence), r.seen, "| problem:", r.problem.rawValue, String(format: "%.2f", r.problemConfidence), r.problemText)
     exit(0)
 }
 

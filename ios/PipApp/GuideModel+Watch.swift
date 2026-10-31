@@ -56,6 +56,7 @@ extension GuideModel {
             watchStep = rt.index
             watchHits = 0
             watchChecks = 0
+            problemHits = 0
         }
         guard !checking, !lookActive, !speaker.isSpeaking, phase != .hearing, !muted, ar.trackingNormal,
               watchChecks < Self.watchChecksPerStep, let snapshot = ar.snapshot() else { return }
@@ -66,9 +67,30 @@ extension GuideModel {
         let boxes = ar.visibleMarkBoxes(in: snapshot).map(\.box)
         let focus = boxes.isEmpty ? nil : boxes.dropFirst().reduce(boxes[0]) { $0.union($1) }
         let index = rt.index
-        guard let result = try? await StepChecker(client: client).check(snapshot.image, expected: step.check.expected, focus: focus) else { return }
-        log(String(format: "watch step %d: %@ %.2f %@", index + 1, result.done ? "done" : "not yet", result.confidence, result.seen))
+        let next = rt.procedure.steps.indices.contains(index + 1) ? rt.procedure.steps[index + 1].instruction : nil
+        let context = StepChecker.StepContext(instruction: step.instruction, expected: step.check.expected,
+                                              cautions: step.cautions + rt.procedure.cautions, nextInstruction: next)
+        guard let result = try? await StepChecker(client: client).check(snapshot.image, step: context, focus: focus) else { return }
+        log(String(format: "watch step %d: %@ %.2f %@ · problem %@ %.2f %@", index + 1, result.done ? "done" : "not yet", result.confidence, result.seen,
+                   result.problem.rawValue, result.problemConfidence, result.problemText))
         guard let now = runtime, now.index == index, now.statuses[index] == .awaitingAction, !lookActive, !speaker.isSpeaking else { return }
+
+        // A mistake seen twice in a row is checked by Wonder, which corrects the user and points at
+        // the right object, or stays silent when it was a false alarm.
+        if result.problem != .none, result.problemConfidence >= 0.75, !result.done {
+            problemHits = result.problem == lastProblem ? problemHits + 1 : 1
+            lastProblem = result.problem
+        } else {
+            problemHits = 0
+            lastProblem = .none
+        }
+        if problemHits >= 2 {
+            problemHits = 0
+            let problem = result
+            task?.cancel()
+            task = Task { await correct(problem, step: index) }
+            return
+        }
         if result.done && result.confidence >= ProcedureRuntime.minConfidence {
             watchHits += 1
         } else {
@@ -83,6 +105,27 @@ extension GuideModel {
         sessionLog.add(.verified, step: index, "seen while watching: \(result.seen)")
         task?.cancel()
         task = Task { await perform(actions) }
+    }
+
+    /// Wonder looks at the suspected mistake: it interrupts with a correction and points at the right
+    /// object, or says nothing. A confirmed hazard stops the task.
+    private func correct(_ problem: StepChecker.Result, step index: Int) async {
+        guard let snapshot = ar.snapshot() else { return }
+        let directive = """
+        While watching the current step, a quick check thought something is going wrong: "\(problem.problemText)" (\(problem.problem.rawValue)). \
+        Look carefully at the image. If it is really happening, interrupt the user at once in one or two short sentences: \
+        say what is wrong and what to do instead, and point at the right object\(problem.problem == .hazard ? ", or flag the danger" : ""). \
+        If it is not happening, say nothing at all: give only the state tag.
+        """
+        sessionLog.add(.said, step: index, "possible mistake: \(problem.problemText)")
+        await look("(watching step \(index + 1))", snapshot: snapshot, started: Date(), directive: directive)
+        let spoke = !spokenThisTurn.isEmpty
+        log(spoke ? "corrected: \(problem.problemText)" : "false alarm: \(problem.problemText)")
+        if spoke, problem.problem == .hazard, var rt = runtime, rt.isActive {
+            let actions = rt.handle(.hazard(problem.problemText))
+            runtime = rt
+            await perform(actions)
+        }
     }
 
     // MARK: Following objects

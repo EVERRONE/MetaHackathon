@@ -48,7 +48,7 @@ final class GuideModel: ObservableObject {
     private var listenTask: Task<Void, Never>?
     var history: [ChatMessage] = []
     var task: Task<Void, Never>?
-    private var spokenThisTurn: [String] = []
+    var spokenThisTurn: [String] = []
     var lookActive = false
     /// Mark numbers restart in every look; an offset per look keeps earlier marks apart, so their
     /// cues can stay on screen.
@@ -93,6 +93,9 @@ final class GuideModel: ObservableObject {
     var watchTimer: Timer?
     var refreshTimer: Timer?
     var watchHits = 0
+    /// Consecutive checks that saw the same problem.
+    var problemHits = 0
+    var lastProblem: StepChecker.Result.Problem = .none
     var watchStep = -1
     var watchChecks = 0
     var checking = false
