@@ -371,7 +371,7 @@ final class GuideModel: ObservableObject {
         let pipeline = LookPipeline(client: client, language: language)
         var known = facts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.value) (\($0.value.source == "seen" ? "you saw it" : "the user said so"))" }
         let places = ar.placeDescriptions()
-        if !places.isEmpty { known.append("Remembered places (point with m=number): " + places.joined(separator: " | ")) }
+        if !places.isEmpty { known.append("Remembered places (point with m=number; direction and distance from the user now, measured by the app): " + places.joined(separator: " | ")) }
         if !shopping.isEmpty {
             known.append("Shopping list: " + shopping.map { "\($0.name) (\($0.inBasket ? "in the basket" : "still to get"))" }.joined(separator: ", "))
         }
@@ -387,6 +387,7 @@ final class GuideModel: ObservableObject {
         }
         var firstWord: Double?
         var raw: String?
+        var shownThisLook = Set<Int>()
         do {
             for try await event in pipeline.run(request) {
                 if Task.isCancelled { break }
@@ -412,6 +413,7 @@ final class GuideModel: ObservableObject {
                     phase = .speaking
                     // Remembered places keep their own numbers; this look's marks get the look's offset.
                     s.cues = s.cues.map { TimedCue(cue: $0.cue.mappingMarks { $0 >= ARController.placeMarkBase ? $0 : $0 + offset }, anchor: $0.anchor, raw: $0.raw) }
+                    for c in s.cues { shownThisLook.formUnion(c.cue.marks) }
                     speaker.enqueue(s)
                     spokenThisTurn.append(s.text)
                     note("say: \(s.text)")
@@ -455,6 +457,9 @@ final class GuideModel: ObservableObject {
         }
         recorder?.finish(rawText: raw)
         guard !Task.isCancelled else { return }
+        // A remembered place named in the question or the answer is always pointed at (an arrow at
+        // the screen edge when it is out of view), also when the model gave no cue for it.
+        pointAtNamedPlaces(in: utterance + " " + spokenThisTurn.joined(separator: " "), alreadyShown: shownThisLook)
         // A plan is prepared in the background; the conversation goes on meanwhile.
         if let pending = pendingTask { startPreparing(goal: pending.goal, product: pending.product) }
         if let find = pendingFind { await findInMemory(find.what, phrase: find.phrase) }

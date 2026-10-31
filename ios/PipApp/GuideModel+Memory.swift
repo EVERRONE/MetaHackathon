@@ -83,6 +83,17 @@ extension GuideModel {
         saveRoomSoon()
     }
 
+    /// Points at every remembered place whose name occurs in `text` and has no cue yet.
+    func pointAtNamedPlaces(in text: String, alreadyShown: Set<Int>) {
+        let words = " " + Utterance.words(text).joined(separator: " ") + " "
+        for (mark, place) in ar.places where !alreadyShown.contains(mark) {
+            let name = Utterance.words(place.name).filter { !["the", "a", "de", "het", "een", "my", "mijn"].contains($0) }.joined(separator: " ")
+            guard !name.isEmpty, words.contains(" " + name + " ") else { continue }
+            log("pointing at remembered place \(place.name)")
+            ar.show(.outline(mark: mark))
+        }
+    }
+
     func rememberPlace(name: String, mark: Int) {
         guard var place = ar.rememberPlace(name: name, mark: mark) else { return }
         place.piece = mapKeeper.current.id

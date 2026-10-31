@@ -347,7 +347,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         trackingRecovered = false
         var out: [(Int, CGRect, ObjectTrack.Reason, Int)] = []
         // Remembered places too: one brought back from storage is found again when Pip points at it.
-        let locked = Set(imageLocks.values.filter(\.tracked).map(\.markID))
+        // Once an outline is locked to its object, only the lock moves it.
+        let locked = Set(imageLocks.values.filter(\.seen).map(\.markID))
         for (id, box) in visibleMarkBoxes(in: snapshot) where !locked.contains(id) {
             guard var track = tracks[id], let m = marks[id] else { continue }
             if recovered { track.needsCheck = true; tracks[id] = track }
@@ -508,13 +509,19 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         }
         trackVisibility(now: now)
         board.tick(now)
-        overlay.adjust = follower.adjust
+        // A locked object ARKit has lost sight of may have moved: its outline waits, hidden, until
+        // ARKit finds the object again, rather than staying where the object was.
+        var adjust = follower.adjust
+        for lock in imageLocks.values where lock.seen && !lock.tracked {
+            adjust[lock.markID] = ImageFollower.Adjust(from: .zero, to: .zero, scale: 1, hidden: true)
+        }
+        overlay.adjust = adjust
         overlay.render(board.annotations, now: now, marks: marks) { [arView] p in arView.project(p) }
     }
 
     /// Pointed-at objects with a cue on screen, followed in the image (see ImageFollower).
     private func followObjects(_ frame: ARFrame) {
-        let locked = Set(imageLocks.values.filter(\.tracked).map(\.markID))
+        let locked = Set(imageLocks.values.filter(\.seen).map(\.markID))
         let shownIDs = Set(board.annotations.flatMap { $0.cue.marks }).filter { $0 < Self.placeMarkBase && tracks[$0] != nil && !locked.contains($0) }
         guard !shownIDs.isEmpty else { return }
         var shown: [(id: Int, box: CGRect)] = []
