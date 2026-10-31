@@ -132,6 +132,14 @@ Same 60-frame clip, seeded with SAM 3.1's mask of the 50×26 px key (`pipeval ed
 
 Quality: go. Speed is enough to carry the outline at 10 Hz, with ARKit's camera motion in between.
 
+**3D steadiness on the iPhone.** The object's centre in the room is the mask's centre at the median raw LiDAR depth. Over 5 runs and 383 frames, the camera moved and the objects mostly lay still:
+- **Between consecutive updates** (about 0.1 s): median 0.7–2.3 mm per run, p90 3.7–9.5 mm.
+- **Over a whole run** (distance from the run's mean position): median 2.3–7.3 mm, p90 4.3–17 mm.
+
+Most of this is the raw depth's noise. On screen it shows less, because the mask itself is right to about 1 px.
+
+Not measured yet: objects that move. From build 23:19 on, every update logs the drawn outline's offset in millimetres ("edgetam check"). Smoothing the depth over time is the next step if those numbers call for it.
+
 It follows the object reliably. Small parts spill onto look-alike neighbours, so they should be carried by their parent object (the plan in section 4) or gated on area. The iPhone test decides the rest:
 - speed with ARKit running;
 - heat;
