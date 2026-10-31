@@ -71,6 +71,29 @@ public enum SetOfMarks {
         ctx.restoreGState()
     }
 
+    /// A region of the image, enlarged by `scale`.
+    public static func crop(_ image: CGImage, to rect: CGRect, scale: CGFloat) -> CGImage? {
+        guard let region = image.cropping(to: rect) else { return nil }
+        return draw(region, width: Int((rect.width * scale).rounded()), height: Int((rect.height * scale).rounded()))
+    }
+
+    /// The image scaled down so its long side is at most `maxSide`.
+    public static func resize(_ image: CGImage, maxSide: Int) -> CGImage? {
+        let long = max(image.width, image.height)
+        guard long > maxSide else { return image }
+        let s = CGFloat(maxSide) / CGFloat(long)
+        return draw(image, width: Int((CGFloat(image.width) * s).rounded()), height: Int((CGFloat(image.height) * s).rounded()))
+    }
+
+    private static func draw(_ image: CGImage, width: Int, height: Int) -> CGImage? {
+        guard width > 0, height > 0,
+              let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return ctx.makeImage()
+    }
+
     public static func jpeg(_ image: CGImage, quality: Double = 0.8) -> Data? {
         let data = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }

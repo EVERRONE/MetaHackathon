@@ -15,6 +15,9 @@ public struct SpokenSentence: Equatable, Sendable {
 }
 
 public enum CueStreamEvent: Equatable, Sendable {
+    /// A new target referenced by position (`at=x,y`), emitted as soon as its tag is complete so
+    /// grounding can start before the sentence is finished. Its cues use `id` as their mark.
+    case target(id: Int, spec: TargetSpec)
     case sentence(SpokenSentence)
     /// `[[state]]`, `[[locate]]` and `[[need_view]]`: for the runtime, not drawn.
     case sideChannel(Cue, raw: String)
@@ -32,6 +35,7 @@ public struct CueStreamParser: Sendable {
     private var pending = ""
     private var text = ""
     private var cues: [TimedCue] = []
+    private var targets: [(id: Int, spec: TargetSpec)] = []
 
     public init() {}
 
@@ -84,9 +88,16 @@ public struct CueStreamParser: Sendable {
     }
 
     private mutating func handleTag(_ body: String, into events: inout [CueStreamEvent]) {
-        guard let tag = CueTag.parse(body) else {
+        guard var tag = CueTag.parse(body) else {
             events.append(.invalidTag(CueError(raw: "[[\(body)]]", reason: "malformed tag")))
             return
+        }
+        if let at = tag.attributes["at"] {
+            guard let ids = register(at: at, tag: tag, into: &events) else {
+                events.append(.invalidTag(CueError(raw: tag.raw, reason: "at must be x,y on the 0–1000 grid")))
+                return
+            }
+            tag.attributes["m"] = ids.map(String.init).joined(separator: ",")
         }
         switch Cue.from(tag) {
         case .failure(let error):
@@ -96,6 +107,31 @@ public struct CueStreamParser: Sendable {
         case .success(let cue):
             cues.append(TimedCue(cue: cue, anchor: text.utf16.count, raw: tag.raw))
         }
+    }
+
+    /// Registers `at=x,y[;x,y…]` targets, reusing an id when the same object is named again.
+    private mutating func register(at: String, tag: CueTag, into events: inout [CueStreamEvent]) -> [Int]? {
+        let phrase = (tag.attributes["obj"] ?? "object").trimmingCharacters(in: .whitespaces).lowercased()
+        let text = (tag.attributes["text"] ?? "").split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        var ids: [Int] = []
+        for pair in at.split(separator: ";") {
+            let xy = pair.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            guard xy.count == 2, (0...1000).contains(xy[0]), (0...1000).contains(xy[1]) else { return nil }
+            let spec = TargetSpec(x: xy[0], y: xy[1], phrase: phrase, text: text)
+            if let same = targets.first(where: { t in
+                let close = hypot(t.spec.x - spec.x, t.spec.y - spec.y) < 30
+                let sameText = !text.isEmpty && t.spec.text.map { $0.lowercased() } == text.map { $0.lowercased() }
+                return (close && t.spec.phrase == phrase) || sameText
+            }) {
+                ids.append(same.id)
+            } else {
+                let id = targets.count + 1
+                targets.append((id, spec))
+                events.append(.target(id: id, spec: spec))
+                ids.append(id)
+            }
+        }
+        return ids.isEmpty ? nil : ids
     }
 
     private mutating func appendText(_ chunk: String, into events: inout [CueStreamEvent]) {

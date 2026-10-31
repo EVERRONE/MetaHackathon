@@ -12,6 +12,19 @@ func fail(_ message: String) -> Never {
 }
 
 var args = Array(CommandLine.arguments.dropFirst())
+
+// pipeval ground <image> <x> <y> <phrase> [text|alternatives]: grounds one target and times it.
+if args.first == "ground", args.count >= 5 {
+    let env = ProcessInfo.processInfo.environment
+    guard let data = FileManager.default.contents(atPath: args[1]), let frame = SetOfMarks.load(data) else { fail("cannot read \(args[1])") }
+    let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
+    let spec = TargetSpec(x: Double(args[2])!, y: Double(args[3])!, phrase: args[4], text: args.count > 5 ? args[5].split(separator: "|").map(String.init) : [])
+    let t0 = Date()
+    let r = await Grounder(client: client).ground(spec, id: 1, frame: frame, frameJPEG: SetOfMarks.jpeg(frame)!)
+    print(String(format: "%.2fs", Date().timeIntervalSince(t0)), r.method, r.instance.map { "box \($0.box) conf \($0.confidence)" } ?? "nil")
+    exit(0)
+}
+
 guard args.first == "look", args.count >= 3 else {
     fail("usage: pipeval look <image> \"<utterance>\" [--prompts a,b] [--lang English|Dutch] [--goal \"…\"] [--out dir]")
 }
@@ -54,8 +67,11 @@ var shown: [Cue] = []
 do {
     for try await event in pipeline.run(request) {
         switch event {
-        case .phrases(let p):
-            print("\(stamp())  SAM prompts from Spark: \(p)")
+        case .target(let id, let spec):
+            print("\(stamp())  🎯 target \(id): \(spec.phrase) \(spec.text) @\(Int(spec.x)),\(Int(spec.y))")
+        case .grounded(let id, let inst, let method, let seconds):
+            if let inst { instances.append(inst) }
+            print("\(stamp())  📍 target \(id) → " + (inst.map { "box \($0.box) conf \(String(format: "%.2f", $0.confidence))" } ?? "not found") + " via \(method) in \(String(format: "%.2f", seconds))s")
         case .segmented(let s, let marked):
             instances = s.instances
             print("\(stamp())  segmented: \(s.instances.count) marks · \(s.calls.map { "\($0.prompt)=\($0.found) in \($0.ms) ms" }.joined(separator: ", "))")
@@ -76,7 +92,7 @@ do {
             print("\(stamp())  ✗ invalid tag \(err)")
         case .finished(let s):
             let fmt = { (x: Double?) in x.map { String(format: "%.2fs", $0) } ?? "–" }
-            print("\(stamp())  done · phrases \(fmt(s.phrasesSeconds)) · segment \(fmt(s.segmentSeconds)) · first token \(fmt(s.firstTokenSeconds)) · first sentence \(fmt(s.firstSentenceSeconds)) · total \(fmt(s.totalSeconds))")
+            print("\(stamp())  done · first token \(fmt(s.firstTokenSeconds)) · first sentence \(fmt(s.firstSentenceSeconds)) · total \(fmt(s.totalSeconds))")
             if let u = s.usage { print("        tokens: prompt \(u.promptTokens) (cached \(u.promptTokensDetails?.cachedTokens ?? 0)), completion \(u.completionTokens)") }
         }
     }

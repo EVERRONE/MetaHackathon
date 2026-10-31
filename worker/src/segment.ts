@@ -230,7 +230,7 @@ export function buildInstances(all: Candidate[], maxInstances: number): { instan
 export async function segment(apiKey: string, req: SegmentRequest): Promise<SegmentResult> {
   const imageUrl = toDataUrl(req.image);
   const minConfidence = req.minConfidence ?? 0.3;
-  const maxInstances = Math.min(req.maxInstances ?? 40, 60);
+  const maxInstances = Math.min(req.maxInstances ?? 40, 200);
 
   const jobs: { label: string | null; text: string }[] = [];
   for (const p of req.prompts ?? []) jobs.push({ label: p.trim(), text: p.trim() });
