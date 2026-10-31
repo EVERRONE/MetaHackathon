@@ -20,7 +20,7 @@ if args.first == "ground", args.count >= 5 {
     let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
     let spec = TargetSpec(x: Double(args[2])!, y: Double(args[3])!, phrase: args[4], text: args.count > 5 ? args[5].split(separator: "|").map(String.init) : [])
     let t0 = Date()
-    let r = await Grounder(client: client).ground(spec, id: 1, frame: frame, frameJPEG: SetOfMarks.jpeg(frame)!)
+    let r = await Grounder(client: client, frameJPEG: SetOfMarks.jpeg(frame)!).ground(spec, id: 1, frame: frame)
     print(String(format: "%.2fs", Date().timeIntervalSince(t0)), r.method, r.instance.map { "box \($0.box) conf \($0.confidence)" } ?? "nil")
     exit(0)
 }
@@ -137,7 +137,7 @@ if let ctx = CGContext(data: nil, width: frame.width, height: frame.height, bits
     ctx.draw(frame, in: CGRect(x: 0, y: 0, width: frame.width, height: frame.height))
     ctx.translateBy(x: 0, y: CGFloat(frame.height))
     ctx.scaleBy(x: 1, y: -1)
-    let byId = Dictionary(uniqueKeysWithValues: instances.map { ($0.id, $0) })
+    let byId = Dictionary(instances.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
     for cue in shown {
         let color: CGColor
         var dash: [CGFloat] = []

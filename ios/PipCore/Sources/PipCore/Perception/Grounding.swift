@@ -42,6 +42,7 @@ extension SegmentInstance {
         var c = self
         c.box = [mx(box[0]), my(box[1]), mx(box[2]), my(box[3])]
         c.centroid = [mx(centroid[0]), my(centroid[1])]
+        c.area = Int((CGFloat(area) * scale * scale).rounded())
         c.polygons = polygons.map { flat in
             stride(from: 0, to: flat.count - 1, by: 2).flatMap { [mx(flat[$0]), my(flat[$0 + 1])] }
         }

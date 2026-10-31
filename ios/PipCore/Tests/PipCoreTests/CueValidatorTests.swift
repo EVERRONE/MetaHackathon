@@ -66,6 +66,13 @@ import Testing
         #expect(board.annotations.map(\.cue) == [.danger(mark: 9, reason: "hot")])
     }
 
+    @Test func theNewestCueIsNeverEvicted() {
+        var board = AnnotationBoard()
+        for m in 1...3 { board.show(.danger(mark: m, reason: "hot"), at: 0) }
+        board.show(.outline(mark: 4), at: 1)
+        #expect(board.annotations.last?.cue == .outline(mark: 4))
+    }
+
     @Test func newCueReplacesSameFamilyOnSameMark() {
         var board = AnnotationBoard()
         board.show(.move(mark: 1, direction: .up), at: 0)

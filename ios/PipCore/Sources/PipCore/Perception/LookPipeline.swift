@@ -62,7 +62,7 @@ public struct LookPipeline: Sendable {
     public var validator: CueValidator
     public var language: String
     /// How long a finished sentence may wait for its targets before it is spoken without them.
-    public var groundingTimeout: TimeInterval = 6.0
+    public var groundingTimeout: TimeInterval = 8.0
 
     public init(client: PipClient, validator: CueValidator = CueValidator(), language: String = "English") {
         self.client = client
@@ -122,8 +122,8 @@ public struct LookPipeline: Sendable {
 
         let chat = ChatRequest(messages: [.system(system)] + request.history + [message], stream: true, reasoningEffort: .minimal,
                                promptCacheKey: promptCacheKey, maxCompletionTokens: 2000)
-        let grounder = Grounder(client: client)
-        guard let frameJPEG = SetOfMarks.jpeg(frame, quality: 0.8) else { throw LookError.encoding }
+        // The frame is at most 1280 px already, so Spark and SAM can share one encoding.
+        let grounder = Grounder(client: client, frameJPEG: context)
         let (inputs, feed) = AsyncStream<Input>.makeStream()
         let chatTask = Task {
             do {
@@ -161,7 +161,7 @@ public struct LookPipeline: Sendable {
                 case .target(let id, let spec):
                     emit(.target(id: id, spec: spec))
                     groundTasks.append(Task {
-                        let r = await grounder.ground(spec, id: id, frame: frame, frameJPEG: frameJPEG)
+                        let r = await grounder.ground(spec, id: id, frame: frame)
                         feed.yield(.grounded(id, r))
                     })
                 case .sentence(let s):

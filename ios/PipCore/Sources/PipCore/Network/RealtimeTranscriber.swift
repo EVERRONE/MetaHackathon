@@ -81,10 +81,12 @@ public final class RealtimeTranscriber: NSObject, @unchecked Sendable, URLSessio
         t?.send(.string(#"{"type":"endStream"}"#)) { _ in }
     }
 
+    /// Closes the session and ends `events`, so whoever listens is released.
     public func close() {
         lock.lock(); let t = task; task = nil; open = false; lock.unlock()
         t?.cancel(with: .normalClosure, reason: nil)
         session?.invalidateAndCancel()
+        continuation.finish()
     }
 
     private func receive() {
@@ -111,15 +113,17 @@ public final class RealtimeTranscriber: NSObject, @unchecked Sendable, URLSessio
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
         guard let type = json["type"] as? String else {
             // The acknowledgement is the only frame without a type.
+            // Flush the held audio before opening, inside the lock, so live audio cannot overtake it.
             lock.lock()
-            open = json["sessionId"] != nil
-            let held = backlog
+            let accepted = json["sessionId"] != nil
+            if accepted, let t = task {
+                for chunk in backlog { t.send(.data(chunk)) { _ in } }
+            }
             backlog = []
             backlogBytes = 0
-            let t = task
+            open = accepted
             lock.unlock()
-            for chunk in held { t?.send(.data(chunk)) { _ in } }
-            continuation.yield(json["sessionId"] != nil ? .ready : .error("handshake refused: \(text.prefix(200))"))
+            continuation.yield(accepted ? .ready : .error("handshake refused: \(text.prefix(200))"))
             return
         }
         switch type {
@@ -141,7 +145,8 @@ public final class RealtimeTranscriber: NSObject, @unchecked Sendable, URLSessio
     }
 
     public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        lock.lock(); task = nil; open = false; lock.unlock()
-        continuation.yield(.closed(code: closeCode.rawValue, reason: reason.flatMap { String(data: $0, encoding: .utf8) } ?? ""))
+        // Report a close once, whether it is seen here or as a receive failure first.
+        lock.lock(); let wasOpen = task != nil; task = nil; open = false; lock.unlock()
+        if wasOpen { continuation.yield(.closed(code: closeCode.rawValue, reason: reason.flatMap { String(data: $0, encoding: .utf8) } ?? "")) }
     }
 }

@@ -82,6 +82,49 @@ private func word(at anchor: Int, in text: String) -> String {
     }
 }
 
+@Suite struct CueStreamParserEdgeTests {
+    @Test func tagAfterTheLastSentenceBindsToIt() {
+        let events = run(["That is the one. [[outline at=500,500 obj=\"key\" text=\"esc\"]]"])
+        let s = sentences(events)
+        #expect(s.map(\.text) == ["That is the one."])
+        #expect(s[0].cues.first?.cue == .outline(mark: 1))
+        #expect(word(at: s[0].cues[0].anchor, in: s[0].text) == "one")
+    }
+
+    @Test func tagRightAfterATerminatorBelongsToTheNextSentence() {
+        let s = sentences(run(["Hold alt gr.[[ring m=2 label=\"2\"]] Then press it."]))
+        #expect(s.map(\.text) == ["Hold alt gr.", "Then press it."])
+        #expect(s[0].cues.isEmpty)
+        #expect(s[1].cues.first?.cue == .ring(mark: 2, label: "2"))
+    }
+
+    @Test func runawayTagIsNeverSpoken() {
+        let long = String(repeating: "x", count: CueStreamParser.maxTagLength + 10)
+        let s = sentences(run(["Look here. [[state seen=\"\(long)\"]] Then go on."]))
+        #expect(s.map(\.text) == ["Look here.", "Then go on."])
+    }
+
+    @Test func targetsMergeOnlyForTheSameObject() {
+        let events = run([
+            "First [[ring at=200,500 obj=\"breaker\" text=\"C16\"]] this. ",
+            "Then [[ring at=800,500 obj=\"breaker\" text=\"C16\"]] that. ",
+            "And [[ring at=205,505 obj=\"breaker\" text=\"C16\"]] back. ",
+            "Ctrl [[ring at=100,900 obj=\"key\" text=\"ctrl\"]] here, fn [[ring at=110,900 obj=\"key\" text=\"fn\"]] there.",
+        ])
+        let ids: [Int] = events.compactMap { if case .target(let id, _) = $0 { return id } else { return nil } }
+        #expect(ids == [1, 2, 3, 4])
+        let marks = sentences(events).flatMap { $0.cues.flatMap(\.cue.marks) }
+        #expect(marks == [1, 2, 1, 3, 4])
+    }
+
+    @Test func singleObjectCuesUseTheFirstPoint() {
+        let events = run(["Press [[outline at=100,100;900,900 obj=\"button\"]] this."])
+        let targets = events.filter { if case .target = $0 { return true } else { return false } }
+        #expect(targets.count == 1)
+        #expect(sentences(events).first?.cues.first?.cue == .outline(mark: 1))
+    }
+}
+
 @Suite struct CueTagTests {
     @Test func parsesQuotedValuesAndLists() throws {
         let tag = CueTag.parse("danger m=11 reason=\"hot surface\"")

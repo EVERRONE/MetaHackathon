@@ -151,10 +151,12 @@ public struct AnnotationBoard: Sendable {
         }
     }
 
-    /// At most three marks on screen: drop the oldest non-danger annotations first.
+    /// At most three marks on screen: drop the oldest non-danger annotations first, but never the
+    /// one just added.
     private mutating func enforceMarkLimit() {
+        // The newest stays last, because only older ones are removed.
         while activeMarks.count > Self.maxMarks,
-              let oldest = annotations.indices.first(where: { annotations[$0].lifetime != .untilResolved }) {
+              let oldest = annotations.indices.first(where: { $0 != annotations.count - 1 && annotations[$0].lifetime != .untilResolved }) {
             annotations.remove(at: oldest)
         }
     }

@@ -38,14 +38,17 @@ public struct GroundingResult: Sendable {
 /// instance under the point; then SAM's own point-prompted mask; then the nearest instance.
 public struct Grounder: Sendable {
     public var client: PipClient
-
-    public init(client: PipClient) {
-        self.client = client
-    }
+    /// Whole-frame SAM results per phrase, shared by all targets of one look.
+    let wholeFrame: WholeFrameSegments
 
     /// `frameJPEG` is the whole frame, encoded once per look: large objects are found better whole,
     /// small ones on the enlarged crop, so SAM looks at both.
-    public func ground(_ spec: TargetSpec, id: Int, frame: CGImage, frameJPEG: Data) async -> GroundingResult {
+    public init(client: PipClient, frameJPEG: Data) {
+        self.client = client
+        self.wholeFrame = WholeFrameSegments(client: client, jpeg: frameJPEG)
+    }
+
+    public func ground(_ spec: TargetSpec, id: Int, frame: CGImage) async -> GroundingResult {
         let t0 = Date()
         let size = CGSize(width: frame.width, height: frame.height)
         let p = spec.point(in: size)
@@ -59,17 +62,32 @@ public struct Grounder: Sendable {
         let local = CGPoint(x: (p.x - region.minX) * scale, y: (p.y - region.minY) * scale)
         let object = SegmentObjectPrompt(id: 1, points: [.init(x: min(max(Int(local.x), 0), crop.width - 1), y: min(max(Int(local.y), 0), crop.height - 1))])
 
-        async let segmented = try? client.segment(SegmentRequest(jpeg: jpeg, prompts: [spec.phrase], objects: [object], width: crop.width, height: crop.height, minConfidence: 0.25, maxInstances: 120))
-        async let whole = try? client.segment(SegmentRequest(jpeg: frameJPEG, prompts: [spec.phrase], minConfidence: 0.25, maxInstances: 200))
-        async let textBoxes = spec.text.isEmpty ? [] : Self.findText(spec.text, in: crop)
-        let (seg, wholeSeg, found) = await (segmented, whole, textBoxes)
+        async let segmented = Result { try await client.segment(SegmentRequest(jpeg: jpeg, prompts: [spec.phrase], objects: [object], width: crop.width, height: crop.height, minConfidence: 0.25, maxInstances: 120)) }
+        async let whole = wholeFrame.instances(for: spec.phrase)
+        let debug = ProcessInfo.processInfo.environment["PIP_DEBUG_GROUND"] != nil
+        // Text recognition runs alongside SAM: the fast pass always (≈0.05 s), the accurate pass
+        // within a budget, because after a pause it reloads its models (~25 s).
+        // Vision handles requests one at a time, so even the fast pass can queue behind another
+        // target's cold accurate pass: both get a budget.
+        async let fastText = Self.withBudget(Self.fastTextBudget) { await Self.findText(spec.text, in: crop, accurate: false) }
+        async let accurateText = Self.withBudget(Self.accurateTextBudget) { await Self.findText(spec.text, in: crop, accurate: true) }
+        let (fast, accurate) = await (fastText, accurateText)
+        let found = (accurate?.isEmpty == false ? accurate : nil) ?? fast ?? []
+        if debug { print(String(format: "[ground %d] text done %.2f (%d found)", id, Date().timeIntervalSince(t0), found.count)) }
+        let wholeInstances = await whole
+        let seg = await segmented
+        if debug { print(String(format: "[ground %d] SAM done %.2f", id, Date().timeIntervalSince(t0))) }
+        var problems: [String] = []
+        if case .failure(let e) = seg { problems.append("crop SAM failed: \(e)") }
+        if wholeInstances == nil { problems.append("whole-frame SAM failed") }
 
-        let instances = seg?.instances ?? []
+        let instances = (try? seg.get())?.instances ?? []
         // Whole-frame instances in crop coordinates, kept when they reach into the crop and are not
-        // already found on the crop.
+        // already found on the crop. Both requests number their instances from 1, so the
+        // whole-frame ones get ids from 10 000 to keep them apart.
         let cropBounds = CGRect(x: 0, y: 0, width: crop.width, height: crop.height)
         var concept = instances.filter { $0.objectId == nil }
-        for inst in (wholeSeg?.instances ?? []).map({ $0.mapped(into: region, scale: scale) }) where inst.boxRect.intersects(cropBounds) {
+        for inst in (wholeInstances ?? []).map({ $0.mapped(into: region, scale: scale).renumbered($0.id + 10_000) }) where inst.boxRect.intersects(cropBounds) {
             if !concept.contains(where: { iou($0.boxRect, inst.boxRect) > 0.6 }) { concept.append(inst) }
         }
         let cropArea = Double(crop.width * crop.height)
@@ -139,15 +157,34 @@ public struct Grounder: Sendable {
         var result = chosen?.unmapped(from: region, scale: scale).renumbered(id)
         if method == "text", result != nil { result!.confidence = max(result!.confidence, 0.85) }
         if result != nil { result!.objectId = nil }
-        return GroundingResult(instance: result, method: method + (nearby.isEmpty && !spec.text.isEmpty ? " (text not found nearby)" : ""), seconds: Date().timeIntervalSince(t0))
+        if nearby.isEmpty && !spec.text.isEmpty { problems.append("text not found nearby") }
+        return GroundingResult(instance: result, method: method + (problems.isEmpty ? "" : " (\(problems.joined(separator: "; ")))"), seconds: Date().timeIntervalSince(t0))
     }
 
-    /// Loads the text recognition models once; the first recognition otherwise takes seconds.
+    static let fastTextBudget: TimeInterval = 0.8
+    static let accurateTextBudget: TimeInterval = 1.5
+
+    /// Loads the accurate text recognition models, which otherwise take ~25 s on first use after a
+    /// pause. Call at launch and every half minute while the app is in use.
     public static func warmUp() async {
         guard let ctx = CGContext(data: nil, width: 64, height: 32, bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue),
               let image = ctx.makeImage() else { return }
-        _ = await findText(["warm"], in: image)
+        _ = await findText(["warm"], in: image, accurate: true)
+    }
+
+    /// The result of `work`, or nil if it takes longer than `seconds`. The work keeps running
+    /// unwatched (Vision cannot be cancelled), so a task group, which waits for all its children,
+    /// would not keep the budget.
+    static func withBudget<T: Sendable>(_ seconds: TimeInterval, _ work: @escaping @Sendable () async -> T) async -> T? {
+        await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
+            let once = ResumeOnce(cont)
+            Task { once.resume(await work()) }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                once.resume(nil)
+            }
+        }
     }
 
     /// Asks Spark which numbered candidate carries the printed text, on an enlarged crop.
@@ -191,39 +228,86 @@ public struct Grounder: Sendable {
         return .picked(candidates[pick.mark - 1])
     }
 
-    /// Boxes (in image pixels, top-left origin) of recognised text that matches one of the alternatives.
-    static func findText(_ wanted: [String], in image: CGImage) async -> [(rect: CGRect, length: Int)] {
-        await Task.detached(priority: .userInitiated) {
+    /// Boxes (in image pixels, top-left origin) of recognised text that matches one of the
+    /// alternatives as whole words: "1F" does not match inside "11F", and a word found in a longer
+    /// line ("esc f1 f2") gets the box of that word, not of the line.
+    static func findText(_ wanted: [String], in image: CGImage, accurate: Bool) async -> [(rect: CGRect, length: Int)] {
+        guard !wanted.isEmpty else { return [] }
+        return await Task.detached(priority: .userInitiated) {
             let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .accurate
+            request.recognitionLevel = accurate ? .accurate : .fast
             request.usesLanguageCorrection = false
             request.minimumTextHeight = 0.01
             let handler = VNImageRequestHandler(cgImage: image, options: [:])
             guard (try? handler.perform([request])) != nil, let observations = request.results else { return [] }
-            let targets = wanted.map(normalize).filter { !$0.isEmpty }
+            let targets = Set(wanted.map(normalize).filter { !$0.isEmpty })
             let w = CGFloat(image.width), h = CGFloat(image.height)
             var boxes: [(rect: CGRect, length: Int)] = []
             for obs in observations {
                 guard let candidate = obs.topCandidates(1).first else { continue }
-                let seen = normalize(candidate.string)
+                let line = candidate.string
                 if ProcessInfo.processInfo.environment["PIP_DEBUG_OCR"] != nil {
                     let b = obs.boundingBox
-                    print("OCR", candidate.string, String(format: "%.2f", candidate.confidence), Int(b.midX * w), Int((1 - b.midY) * h))
+                    print("OCR", line, String(format: "%.2f", candidate.confidence), Int(b.midX * w), Int((1 - b.midY) * h))
                 }
-                // Words match inside longer text ("altgr" in "altgrkey"); single characters only exactly,
-                // because OCR misreads small symbols on keys ("^" as "00").
-                let matched = targets.filter { t in
-                    seen == t || (t.count >= 2 && seen.contains(t)) || (seen.count >= 2 && t.contains(seen))
+                // Runs of one to three consecutive words, compared after normalising.
+                let words = line.split(whereSeparator: { $0.isWhitespace }).map { $0.startIndex..<$0.endIndex }
+                for i in words.indices {
+                    for j in i..<min(i + 3, words.count) {
+                        let range = words[i].lowerBound..<words[j].upperBound
+                        let joined = normalize(String(line[range]))
+                        guard targets.contains(joined) else { continue }
+                        let b = (try? candidate.boundingBox(for: range))?.boundingBox ?? obs.boundingBox
+                        boxes.append((CGRect(x: b.minX * w, y: (1 - b.maxY) * h, width: b.width * w, height: b.height * h), joined.count))
+                    }
                 }
-                guard let longest = matched.map({ min($0.count, seen.count) }).max() else { continue }
-                let b = obs.boundingBox
-                boxes.append((CGRect(x: b.minX * w, y: (1 - b.maxY) * h, width: b.width * w, height: b.height * h), longest))
             }
             return boxes
         }.value
     }
 
+    /// Lowercase, without spaces or dashes; words also without accents ("entrée" = "entree"), but
+    /// single characters keep them, because "à" and "a" are different keys.
     static func normalize(_ s: String) -> String {
-        s.lowercased().filter { !$0.isWhitespace && $0 != "-" && $0 != "_" }
+        let plain = s.lowercased().filter { !$0.isWhitespace && $0 != "-" && $0 != "_" }
+        return plain.count >= 2 ? plain.folding(options: .diacriticInsensitive, locale: nil) : plain
+    }
+}
+
+/// Whole-frame SAM results for each phrase, fetched once per look and shared by its targets.
+actor WholeFrameSegments {
+    private let client: PipClient
+    private let jpeg: Data
+    private var tasks: [String: Task<[SegmentInstance]?, Never>] = [:]
+
+    init(client: PipClient, jpeg: Data) {
+        self.client = client
+        self.jpeg = jpeg
+    }
+
+    func instances(for phrase: String) async -> [SegmentInstance]? {
+        if let task = tasks[phrase] { return await task.value }
+        let client = client, jpeg = jpeg
+        let task = Task { try? await client.segment(SegmentRequest(jpeg: jpeg, prompts: [phrase], minConfidence: 0.25, maxInstances: 200)).instances }
+        tasks[phrase] = task
+        return await task.value
+    }
+}
+
+/// Resumes a continuation the first time only.
+private final class ResumeOnce<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Never>?
+
+    init(_ continuation: CheckedContinuation<T, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ value: T) {
+        lock.lock()
+        let c = continuation
+        continuation = nil
+        lock.unlock()
+        c?.resume(returning: value)
     }
 }

@@ -31,11 +31,20 @@ public enum CueStreamEvent: Equatable, Sendable {
 ///   sentence, it binds to the sentence's last word, so it is never shown late.
 /// - Sentences end at `.`, `!`, `?` or `…` followed by whitespace, or at a newline.
 /// - Partial tags split across stream chunks are held until complete.
+/// - A finished sentence is held until the next one starts, so a tag that closes the reply
+///   ("That is the one. [[outline …]]") still binds to it; a tag followed by more text belongs to
+///   the next sentence.
 public struct CueStreamParser: Sendable {
     private var pending = ""
     private var text = ""
     private var cues: [TimedCue] = []
     private var targets: [(id: Int, spec: TargetSpec)] = []
+    private var held: SpokenSentence?
+    /// Dropping the rest of a runaway tag until its "]]".
+    private var skipping = false
+
+    /// Longer than any real tag: a `[[` this far from its `]]` is not a tag.
+    static let maxTagLength = 400
 
     public init() {}
 
@@ -43,6 +52,15 @@ public struct CueStreamParser: Sendable {
         pending += delta
         var events: [CueStreamEvent] = []
         while !pending.isEmpty {
+            if skipping {
+                guard let close = pending.range(of: "]]") else {
+                    pending = pending.hasSuffix("]") ? "]" : ""
+                    break
+                }
+                pending = String(pending[close.upperBound...])
+                skipping = false
+                continue
+            }
             guard let open = pending.range(of: "[[") else {
                 // Hold a trailing "[" that may start a tag in the next chunk.
                 if pending.hasSuffix("[") {
@@ -57,11 +75,11 @@ public struct CueStreamParser: Sendable {
             appendText(String(pending[..<open.lowerBound]), into: &events)
             guard let close = pending.range(of: "]]", range: open.upperBound..<pending.endIndex) else {
                 pending = String(pending[open.lowerBound...])
-                // A runaway tag is not a tag: give up after a generous length.
-                if pending.count > 240 {
-                    events.append(.invalidTag(CueError(raw: String(pending.prefix(40)) + "…", reason: "unterminated tag")))
-                    pending = String(pending.dropFirst(2))
-                    continue
+                // A runaway tag is not a tag, and is never spoken: drop it up to its "]]".
+                if pending.count > Self.maxTagLength {
+                    events.append(.invalidTag(CueError(raw: String(pending.prefix(40)) + "…", reason: "tag too long")))
+                    pending = ""
+                    skipping = true
                 }
                 break
             }
@@ -75,15 +93,29 @@ public struct CueStreamParser: Sendable {
     /// Flushes the rest of the stream as a final sentence.
     public mutating func finish() -> [CueStreamEvent] {
         var events: [CueStreamEvent] = []
-        if !pending.isEmpty {
+        if !pending.isEmpty && !skipping {
             if pending.hasPrefix("[[") {
-                events.append(.invalidTag(CueError(raw: pending, reason: "unterminated tag")))
+                events.append(.invalidTag(CueError(raw: String(pending.prefix(60)), reason: "unterminated tag")))
             } else {
                 appendText(pending, into: &events)
             }
-            pending = ""
         }
+        pending = ""
         emitSentence(upTo: text.endIndex, into: &events)
+        // Cues after the last sentence ("That is the one. [[outline …]]") bind to its last word.
+        if var last = held {
+            let end = last.text.utf16.count
+            for cue in cues {
+                var c = cue
+                c.anchor = wordStart(atOrAfter: end, in: last.text)
+                last.cues.append(c)
+            }
+            cues = []
+            events.append(.sentence(last))
+            held = nil
+        }
+        for cue in cues { events.append(.invalidTag(CueError(raw: cue.raw, reason: "no sentence to attach to"))) }
+        cues = []
         return events
     }
 
@@ -93,7 +125,8 @@ public struct CueStreamParser: Sendable {
             return
         }
         if let at = tag.attributes["at"] {
-            guard let ids = register(at: at, tag: tag, into: &events) else {
+            let many = ["candidates", "seq", "sequence"].contains(tag.name)
+            guard let ids = register(at: at, tag: tag, many: many, into: &events) else {
                 events.append(.invalidTag(CueError(raw: tag.raw, reason: "at must be x,y on the 0–1000 grid")))
                 return
             }
@@ -110,18 +143,20 @@ public struct CueStreamParser: Sendable {
     }
 
     /// Registers `at=x,y[;x,y…]` targets, reusing an id when the same object is named again.
-    private mutating func register(at: String, tag: CueTag, into events: inout [CueStreamEvent]) -> [Int]? {
+    /// Only `candidates` and `seq` take several points; other cues use the first.
+    private mutating func register(at: String, tag: CueTag, many: Bool, into events: inout [CueStreamEvent]) -> [Int]? {
         let phrase = (tag.attributes["obj"] ?? "object").trimmingCharacters(in: .whitespaces).lowercased()
         let text = (tag.attributes["text"] ?? "").split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         var ids: [Int] = []
-        for pair in at.split(separator: ";") {
+        for pair in at.split(separator: ";").prefix(many ? 6 : 1) {
             let xy = pair.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
             guard xy.count == 2, (0...1000).contains(xy[0]), (0...1000).contains(xy[1]) else { return nil }
             let spec = TargetSpec(x: xy[0], y: xy[1], phrase: phrase, text: text)
+            // The same object named again: same kind, same printed text, about the same place.
+            // Different texts are different objects, however close (Ctrl and Fn).
             if let same = targets.first(where: { t in
-                let close = hypot(t.spec.x - spec.x, t.spec.y - spec.y) < 30
-                let sameText = !text.isEmpty && t.spec.text.map { $0.lowercased() } == text.map { $0.lowercased() }
-                return (close && t.spec.phrase == phrase) || sameText
+                guard t.spec.phrase == phrase, t.spec.text.map({ $0.lowercased() }) == text.map({ $0.lowercased() }) else { return false }
+                return hypot(t.spec.x - spec.x, t.spec.y - spec.y) < (text.isEmpty ? 30 : 60)
             }) {
                 ids.append(same.id)
             } else {
@@ -140,14 +175,25 @@ public struct CueStreamParser: Sendable {
         // Removing a tag must not leave a double space.
         if text.isEmpty || text.last?.isWhitespace == true {
             chunk = chunk.drop(while: { $0 == " " || $0 == "\t" })
-            // "switch [[outline m=2]]." must not become "switch ."
+            // "switch [[outline m=2]]." must not become "switch ."; the cue stays on "switch".
             if let first = chunk.first, ".,!?;:…)".contains(first) {
                 while text.last == " " || text.last == "\t" { text.removeLast() }
+                let end = text.utf16.count
+                cues = cues.map { var c = $0; c.anchor = min(c.anchor, end); return c }
             }
         }
         text += chunk
+        // The next sentence has started: the held one can go.
+        if let h = held, text.contains(where: { !$0.isWhitespace }) {
+            events.append(.sentence(h))
+            held = nil
+        }
         while let end = sentenceEnd(in: text) {
             emitSentence(upTo: end, into: &events)
+        }
+        if let h = held, text.contains(where: { !$0.isWhitespace }) {
+            events.append(.sentence(h))
+            held = nil
         }
     }
 
@@ -183,8 +229,8 @@ public struct CueStreamParser: Sendable {
         var own: [TimedCue] = []
         var later: [TimedCue] = []
         for cue in cues {
-            // A cue placed right at the boundary belongs to this sentence (bound to its last word).
-            if cue.anchor <= headUTF16 { own.append(cue) } else { later.append(cue) }
+            // A tag right after the terminator ("gr.[[ring …]] Then") belongs to the next sentence.
+            if cue.anchor < headUTF16 { own.append(cue) } else { later.append(cue) }
         }
 
         let restLeading = rest.prefix(while: { $0.isWhitespace })
@@ -202,7 +248,8 @@ public struct CueStreamParser: Sendable {
             c.anchor = wordStart(atOrAfter: max(0, cue.anchor - shift), in: trimmed)
             return c
         }
-        events.append(.sentence(SpokenSentence(text: trimmed, cues: bound)))
+        if let h = held { events.append(.sentence(h)) }
+        held = SpokenSentence(text: trimmed, cues: bound)
         cues = later.map { shifted($0, by: -consumed) }
     }
 
