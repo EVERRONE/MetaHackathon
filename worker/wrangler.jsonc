@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pip",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "routes": [{ "pattern": "pip.unveil.be", "custom_domain": true }],
+  "workers_dev": false,
+  "observability": { "enabled": true },
+  "vars": {
+    // Spend caps in USD, enforced before every model call.
+    "DAILY_CAP_USD": "25",
+    "TOTAL_CAP_USD": "100"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "METER", "class_name": "Meter" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Meter"] }],
+  "ratelimits": [
+    { "name": "LIMITER", "namespace_id": "4801", "simple": { "limit": 300, "period": 60 } }
+  ]
+  // Secrets (wrangler secret put): MODEL_API_KEY, PIP_APP_TOKEN
+}
