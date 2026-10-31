@@ -25,6 +25,8 @@ final class MapKeeper {
     private var merged: [UUID] = []
     private var lastKeyPose: simd_float4x4?
     private var lastKeyTime: TimeInterval = 0
+    /// Spots and directions this piece has keyframes for (0.5 m, eight headings, three pitches).
+    private var coverage = Set<SIMD4<Int32>>()
     private var working = false
     /// Something changed since the last save.
     private(set) var dirty = false
@@ -52,6 +54,7 @@ final class MapKeeper {
     /// `piece`: the stored piece ARKit is relocalising into (its frame becomes this session's).
     func begin(continuing piece: MapPiece?, others: [MapPiece]) {
         current = piece ?? MapPiece()
+        coverage = Set(current.keyframes.map { Self.bin($0.pose) })
         self.others = others
         references = [:]
         pendingSurfaces = []
@@ -67,15 +70,38 @@ final class MapKeeper {
     func startNewPiece() {
         if !current.keyframes.isEmpty || !current.points.isEmpty { others.append(current) }
         current = MapPiece()
+        coverage = []
         lastKeyPose = nil
         dirty = false
     }
 
-    func consider(_ frame: ARFrame) {
+    /// Tracking broke or jumped: keyframes since `since` may carry a wrong pose.
+    func purge(since: Date) {
+        let before = current.keyframes.count
+        current.keyframes.removeAll { $0.time >= since }
+        if current.keyframes.count != before {
+            coverage = Set(current.keyframes.map { Self.bin($0.pose) })
+            onLog?("map: dropped \(before - current.keyframes.count) keyframes around a tracking break")
+        }
+    }
+
+    nonisolated static func bin(_ pose: simd_float4x4) -> SIMD4<Int32> {
+        let p = pose.columns.3
+        let forward = -pose.columns.2.xyz
+        let heading = Int32(((atan2(forward.x, forward.z) + .pi) / (2 * .pi) * 8).rounded(.down)) % 8
+        let pitch = asin(max(-1, min(1, forward.y)))
+        let band: Int32 = pitch < -.pi / 12 ? 0 : (pitch > .pi / 12 ? 2 : 1)
+        return SIMD4(Int32((p.x / 0.5).rounded(.down)), Int32((p.z / 0.5).rounded(.down)), heading, band)
+    }
+
+    func consider(_ frame: ARFrame, gate: CaptureGate) {
         guard enabled, !working, case .normal = frame.camera.trackingState else { return }
         let t = frame.timestamp
         let pose = frame.camera.transform
-        if let last = lastKeyPose {
+        // A view from a spot or direction this piece has no keyframe for yet counts at once, so
+        // the piece can be recognised from every side.
+        let uncovered = !coverage.contains(Self.bin(pose)) && t - lastKeyTime > 1
+        if let last = lastKeyPose, !uncovered {
             let move = simd_distance(last.columns.3.xyz, pose.columns.3.xyz)
             let turn = abs(Self.wrapped(Self.heading(pose) - Self.heading(last))) * 180 / .pi
             guard move >= Self.keyDistance || turn >= Self.keyTurnDegrees || (t - lastKeyTime > Self.keyInterval && move > 0.3) else {
@@ -83,7 +109,9 @@ final class MapKeeper {
                 return
             }
         }
-        guard let snap = FrameSnapshot(frame: frame, maxSide: 384) else { return }
+        // Only sharp, steady, well-lit frames with settled tracking go into the map.
+        guard gate.accepts(frame), let snap = FrameSnapshot(frame: frame, maxSide: 384) else { return }
+        coverage.insert(Self.bin(pose))
         lastKeyPose = pose
         lastKeyTime = t
         working = true
@@ -175,6 +203,9 @@ final class MapKeeper {
         /// Where the linked surfaces are now in this session's frame: linking-time frame → live
         /// frame now (identity until drift shows).
         var drift = matrix_identity_float4x4
+        /// A correction one recheck proposed, waiting for a second from elsewhere to agree: one
+        /// fit alone (a mirror, a repeated wall) never moves the places.
+        var proposal: (drift: simd_float4x4, camera: simd_float4x4, time: TimeInterval)?
     }
     private var references: [UUID: Reference] = [:]
     private var lastRecheck: TimeInterval = 0
@@ -200,11 +231,11 @@ final class MapKeeper {
             for (id, ref) in refs {
                 if let r = MapLinker.refine(source: mesh, target: ref.target, initial: ref.drift.inverse), r.inlierRatio > 0.5 { results.append((id, r)) }
             }
-            await self?.applyRecheck(results)
+            await self?.applyRecheck(results, camera: pose, now: now)
         }
     }
 
-    private func applyRecheck(_ results: [(UUID, MapLinker.Refined)]) {
+    private func applyRecheck(_ results: [(UUID, MapLinker.Refined)], camera: simd_float4x4, now: TimeInterval) {
         defer { working = false }
         for (id, r) in results {
             guard var ref = references[id] else { continue }
@@ -212,13 +243,35 @@ final class MapKeeper {
             let drift = r.transform.inverse
             let delta = drift * ref.drift.inverse
             let shift = simd_length(delta.columns.3.xyz), turn = abs(PointRegistration.yaw(of: delta)) * 180 / .pi
-            onLog?(String(format: "map: recheck piece %@: drift %.1f cm, %.2f°%@", String(id.uuidString.prefix(4)),
-                          simd_length(drift.columns.3.xyz) * 100, PointRegistration.yaw(of: drift) * 180 / .pi, firm ? "" : " (not firm, ignored)"))
-            // Under half a centimetre is noise; over 30 cm or 3° is not drift but a wrong fit.
-            guard firm, shift > 0.005 || turn > 0.1, shift < 0.3, turn < 3 else { continue }
-            ref.drift = drift
+            onLog?(String(format: "map: recheck piece %@: %.1f cm, %.2f° from the current link%@", String(id.uuidString.prefix(4)),
+                          shift * 100, turn, firm ? "" : " (not firm, ignored)"))
+            // Under half a centimetre is noise (and confirms the link); over 30 cm or 3° is not
+            // drift but a wrong fit.
+            guard firm, shift < 0.3, turn < 3 else { continue }
+            guard shift > 0.005 || turn > 0.1 else {
+                ref.proposal = nil
+                references[id] = ref
+                continue
+            }
+            // A second recheck from at least half a metre or 20° away must agree within 1 cm and
+            // 0.3° before the places move.
+            if let p = ref.proposal, now - p.time < 120 {
+                let apart = simd_distance(p.camera.columns.3, camera.columns.3) >= 0.5
+                    || abs(Self.wrapped(Self.heading(p.camera) - Self.heading(camera))) * 180 / .pi >= 20
+                let between = drift * p.drift.inverse
+                let agree = simd_length(between.columns.3.xyz) < 0.01 && abs(PointRegistration.yaw(of: between)) * 180 / .pi < 0.3
+                if agree, apart {
+                    ref.drift = drift
+                    ref.proposal = nil
+                    references[id] = ref
+                    onLog?(String(format: "map: drift of %.1f cm confirmed from two views; places follow", shift * 100))
+                    onDrift?(id, delta)
+                    continue
+                }
+                if agree { continue } // same view again: wait for one from elsewhere
+            }
+            ref.proposal = (drift, camera, now)
             references[id] = ref
-            onDrift?(id, delta)
         }
     }
 

@@ -96,14 +96,10 @@ final class Keyframes {
         prune()
     }
 
-    /// Called for camera frames; keeps one when the view has changed enough. `trusted`: the app
-    /// trusts tracking (also after it gave up waiting to recognise a saved room).
-    func consider(_ frame: ARFrame, trusted: Bool) {
-        switch frame.camera.trackingState {
-        case .normal: break
-        case .limited(.relocalizing) where trusted: break
-        default: return
-        }
+    /// Called for camera frames; keeps one when the view has changed enough and the frame passes
+    /// the quality gate (settled tracking, steady, sharp, light enough).
+    func consider(_ frame: ARFrame, gate: CaptureGate) {
+        guard case .normal = frame.camera.trackingState else { return }
         let t = frame.timestamp
         guard t - lastTime > 0.5 else { return }
         if let last = lastPose {
@@ -112,6 +108,7 @@ final class Keyframes {
             let turn = acos(max(-1, min(1, simd_dot(simd_normalize(a), simd_normalize(b)))))
             guard move > 0.25 || turn > 20 * .pi / 180 || t - lastTime > 10 else { return }
         }
+        guard gate.accepts(frame) else { return }
         lastTime = t
         lastPose = frame.camera.transform
         guard let snap = FrameSnapshot(frame: frame, maxSide: 768) else { return }
@@ -138,6 +135,17 @@ final class Keyframes {
         kept += 1
         if kept % 40 == 0 { prune() }
         saveIndexIfDue()
+    }
+
+    /// Tracking broke or jumped: snapshots since `since` may carry a wrong pose.
+    func purge(since: Date) {
+        let dropped = frames.filter { $0.time >= since && $0.located }.map(\.id)
+        guard !dropped.isEmpty else { return }
+        frames.removeAll { dropped.contains($0.id) }
+        if persist {
+            VisualMemoryStore.remove(dropped)
+            indexDirty = true
+        }
     }
 
     /// A map piece was linked into this session: its snapshots move into this session's frame.

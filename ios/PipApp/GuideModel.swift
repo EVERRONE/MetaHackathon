@@ -61,6 +61,8 @@ final class GuideModel: ObservableObject {
     let keyframes = Keyframes()
     /// The 3D map of the home, built while Pip is used (see MapKeeper and GuideModel+Memory).
     let mapKeeper = MapKeeper()
+    /// Which frames are clean enough for the map and the visual memory.
+    let captureGate = CaptureGate()
     var mapSaveTimer: Timer?
     /// Which places came from which linked piece, so they follow the drift measured against it.
     var linkedPlaces: [UUID: Set<UUID>] = [:]
@@ -190,10 +192,15 @@ final class GuideModel: ObservableObject {
         try? session.setActive(true)
         startMap()
         // Every camera frame: the visual memory, the map of the home, and reading mode when it is on.
+        captureGate.onTrouble = { [weak self] since in
+            self?.keyframes.purge(since: since)
+            self?.mapKeeper.purge(since: since)
+        }
         ar.onFrame = { [weak self] frame in
             guard let self else { return }
-            self.keyframes.consider(frame, trusted: self.ar.trackingNormal)
-            self.mapKeeper.consider(frame)
+            self.captureGate.update(frame)
+            self.keyframes.consider(frame, gate: self.captureGate)
+            self.mapKeeper.consider(frame, gate: self.captureGate)
             self.pageReader?.feed(frame)
         }
         // The room map is saved when the app goes to the background, so new places survive.
