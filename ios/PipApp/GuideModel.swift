@@ -53,6 +53,8 @@ final class GuideModel: ObservableObject {
     let ar = ARController()
     /// Long-term memory: the room map, places and facts, only with the user's consent.
     let memory = SpaceMemory()
+    /// Roughly where the phone is: maps from another home or building are not tried (see startMap).
+    let homeLocation = HomeLocation()
     var awaitingConsent = false
     /// The consent question waits for Pip to be free before it is asked.
     var consentQueued = false

@@ -5,6 +5,33 @@ import simd
 /// coordinate frame. Built while Pip is used (no scanning): the room's surfaces from ARKit's
 /// mesh, and every metre or so a map keyframe with an image fingerprint and the camera pose.
 /// When a session recognises another piece, the two are linked into one frame and merged.
+/// A spot on earth from the phone's location (Wi-Fi and GPS), with its accuracy in metres.
+public struct GeoPoint: Codable, Sendable, Equatable {
+    public var latitude: Double
+    public var longitude: Double
+    public var accuracy: Double
+
+    public init(latitude: Double, longitude: Double, accuracy: Double) {
+        self.latitude = latitude
+        self.longitude = longitude
+        self.accuracy = accuracy
+    }
+
+    /// Metres along the earth's surface (haversine).
+    public func distance(to o: GeoPoint) -> Double {
+        let r = 6_371_000.0, rad = Double.pi / 180
+        let dLat = (o.latitude - latitude) * rad, dLon = (o.longitude - longitude) * rad
+        let a = sin(dLat / 2) * sin(dLat / 2) + cos(latitude * rad) * cos(o.latitude * rad) * sin(dLon / 2) * sin(dLon / 2)
+        return 2 * r * asin(min(1, sqrt(a)))
+    }
+
+    /// Whether two fixes can be the same home or building: within 150 m, or within twice their
+    /// accuracies when those are worse (indoors a fix is often 20–100 m off).
+    public func couldBeSamePlace(as o: GeoPoint) -> Bool {
+        distance(to: o) <= max(150, 2 * (accuracy + o.accuracy))
+    }
+}
+
 public struct MapPiece: Codable, Sendable, Identifiable {
     public var id: UUID
     public var created: Date
@@ -17,6 +44,9 @@ public struct MapPiece: Codable, Sendable, Identifiable {
     /// ARKit's class of the surface at each point (`SurfaceClass`; nil in older pieces).
     public var classes: [UInt8]?
     public var keyframes: [MapKeyframe]
+    /// Roughly where on earth the piece was mapped: tells another home or building apart, not
+    /// rooms. nil in older pieces, and without location access.
+    public var location: GeoPoint?
 
     public init(id: UUID = UUID(), created: Date = Date()) {
         self.id = id
@@ -28,7 +58,7 @@ public struct MapPiece: Codable, Sendable, Identifiable {
 
     // The surfaces are not in the JSON (hundreds of thousands of points): they go in a compact
     // binary file of their own (`surfaceData`). Older pieces with points in the JSON still load.
-    enum CodingKeys: String, CodingKey { case id, created, updated, points, normals, classes, keyframes }
+    enum CodingKeys: String, CodingKey { case id, created, updated, points, normals, classes, keyframes, location }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -39,6 +69,7 @@ public struct MapPiece: Codable, Sendable, Identifiable {
         normals = try c.decodeIfPresent([Float].self, forKey: .normals)
         classes = try c.decodeIfPresent([UInt8].self, forKey: .classes)
         keyframes = try c.decode([MapKeyframe].self, forKey: .keyframes)
+        location = try c.decodeIfPresent(GeoPoint.self, forKey: .location)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -47,6 +78,7 @@ public struct MapPiece: Codable, Sendable, Identifiable {
         try c.encode(created, forKey: .created)
         try c.encode(updated, forKey: .updated)
         try c.encode(keyframes, forKey: .keyframes)
+        try c.encodeIfPresent(location, forKey: .location)
     }
 
     /// 16 bytes a point: position (3 × Float32), normal (3 × Int8, ×127), class (UInt8).

@@ -36,6 +36,7 @@ targets:
         UIStatusBarHidden: true
         NSCameraUsageDescription: Pip looks at your task through the camera to point at the right part.
         NSMicrophoneUsageDescription: Pip listens to your questions while your hands are busy.
+        NSLocationWhenInUseUsageDescription: Pip uses your rough location only to know which of your saved rooms you may be in. It stays on this iPhone.
         PIPBaseURL: $(PIP_BASE_URL)
         PIPAppToken: $(PIP_APP_TOKEN)
     settings:

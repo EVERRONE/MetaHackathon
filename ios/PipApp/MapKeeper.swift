@@ -285,6 +285,13 @@ final class MapKeeper {
     /// Saves this piece with the room surfaces ARKit has meshed so far (raw mesh vertices; they
     /// are averaged and written off the main thread); merged pieces are removed. `done` runs once
     /// the files are written.
+    /// Where on earth this piece is being mapped (kept with it when it is saved): a better fix
+    /// replaces a worse one.
+    func setLocation(_ point: GeoPoint) {
+        if let old = current.location, old.accuracy <= point.accuracy, old.couldBeSamePlace(as: point) { return }
+        current.location = point
+    }
+
     func save(mesh: (points: [simd_float3], normals: [simd_float3], classes: [UInt8]), done: @escaping () -> Void = {}) {
         guard enabled, !saving else { done(); return }
         saving = true

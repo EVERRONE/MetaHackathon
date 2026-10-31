@@ -22,6 +22,8 @@
 	<string>1</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Pip looks at your task through the camera to point at the right part.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Pip uses your rough location only to know which of your saved rooms you may be in. It stays on this iPhone.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Pip listens to your questions while your hands are busy.</string>
 	<key>PIPAppToken</key>

@@ -18,9 +18,21 @@ extension GuideModel {
     func startMap() {
         memory.migrateLegacyMap()
         let pieces = memory.consent == true ? MapStore.loadAll() : []
+        // Only rooms that can be here: a map made in another home or building is not tried (the
+        // phone's rough location; pieces without one are kept).
+        if memory.consent == true { homeLocation.start() }
+        let here = homeLocation.point
+        let nearby = pieces.filter { p in
+            guard let here, let there = p.location else { return true }
+            return here.couldBeSamePlace(as: there)
+        }
+        if let here, nearby.count < pieces.count {
+            let far = pieces.compactMap { $0.location?.distance(to: here) }.min() ?? 0
+            Relocalisation.log(String(format: "location: %d of %d saved pieces are elsewhere (the nearest %.1f km away), not tried", pieces.count - nearby.count, pieces.count, far / 1000))
+        }
         // Most promising first: the room used last (of the ones mapped over a while), then the one
         // with the most places and views.
-        let saved = pieces.filter { MapStore.hasWorldMap($0.id) }
+        let saved = nearby.filter { MapStore.hasWorldMap($0.id) }
         func worth(_ p: MapPiece) -> Int { memory.places.filter { $0.piece == p.id }.count * 20 + p.keyframes.count }
         var order: [MapPiece] = []
         let substantial = saved.filter { $0.keyframes.count >= 10 }
@@ -35,6 +47,8 @@ extension GuideModel {
         }
         mapCandidates = order
         ar.relocalisation.onStatus = { [weak self] s in self?.ar.setSpikeStatus("map", s) }
+        // The location can come in a second or two after start: a room from elsewhere is given up then.
+        homeLocation.onUpdate = { [weak self] here in self?.locationArrived(here) }
         ar.relocalisation.onHint = { [weak self] hint in self?.mappingHint(hint) }
         ar.relocalisation.trying(continuing.map { String($0.id.uuidString.prefix(4)) }, detail: continuing.map(describe) ?? "\(pieces.count) pieces stored")
         mapKeeper.enabled = memory.consent == true
@@ -76,8 +90,8 @@ extension GuideModel {
     }
 
     /// The user asked something while ARKit still tries a saved room: no more tries this session.
-    func giveUpRecognising() {
-        log("map: the user asked something; no more waiting for a saved room")
+    func giveUpRecognising(because reason: String = "the user asked something") {
+        log("map: \(reason); no more waiting for a saved room")
         mapCandidates = []
         relocalisationGaveUp()
     }
@@ -113,6 +127,19 @@ extension GuideModel {
             return nil
         }
         return map
+    }
+
+    /// A fix came in: kept with this piece, and if ARKit is still trying a room that was mapped
+    /// elsewhere, it stops trying.
+    private func locationArrived(_ here: GeoPoint) {
+        mapCandidates.removeAll { p in p.location.map { !here.couldBeSamePlace(as: $0) } ?? false }
+        if ar.awaitingFirstRelocalisation {
+            // The piece being tried keeps its own location until ARKit recognises it.
+            guard let there = mapKeeper.current.location, !here.couldBeSamePlace(as: there) else { return }
+            Relocalisation.log(String(format: "location: the room being tried was mapped %.1f km from here; not waiting for it", here.distance(to: there) / 1000))
+            giveUpRecognising(because: "it was mapped elsewhere")
+        }
+        mapKeeper.setLocation(here)
     }
 
     private func describe(_ p: MapPiece) -> String {
@@ -258,6 +285,8 @@ extension GuideModel {
             memory.update(ar.restoredPlaces.map { var p = $0; p.piece = mapKeeper.current.id; return p })
             ar.restoredPlaces = []
         }
+        // Where on earth this piece is, once it is this session's own (not while ARKit still tries it).
+        if let here = homeLocation.point, !ar.awaitingFirstRelocalisation { mapKeeper.setLocation(here) }
         // iOS gives the app a little time in the background to finish writing: until both the
         // map piece and ARKit's own map (which may wait for ARKit and retry) are written.
         let background = BackgroundWork(name: "Pip map", parts: 2)
