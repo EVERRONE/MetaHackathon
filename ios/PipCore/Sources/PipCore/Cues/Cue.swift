@@ -81,10 +81,14 @@ public enum Cue: Equatable, Sendable {
     case task(goal: String, product: String?)
     /// The user will show instructions page by page: Pip reads along and builds the plan from them.
     case readPages(goal: String)
+    /// "Where did I leave my drink?": search the visual memory.
+    case find(what: String, phrase: String)
+    /// Changes to the shopping list.
+    case list(add: [String], got: [String], remove: [String])
 
     public var isDrawn: Bool {
         switch self {
-        case .state, .locate, .needView, .remember, .task, .readPages: return false
+        case .state, .locate, .needView, .remember, .task, .readPages, .find, .list: return false
         default: return true
         }
     }
@@ -98,7 +102,7 @@ public enum Cue: Equatable, Sendable {
             return ms
         case .danger(let m, _):
             return m.map { [$0] } ?? []
-        case .clear, .state, .locate, .needView, .remember, .task, .readPages:
+        case .clear, .state, .locate, .needView, .remember, .task, .readPages, .find, .list:
             return []
         }
     }
@@ -117,7 +121,7 @@ public enum Cue: Equatable, Sendable {
         case .offscreen(let m): return .offscreen(mark: f(m))
         case .verified(let m): return .verified(mark: f(m))
         case .landmark(let m, let n): return .landmark(mark: f(m), name: n)
-        case .clear, .state, .locate, .needView, .remember, .task, .readPages: return self
+        case .clear, .state, .locate, .needView, .remember, .task, .readPages, .find, .list: return self
         }
     }
 }
@@ -187,6 +191,14 @@ extension Cue {
             return .success(.locate(x: x, y: y, label: a["label"]))
         case "need_view", "needview":
             return .success(.needView(reason: a["reason"] ?? "unclear", hint: a["hint"]))
+        case "find":
+            guard let what = a["what"]?.trimmingCharacters(in: .whitespaces), !what.isEmpty else { return fail("needs what") }
+            return .success(.find(what: what, phrase: (a["obj"] ?? what).trimmingCharacters(in: .whitespaces)))
+        case "list":
+            func items(_ key: String) -> [String] {
+                (a[key] ?? "").split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            }
+            return .success(.list(add: items("add"), got: items("got"), remove: items("remove")))
         case "read_pages", "readpages":
             return .success(.readPages(goal: a["goal"]?.trimmingCharacters(in: .whitespaces) ?? ""))
         case "task":

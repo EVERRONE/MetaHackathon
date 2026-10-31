@@ -184,6 +184,18 @@ public struct Grounder: Sendable {
         return out
     }
 
+    /// SAM's mask for the object at a point of an image (an earlier snapshot).
+    public func object(at point: CGPoint, in image: CGImage, id: Int) async -> SegmentInstance? {
+        guard let jpeg = SetOfMarks.jpeg(image, quality: 0.85) else { return nil }
+        let p = SegmentObjectPrompt(id: 1, points: [.init(x: min(max(Int(point.x), 0), image.width - 1), y: min(max(Int(point.y), 0), image.height - 1))])
+        guard let seg = try? await client.segment(SegmentRequest(jpeg: jpeg, objects: [p], width: image.width, height: image.height, minConfidence: 0.3)),
+              var inst = seg.instances.first(where: { $0.objectId == 1 }),
+              Double(inst.area) < 0.3 * Double(image.width * image.height) else { return nil }
+        inst.id = id
+        inst.objectId = nil
+        return inst
+    }
+
     /// Loads the accurate text recognition models, which otherwise take ~25 s on first use after a
     /// pause. Call at launch and every half minute while the app is in use.
     public static func warmUp() async {

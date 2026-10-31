@@ -170,11 +170,9 @@ extension GuideModel {
         pageReader = reader
         readingGoal = goal
         preparing = phrases.readingStatus(0)
-        ar.onFrame = { [weak reader] frame in reader?.feed(frame) }
     }
 
     func finishReading(heard: String) async {
-        ar.onFrame = nil
         let pages = pageReader?.pages ?? []
         pageReader = nil
         preparing = nil

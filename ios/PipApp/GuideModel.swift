@@ -46,6 +46,22 @@ final class GuideModel: ObservableObject {
     var awaitingConsent = false
     var pendingPlaces: [SpaceMemory.Place] = []
     var pendingFacts: [(key: String, value: String, source: String)] = []
+
+    // MARK: Visual memory and shopping list (see GuideModel+Find.swift)
+
+    let keyframes = Keyframes()
+    var pendingFind: (what: String, phrase: String)?
+    var foundCount = 0
+    struct ShoppingItem: Identifiable, Equatable {
+        var id: String { name }
+        var name: String
+        var inBasket = false
+        var hits = 0
+        var wrongHits = 0
+    }
+    @Published var shopping: [ShoppingItem] = []
+    var basketChecking = false
+    var basketTimer: Timer?
     private let audio = AudioIO()
     let speaker: Speaker
     let client: PipClient
@@ -142,6 +158,12 @@ final class GuideModel: ObservableObject {
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try? session.setActive(true)
         ar.start(initialMap: memory.loadMap())
+        // Every camera frame: the visual memory, and reading mode when it is on.
+        ar.onFrame = { [weak self] frame in
+            self?.keyframes.consider(frame)
+            self?.pageReader?.feed(frame)
+        }
+        startBasketWatch()
         ar.restore(memory.places)
         for (key, fact) in memory.facts { facts[key] = Fact(value: fact.value, source: fact.source) }
         // Accurate text recognition unloads after a pause and then takes ~25 s to load: keep it warm.
@@ -295,6 +317,9 @@ final class GuideModel: ObservableObject {
         var known = facts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.value) (\($0.value.source == "seen" ? "you saw it" : "the user said so"))" }
         let places = ar.placeDescriptions()
         if !places.isEmpty { known.append("Remembered places (point with m=number): " + places.joined(separator: " | ")) }
+        if !shopping.isEmpty {
+            known.append("Shopping list: " + shopping.map { "\($0.name) (\($0.inBasket ? "in the basket" : "still to get"))" }.joined(separator: ", "))
+        }
         var request = LookRequest(frame: snapshot.image, facts: known, history: history, utterance: utterance, directive: directive)
         request.knownMarks = ar.placeMarks
         if let rt = runtime, rt.isActive, let step = rt.current {
@@ -332,6 +357,12 @@ final class GuideModel: ObservableObject {
                 case .sideChannel(.state(let state)):
                     note("side: state \(state)")
                     onState?(state)
+                case .sideChannel(.find(let what, let phrase)):
+                    note("find: \(what) [\(phrase)]")
+                    pendingFind = (what, phrase)
+                case .sideChannel(.list(let add, let got, let remove)):
+                    note("list: +\(add) ✓\(got) -\(remove)")
+                    updateList(add: add, got: got, remove: remove)
                 case .sideChannel(.readPages(let goal)):
                     note("reading pages: \(goal)")
                     startReading(goal: goal)
@@ -360,6 +391,10 @@ final class GuideModel: ObservableObject {
             if !Task.isCancelled { phase = .failed("Look failed: \(error)") }
         }
         recorder?.finish(rawText: raw)
+        if let find = pendingFind, !Task.isCancelled {
+            pendingFind = nil
+            await findInMemory(find.what, phrase: find.phrase)
+        }
         if let pending = pendingTask, !Task.isCancelled {
             pendingTask = nil
             await prepareTask(goal: pending.goal, product: pending.product)
@@ -377,6 +412,7 @@ final class GuideModel: ObservableObject {
 
     func resetConversation() {
         interrupt()
+        shopping = []
         history = []
         facts = [:]
         primarySpeaker = nil

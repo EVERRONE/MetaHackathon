@@ -127,6 +127,23 @@ if args.first == "check", args.count >= 3 {
     exit(0)
 }
 
+// pipeval find "<what>" <img> <img>…: searches snapshots (oldest first) like the visual memory.
+if args.first == "find", args.count >= 3 {
+    let env = ProcessInfo.processInfo.environment
+    let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
+    let images = args.dropFirst(2).compactMap { FileManager.default.contents(atPath: $0) }.compactMap { SetOfMarks.load($0, maxSide: 768) }
+    let t0 = Date()
+    let hits = try await MemorySearch(client: client).find(args[1], in: images.compactMap { SetOfMarks.jpeg($0, quality: 0.6) })
+    print(String(format: "%.1fs", Date().timeIntervalSince(t0)), hits.map { "snapshot \($0.index + 1) (\(args[$0.index + 2].split(separator: "/").last ?? "")) @\(Int($0.x)),\(Int($0.y)) conf \($0.confidence)" })
+    if let first = hits.first {
+        let img = images[first.index]
+        let p = CGPoint(x: first.x / 1000 * Double(img.width), y: first.y / 1000 * Double(img.height))
+        let inst = await Grounder(client: client, frameJPEG: Data()).object(at: p, in: img, id: 1)
+        print("SAM:", inst.map { "box \($0.box) conf \($0.confidence)" } ?? "nothing at that point")
+    }
+    exit(0)
+}
+
 guard args.first == "look", args.count >= 3 else {
     fail("usage: pipeval look <image> \"<utterance>\" [--prompts a,b] [--lang English|Dutch] [--goal \"…\"] [--out dir]")
 }

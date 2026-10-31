@@ -35,6 +35,22 @@ struct Phrases {
     var paused: String { dutch ? "Ik wacht. Zeg 'ga verder' als je klaar bent." : "I'll wait. Say 'continue' when you're ready." }
     var resumed: String { dutch ? "We gaan verder." : "Let's continue." }
     var stopped: String { dutch ? "De taak is gestopt." : "The task is stopped." }
+    func searchingMemory(_ what: String) -> String { dutch ? "Ik kijk terug waar ik \(what) zag." : "I'm looking back for \(what)." }
+    func found(_ what: String, minutes: Int, where place: String) -> String {
+        let ago = minutes < 1 ? (dutch ? "net" : "just now") : (dutch ? "\(minutes) minuten geleden" : "\(minutes) minutes ago")
+        return dutch ? "Ik zag \(what) \(ago): \(place). Volg de pijl. Het kan intussen verplaatst zijn."
+                     : "I saw \(what) \(ago): \(place). Follow the arrow. It may have been moved since."
+    }
+    func notFound(_ what: String, minutes: Int) -> String {
+        dutch ? "Ik heb \(what) niet gezien in de laatste \(max(1, minutes)) minuten. Waar was je het laatst?"
+              : "I haven't seen \(what) in the last \(max(1, minutes)) minutes. Where were you last?"
+    }
+    func gotItem(_ item: String) -> String { dutch ? "\(item), afgevinkt." : "\(item), got it." }
+    func wrongItem(_ item: String, seen: String) -> String { dutch ? "Let op: ik zie \(seen). Op je lijst staat \(item)." : "Careful: I see \(seen). Your list says \(item)." }
+    var listComplete: String { dutch ? "Alles van je lijst ligt in je mand." : "Everything on your list is in your basket." }
+    func listMissing(_ items: [String]) -> String {
+        dutch ? "Je hebt nog niet: \(items.joined(separator: ", "))." : "You still need: \(items.joined(separator: ", "))."
+    }
     var askMemory: String {
         dutch ? "Zal ik dit ook onthouden voor de volgende keer? Alleen op je iPhone." : "Shall I remember this for next time too? Only on your iPhone."
     }

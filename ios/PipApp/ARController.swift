@@ -237,28 +237,39 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     /// Where each remembered place is from the user right now, in words the model can pass on.
     func placeDescriptions() -> [String] {
-        guard let frame = arView.session.currentFrame else { return [] }
+        places.sorted { $0.key < $1.key }.compactMap { id, place in
+            describe(mark: id, dutch: false).map { "\(id): \(place.name) — \($0)" }
+        }
+    }
+
+    /// Where a mark is from the user now: distance, side, height, and whether it is in view.
+    func describe(mark id: Int, dutch: Bool) -> String? {
+        guard let frame = arView.session.currentFrame, let m = marks[id] else { return nil }
         let cam = frame.camera.transform
         let pos = simd_float3(cam.columns.3.x, cam.columns.3.y, cam.columns.3.z)
         let forward = -simd_float3(cam.columns.2.x, 0, cam.columns.2.z)
         let right = simd_float3(cam.columns.0.x, 0, cam.columns.0.z)
-        return places.sorted { $0.key < $1.key }.compactMap { id, place in
-            guard let m = marks[id] else { return nil }
-            let v = m.centroid - pos
-            let flat = simd_float3(v.x, 0, v.z)
-            let angle = atan2(simd_dot(flat, simd_normalize(right)), simd_dot(flat, simd_normalize(forward))) * 180 / .pi
-            let side: String
-            switch abs(angle) {
-            case ..<25: side = "ahead"
-            case ..<70: side = angle > 0 ? "ahead to the right" : "ahead to the left"
-            case ..<125: side = angle > 0 ? "to the right" : "to the left"
-            default: side = angle > 0 ? "behind you, to the right" : "behind you, to the left"
-            }
-            let height = v.y > 0.5 ? ", higher up" : (v.y < -0.6 ? ", lower down" : "")
-            let p = arView.project(m.centroid)
-            let inView = p.map { arView.bounds.contains($0) } ?? false && abs(angle) < 60
-            return String(format: "%d: %@ — %.1f m, %@%@; %@", id, place.name, simd_length(v), side, height, inView ? "in view" : "not in view")
+        let v = m.centroid - pos
+        let flat = simd_float3(v.x, 0, v.z)
+        let angle = atan2(simd_dot(flat, simd_normalize(right)), simd_dot(flat, simd_normalize(forward))) * 180 / .pi
+        let side: String
+        switch abs(angle) {
+        case ..<25: side = dutch ? "voor je" : "ahead"
+        case ..<70: side = angle > 0 ? (dutch ? "schuin rechts voor je" : "ahead to the right") : (dutch ? "schuin links voor je" : "ahead to the left")
+        case ..<125: side = angle > 0 ? (dutch ? "rechts van je" : "to the right") : (dutch ? "links van je" : "to the left")
+        default: side = angle > 0 ? (dutch ? "achter je, rechts" : "behind you, to the right") : (dutch ? "achter je, links" : "behind you, to the left")
         }
+        let height = v.y > 0.5 ? (dutch ? ", hoger" : ", higher up") : (v.y < -0.6 ? (dutch ? ", lager" : ", lower down") : "")
+        let p = arView.project(m.centroid)
+        let inView = (p.map { arView.bounds.contains($0) } ?? false) && abs(angle) < 60
+        let distance = String(format: dutch ? "%.1f meter" : "%.1f m", simd_length(v)).replacingOccurrences(of: dutch ? "." : "#", with: dutch ? "," : "#")
+        return "\(distance), \(side)\(height); " + (inView ? (dutch ? "in beeld" : "in view") : (dutch ? "niet in beeld" : "not in view"))
+    }
+
+    /// A found object from the visual memory, outlined in the room (not remembered across sessions).
+    func addFound(world polygons: [[simd_float3]], id: Int) {
+        let m = AnchoredMark(id: id, world: polygons)
+        place(m)
     }
 
     /// Saves the room map with its anchors, once ARKit has mapped enough of the room.

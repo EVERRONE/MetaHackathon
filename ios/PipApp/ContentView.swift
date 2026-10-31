@@ -48,6 +48,7 @@ struct ContentView: View {
                         .padding(.horizontal)
                 }
                 if let task = model.taskView { taskCard(task) }
+                if !model.shopping.isEmpty { shoppingCard }
                 if showDebug { debugPanel }
 
                 Spacer()
@@ -98,6 +99,26 @@ struct ContentView: View {
             .shadow(radius: 8)
         }
         .accessibilityLabel(busy ? "Stop Pip" : (model.muted ? "Unmute" : "Mute"))
+    }
+
+    /// The shopping list: what is in the basket and what is still to get.
+    private var shoppingCard: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label("\(model.shopping.filter(\.inBasket).count)/\(model.shopping.count)", systemImage: "cart")
+                    .font(.headline.monospacedDigit())
+                Spacer()
+            }
+            ForEach(model.shopping) { item in
+                Label(item.name, systemImage: item.inBasket ? "checkmark.circle.fill" : "circle")
+                    .font(.subheadline)
+                    .foregroundStyle(item.inBasket ? .green : .white)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(10)
+        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal)
     }
 
     /// The current step at a glance; tap for every step and its status.
