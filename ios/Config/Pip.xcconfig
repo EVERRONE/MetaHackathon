@@ -1,0 +1,4 @@
+// Shared build settings. Secrets.xcconfig (gitignored) holds PIP_APP_TOKEN and DEVELOPMENT_TEAM;
+// create it with ios/scripts/make-secrets.sh.
+PIP_BASE_URL = https:/$()/pip.unveil.be
+#include? "Secrets.xcconfig"
