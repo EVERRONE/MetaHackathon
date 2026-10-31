@@ -33,6 +33,21 @@ final class TrackingLog {
         }
     }
 
+    /// Appends a time-stamped line to a file in Documents, off the main thread.
+    nonisolated static func append(_ line: String, to name: String) {
+        guard let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent(name) else { return }
+        let text = ISO8601DateFormatter().string(from: Date()) + "\t" + line + "\n"
+        Task.detached(priority: .utility) {
+            if let handle = try? FileHandle(forWritingTo: url) {
+                handle.seekToEndOfFile()
+                handle.write(Data(text.utf8))
+                try? handle.close()
+            } else {
+                try? Data(text.utf8).write(to: url)
+            }
+        }
+    }
+
     /// Median distance between outline and object over this session's re-measurements.
     var medianError: Double? {
         guard !errors.isEmpty else { return nil }

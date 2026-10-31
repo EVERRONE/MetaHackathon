@@ -27,6 +27,11 @@ struct Phrases {
         dutch ? "De handleiding kan ik niet lezen. Ik maak een plan uit algemene kennis, niet uit een gecontroleerde bron."
               : "I can't read the manual. I'll make a plan from general knowledge, not from a verified source."
     }
+    var linkedRoom: String { dutch ? "Ik herken deze ruimte van een vorige keer. Ik heb ze aan mijn kaart gekoppeld." : "I recognise this space from before. I've linked it to my map." }
+    func linkedRoom(with places: [String]) -> String {
+        let list = places.prefix(3).joined(separator: dutch ? " en " : " and ")
+        return dutch ? "Ik herken deze ruimte van een vorige keer: hier is \(list)." : "I recognise this space from before: \(list) is here."
+    }
     var welcome: String { dutch ? "Graag gedaan." : "You're welcome." }
     var prepareFailed: String { dutch ? "Het stappenplan lukte niet. Probeer het nog eens." : "I couldn't make the plan. Please try again." }
     var cancelled: String { dutch ? "Oké, dan niet." : "Okay, we won't." }

@@ -59,6 +59,9 @@ final class GuideModel: ObservableObject {
     // MARK: Visual memory and shopping list (see GuideModel+Find.swift)
 
     let keyframes = Keyframes()
+    /// The 3D map of the home, built while Pip is used (see MapKeeper and GuideModel+Memory).
+    let mapKeeper = MapKeeper()
+    var mapSaveTimer: Timer?
     /// How well outlines hold: every re-measurement, on this iPhone, to evaluate on the Mac.
     let trackingLog = TrackingLog()
     var foundCount = 0
@@ -183,11 +186,12 @@ final class GuideModel: ObservableObject {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try? session.setActive(true)
-        ar.start(initialMap: memory.loadMap())
-        // Every camera frame: the visual memory, and reading mode when it is on.
+        startMap()
+        // Every camera frame: the visual memory, the map of the home, and reading mode when it is on.
         ar.onFrame = { [weak self] frame in
             guard let self else { return }
             self.keyframes.consider(frame, trusted: self.ar.trackingNormal)
+            self.mapKeeper.consider(frame)
             self.pageReader?.feed(frame)
         }
         // The room map is saved when the app goes to the background, so new places survive.
@@ -195,7 +199,6 @@ final class GuideModel: ObservableObject {
             Task { @MainActor in self?.saveRoomNow() }
         }
         startBasketWatch()
-        ar.restore(memory.places)
         for (key, fact) in memory.facts { facts[key] = Fact(value: fact.value, source: fact.source) }
         // Accurate text recognition unloads after a pause and then takes ~25 s to load: keep it warm.
         Task.detached(priority: .utility) { await Grounder.warmUp() }
@@ -475,5 +478,7 @@ final class GuideModel: ObservableObject {
     func log(_ line: String) {
         trace.append(line)
         if trace.count > 60 { trace.removeFirst(trace.count - 60) }
+        // The map's decisions are kept on the iPhone too (Documents/map.log), to check linking later.
+        if line.hasPrefix("map:") { TrackingLog.append(line, to: "map.log") }
     }
 }

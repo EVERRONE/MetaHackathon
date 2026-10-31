@@ -1,10 +1,11 @@
 import ARKit
 import Foundation
+import PipCore
 import simd
 
 /// What Pip remembers across sessions, only after the user agreed, and only on this iPhone:
-/// the map of the room (so ARKit recognises it again), the places in it, and facts about the
-/// user's devices.
+/// the places in the home and facts about the user's devices. The 3D map itself is kept as map
+/// pieces (MapStore, MapKeeper).
 @MainActor
 final class SpaceMemory: ObservableObject {
     struct Place: Codable, Identifiable, Equatable {
@@ -15,6 +16,10 @@ final class SpaceMemory: ObservableObject {
         /// The outline relative to the anchor, in metres.
         var outline: [[SIMD3<Float>]]
         var created: Date
+        /// The map piece the place belongs to, and its anchor's pose in that piece (column-major),
+        /// so it can be brought back when the piece is linked into a later session.
+        var piece: UUID?
+        var pose: [Float]?
     }
 
     struct Fact: Codable, Equatable {
@@ -61,6 +66,15 @@ final class SpaceMemory: ObservableObject {
         save()
     }
 
+    /// Replaces stored places (after they moved into another map piece).
+    func update(_ changed: [Place]) {
+        guard consent == true, !changed.isEmpty else { return }
+        for p in changed {
+            if let i = places.firstIndex(where: { $0.id == p.id }) { places[i] = p } else { places.append(p) }
+        }
+        save()
+    }
+
     func remove(_ id: UUID) {
         places.removeAll { $0.id == id }
         save()
@@ -82,20 +96,21 @@ final class SpaceMemory: ObservableObject {
         facts = [:]
         try? FileManager.default.removeItem(at: dataURL)
         try? FileManager.default.removeItem(at: mapURL)
+        MapStore.removeAll()
+    }
+
+    /// The map from before map pieces (one room): it becomes a piece of its own, with its places.
+    func migrateLegacyMap() {
+        guard consent == true, FileManager.default.fileExists(atPath: mapURL.path) else { return }
+        let piece = MapPiece()
+        MapStore.save(piece)
+        try? FileManager.default.moveItem(at: mapURL, to: MapStore.worldMapURL(piece.id))
+        for i in places.indices where places[i].piece == nil { places[i].piece = piece.id }
+        save()
     }
 
     private func save() {
         guard consent == true, let data = try? JSONEncoder().encode(Stored(places: places, facts: facts)) else { return }
         try? data.write(to: dataURL, options: .completeFileProtection)
-    }
-
-    func saveMap(_ map: ARWorldMap) {
-        guard consent == true, let data = try? NSKeyedArchiver.archivedData(withRootObject: map, requiringSecureCoding: true) else { return }
-        try? data.write(to: mapURL, options: .completeFileProtection)
-    }
-
-    func loadMap() -> ARWorldMap? {
-        guard consent == true, let data = try? Data(contentsOf: mapURL) else { return nil }
-        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data)
     }
 }

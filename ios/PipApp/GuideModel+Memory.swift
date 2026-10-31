@@ -1,11 +1,60 @@
 import Foundation
 import PipCore
+import simd
 
 /// Long-term memory: places in the room and facts about the user's devices, kept across sessions
 /// only after the user said yes, and only on this iPhone.
 extension GuideModel {
+    // MARK: The map of the home
+
+    /// At launch: the most recently used map piece is handed to ARKit, which recognises the room
+    /// within seconds if Pip is in it (its places come back on their anchors). If not, Pip starts a
+    /// fresh piece, and every stored piece waits to be recognised and linked while the user walks.
+    func startMap() {
+        memory.migrateLegacyMap()
+        let pieces = memory.consent == true ? MapStore.loadAll() : []
+        let recent = pieces.max { $0.updated < $1.updated }
+        let worldMap = recent.flatMap { MapStore.loadWorldMap($0.id) }
+        let continuing = worldMap != nil ? recent : nil
+        mapKeeper.enabled = memory.consent == true
+        mapKeeper.begin(continuing: continuing, others: pieces.filter { $0.id != continuing?.id })
+        mapKeeper.onLog = { [weak self] line in self?.log(line) }
+        mapKeeper.onLink = { [weak self] piece, transform in self?.linked(piece, transform: transform) }
+        ar.onRelocaliseGaveUp = { [weak self] in self?.relocalisationGaveUp() }
+        ar.start(initialMap: worldMap)
+        // Places of the piece ARKit is recognising come back on their own anchors.
+        ar.restore(memory.places.filter { $0.piece == nil || $0.piece == continuing?.id })
+        if continuing != nil { log("map: recognising the room of last time") }
+        mapSaveTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.mapKeeper.dirty else { return }
+                self.saveRoomNow()
+            }
+        }
+    }
+
+    private func relocalisationGaveUp() {
+        log("map: not the room of last time; starting a new piece")
+        ar.restartFresh()
+        mapKeeper.startNewPiece()
+    }
+
+    /// A stored piece was recognised and linked: its places come into this session, and Pip says so.
+    private func linked(_ piece: MapPiece, transform: simd_float4x4) {
+        let moved = memory.places.filter { $0.piece == piece.id }.compactMap { place -> SpaceMemory.Place? in
+            guard var p = ar.installLinked(place, transform: transform) else { return nil }
+            p.piece = mapKeeper.current.id
+            return p
+        }
+        memory.update(moved)
+        let names = moved.map(\.name)
+        say(names.isEmpty ? phrases.linkedRoom : phrases.linkedRoom(with: names))
+        saveRoomSoon()
+    }
+
     func rememberPlace(name: String, mark: Int) {
-        guard let place = ar.rememberPlace(name: name, mark: mark) else { return }
+        guard var place = ar.rememberPlace(name: name, mark: mark) else { return }
+        place.piece = mapKeeper.current.id
         log("remembered place: \(name)")
         switch memory.consent {
         case true?:
@@ -44,6 +93,7 @@ extension GuideModel {
     func setConsent(_ yes: Bool) {
         awaitingConsent = false
         memory.setConsent(yes)
+        mapKeeper.enabled = yes
         if yes { keepPending() } else { pendingPlaces = []; pendingFacts = [] }
     }
 
@@ -70,10 +120,18 @@ extension GuideModel {
         }
     }
 
+    /// Saves this session's map piece: the room's surfaces, the keyframes, and ARKit's own map
+    /// with the places' anchors. The 3D map grows with every session, places or not.
     func saveRoomNow() {
-        guard memory.consent == true, !memory.places.isEmpty else { return }
-        let memory = memory
-        ar.saveMap { map in memory.saveMap(map) }
+        guard memory.consent == true else { return }
+        // Places ARKit brought back now have a known pose in this piece.
+        if !ar.restoredPlaces.isEmpty {
+            memory.update(ar.restoredPlaces.map { var p = $0; p.piece = mapKeeper.current.id; return p })
+            ar.restoredPlaces = []
+        }
+        mapKeeper.save(mesh: ar.meshPoints())
+        let id = mapKeeper.current.id
+        ar.saveMap { map in MapStore.saveWorldMap(map, for: id) }
     }
 
     func forget(place id: UUID) {
@@ -91,6 +149,7 @@ extension GuideModel {
     func forgetEverything() {
         ar.forgetAllPlaces()
         keyframes.forgetAll()
+        mapKeeper.begin(continuing: nil, others: [])
         facts = [:]
         pendingPlaces = []
         pendingFacts = []

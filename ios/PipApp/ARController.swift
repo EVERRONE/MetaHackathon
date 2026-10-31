@@ -42,8 +42,17 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     private var pendingPlaces: [UUID: SpaceMemory.Place] = [:]
 
     func start(initialMap: ARWorldMap? = nil) {
-        let config = ARWorldTrackingConfiguration()
         // A saved room map: ARKit recognises the room again and restores the remembered places.
+        awaitingFirstRelocalisation = initialMap != nil
+        arView.renderOptions.insert(.disableMotionBlur)
+        arView.session.delegate = self
+        arView.session.run(Self.configuration(initialMap: initialMap))
+        // Outlines are drawn in the same step as the camera image, so they do not lag or swim.
+        renderSubscription = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in self?.renderNow() }
+    }
+
+    static func configuration(initialMap: ARWorldMap?) -> ARWorldTrackingConfiguration {
+        let config = ARWorldTrackingConfiguration()
         config.initialWorldMap = initialMap
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             config.frameSemantics.insert(.sceneDepth)
@@ -52,11 +61,40 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
             config.frameSemantics.insert(.smoothedSceneDepth)
         }
-        arView.renderOptions.insert(.disableMotionBlur)
-        arView.session.delegate = self
-        arView.session.run(config)
-        // Outlines are drawn in the same step as the camera image, so they do not lag or swim.
-        renderSubscription = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in self?.renderNow() }
+        // The room's surfaces as a mesh: Pip's 3D map of the home is built from it.
+        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+            config.sceneReconstruction = .mesh
+        }
+        return config
+    }
+
+    /// The saved room was not recognised (Pip is in another room): start fresh, so tracking works
+    /// at once; the room's map waits to be linked when Pip sees it.
+    func restartFresh() {
+        awaitingFirstRelocalisation = false
+        relocalisingSince = nil
+        removeMarks { _ in true }
+        places = [:]
+        pendingPlaces = [:]
+        clearCues()
+        arView.session.run(Self.configuration(initialMap: nil), options: [.resetTracking, .removeExistingAnchors])
+    }
+
+    /// The room's surfaces ARKit has meshed so far, as points 4 cm apart (world space).
+    func meshPoints() -> [simd_float3] {
+        let meshes = (arView.session.currentFrame?.anchors ?? []).compactMap { $0 as? ARMeshAnchor }
+        var points: [simd_float3] = []
+        for mesh in meshes {
+            let vertices = mesh.geometry.vertices
+            let base = vertices.buffer.contents().advanced(by: vertices.offset)
+            let t = mesh.transform
+            for i in 0..<vertices.count {
+                let v = base.advanced(by: i * vertices.stride).assumingMemoryBound(to: Float.self)
+                let p = t * simd_float4(v[0], v[1], v[2], 1)
+                points.append(simd_float3(p.x, p.y, p.z))
+            }
+        }
+        return VoxelIndex.downsample(points, size: 0.04)
     }
 
     func snapshot() -> FrameSnapshot? {
@@ -250,6 +288,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         switch camera.trackingState {
         case .normal:
             relocalisingSince = nil
+            awaitingFirstRelocalisation = false
             // Back after being lost (not the first start): every object is checked again.
             if !trackingNormal, !tracks.isEmpty { trackingRecovered = true }
             trackingNormal = true
@@ -258,8 +297,14 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             let since = relocalisingSince ?? Date()
             relocalisingSince = since
             trackingNormal = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.relocaliseWait) { [weak self] in
+            let firstTry = awaitingFirstRelocalisation
+            DispatchQueue.main.asyncAfter(deadline: .now() + (firstTry ? Self.firstRelocaliseWait : Self.relocaliseWait)) { [weak self] in
                 guard let self, self.relocalisingSince == since else { return }
+                if firstTry, self.awaitingFirstRelocalisation {
+                    // The saved room is not this one: start fresh; the map links it later.
+                    self.onRelocaliseGaveUp?()
+                    return
+                }
                 self.trackingNormal = true
                 self.overlay.isHidden = false
             }
@@ -273,7 +318,12 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     static let relocaliseWait: TimeInterval = 10
+    /// At start with a saved room: ARKit recognises it within a few seconds when Pip is in it.
+    static let firstRelocaliseWait: TimeInterval = 8
     private var relocalisingSince: Date?
+    private var awaitingFirstRelocalisation = false
+    /// The saved room was not recognised at start.
+    var onRelocaliseGaveUp: (() -> Void)?
 
 
     private func renderNow() {
@@ -336,9 +386,32 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         arView.session.add(anchor: anchor)
         let inverse = simd_inverse(t)
         let local = world.map { ring in ring.map { p -> SIMD3<Float> in let q = inverse * simd_float4(p, 1); return SIMD3(q.x, q.y, q.z) } }
-        let place = SpaceMemory.Place(id: UUID(), name: name, anchorID: anchor.identifier, outline: local, created: Date())
+        let place = SpaceMemory.Place(id: UUID(), name: name, anchorID: anchor.identifier, outline: local, created: Date(), pose: Self.values(t))
         install(place, anchor: anchor)
         return place
+    }
+
+    /// A place from a map piece that was just linked: `transform` takes its piece's frame into
+    /// this session's. It gets a new anchor here, so the next saved map holds it too.
+    func installLinked(_ place: SpaceMemory.Place, transform: simd_float4x4) -> SpaceMemory.Place? {
+        guard let values = place.pose, values.count == 16, !places.values.contains(where: { $0.id == place.id }) else { return nil }
+        let pose = transform * Self.matrix(values)
+        let anchor = ARAnchor(name: "pip-place", transform: pose)
+        arView.session.add(anchor: anchor)
+        var moved = place
+        moved.anchorID = anchor.identifier
+        moved.pose = Self.values(pose)
+        install(moved, anchor: anchor)
+        return moved
+    }
+
+    static func values(_ m: simd_float4x4) -> [Float] {
+        [m.columns.0, m.columns.1, m.columns.2, m.columns.3].flatMap { [$0.x, $0.y, $0.z, $0.w] }
+    }
+
+    static func matrix(_ v: [Float]) -> simd_float4x4 {
+        simd_float4x4(columns: (simd_float4(v[0], v[1], v[2], v[3]), simd_float4(v[4], v[5], v[6], v[7]),
+                                simd_float4(v[8], v[9], v[10], v[11]), simd_float4(v[12], v[13], v[14], v[15])))
     }
 
     /// Places from memory: they appear once ARKit has restored their anchors from the room map.
@@ -348,9 +421,16 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     private func restorePlace(_ anchor: ARAnchor) {
-        guard let place = pendingPlaces.removeValue(forKey: anchor.identifier) else { return }
+        guard var place = pendingPlaces.removeValue(forKey: anchor.identifier) else { return }
+        // ARKit knows where the anchor is in this map: keep that, so the place can also be
+        // brought back by linking pieces later.
+        place.pose = Self.values(anchor.transform)
         install(place, anchor: anchor)
+        restoredPlaces.append(place)
     }
+
+    /// Places ARKit restored from the saved map, with their pose now known (to store once).
+    var restoredPlaces: [SpaceMemory.Place] = []
 
     private func install(_ place: SpaceMemory.Place, anchor: ARAnchor) {
         let id = nextPlaceMark
