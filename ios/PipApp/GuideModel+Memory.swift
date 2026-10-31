@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import PipCore
 import simd
 
@@ -34,6 +35,10 @@ extension GuideModel {
             self.ar.applyDrift(delta, toPlaces: self.linkedPlaces[piece] ?? [])
         }
         ar.start(initialMap: worldMap)
+        // The week's snapshots: those of the room ARKit is recognising can be pointed at.
+        keyframes.persist = memory.consent == true
+        keyframes.currentPiece = mapKeeper.current.id
+        keyframes.load(locatedPiece: continuing?.id)
         // Places of the piece ARKit is recognising come back on their own anchors.
         ar.restore(memory.places.filter { $0.piece == nil || $0.piece == continuing?.id })
         if continuing != nil { log("map: recognising the room of last time") }
@@ -49,6 +54,7 @@ extension GuideModel {
         log("map: not the room of last time; starting a new piece")
         ar.restartFresh()
         mapKeeper.startNewPiece()
+        keyframes.pieceChanged(to: mapKeeper.current.id)
     }
 
     /// A stored piece was recognised and linked: its places come into this session, and Pip says so.
@@ -66,6 +72,7 @@ extension GuideModel {
         }
         memory.update(moved)
         linkedPlaces[piece.id] = Set(moved.map(\.id))
+        keyframes.relink(piece: piece.id, into: mapKeeper.current.id, transform: transform)
         let names = moved.map(\.name)
         say(names.isEmpty ? phrases.linkedRoom : phrases.linkedRoom(with: names))
         saveRoomSoon()
@@ -113,7 +120,15 @@ extension GuideModel {
         awaitingConsent = false
         memory.setConsent(yes)
         mapKeeper.enabled = yes
-        if yes { keepPending() } else { pendingPlaces = []; pendingFacts = [] }
+        if yes {
+            keyframes.persist = true
+            keyframes.currentPiece = mapKeeper.current.id
+            keepPending()
+        } else {
+            keyframes.stopPersisting()
+            pendingPlaces = []
+            pendingFacts = []
+        }
     }
 
     private func keepPending() {
@@ -148,7 +163,12 @@ extension GuideModel {
             memory.update(ar.restoredPlaces.map { var p = $0; p.piece = mapKeeper.current.id; return p })
             ar.restoredPlaces = []
         }
-        mapKeeper.save(mesh: ar.meshPoints())
+        // iOS gives the app a little time in the background to finish writing.
+        let background = UIApplication.shared.beginBackgroundTask(withName: "Pip map")
+        mapKeeper.save(mesh: ar.meshRaw()) {
+            Task { @MainActor in UIApplication.shared.endBackgroundTask(background) }
+        }
+        keyframes.saveIndex()
         let id = mapKeeper.current.id
         ar.saveMap { map in MapStore.saveWorldMap(map, for: id) }
     }

@@ -63,12 +63,29 @@ private func camera(at p: simd_float3, heading: Float = 0) -> simd_float4x4 {
         piece.setSurface([simd_float3(0, 0, 0), simd_float3(1, 0, 0)])
         #expect(piece.keyframes[0].pose == pose)
         let data = try JSONEncoder().encode(piece)
-        let back = try JSONDecoder().decode(MapPiece.self, from: data)
+        var back = try JSONDecoder().decode(MapPiece.self, from: data)
+        back.loadSurface(piece.surfaceData())
         #expect(back.keyframes[0].pose == pose)
         let t = PointRegistration.transform(yaw: .pi / 2, translation: simd_float3(5, 0, 0))
         let moved = back.transformed(by: t)
         #expect(simd_distance(moved.surface[1], simd_float3(5, 0, -1)) < 1e-5)
         #expect(simd_distance(moved.keyframes[0].position, (t * simd_float4(1, 1.4, -2, 1)).xyz) < 1e-5)
+    }
+
+    @Test func surfacesRoundTripThroughTheBinaryFile() throws {
+        var piece = MapPiece()
+        piece.setSurface([simd_float3(1, 2, 3), simd_float3(-0.5, 0.25, 4)], normals: [simd_float3(0, 1, 0), simd_float3(0.6, 0, 0.8)],
+                         classes: [SurfaceClass.floor, SurfaceClass.seat])
+        piece.keyframes = [MapKeyframe(pose: matrix_identity_float4x4, print: [0.25, -1, 3])]
+        var back = try JSONDecoder().decode(MapPiece.self, from: JSONEncoder().encode(piece))
+        #expect(back.points.isEmpty)
+        #expect(back.keyframes[0].print == [0.25, -1, 3])
+        let blob = piece.surfaceData()
+        #expect(blob.count == 8 + 2 * 16)
+        back.loadSurface(blob)
+        #expect(back.surface == piece.surface)
+        #expect(back.classes == [SurfaceClass.floor, SurfaceClass.seat])
+        #expect(simd_distance(back.surfaceNormals![1], simd_float3(0.6, 0, 0.8)) < 0.01)
     }
 
     @Test func fingerprintsFindTheMostAlikeViewsFirst() {

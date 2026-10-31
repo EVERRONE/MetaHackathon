@@ -61,8 +61,11 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
             config.frameSemantics.insert(.smoothedSceneDepth)
         }
-        // The room's surfaces as a mesh: Pip's 3D map of the home is built from it.
-        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+        // The room's surfaces as a mesh, with what each surface is (wall, floor, table, seat…):
+        // Pip's 3D map of the home is built from it.
+        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) {
+            config.sceneReconstruction = .meshWithClassification
+        } else if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
             config.sceneReconstruction = .mesh
         }
         return config
@@ -80,25 +83,53 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         arView.session.run(Self.configuration(initialMap: nil), options: [.resetTracking, .removeExistingAnchors])
     }
 
-    /// The room's surfaces ARKit has meshed so far, as points 4 cm apart (world space); only
-    /// those within `radius` of `centre` when given.
-    func meshPoints(near centre: simd_float3? = nil, radius: Float = 0) -> [simd_float3] {
+    /// The room's surfaces ARKit has meshed so far (world space), averaged per `size` cube, with
+    /// the mesh's normals and ARKit's class of each surface; only within `radius` of `centre`
+    /// when given.
+    func meshSurface(near centre: simd_float3? = nil, radius: Float = 0, size: Float = 0.025) -> (points: [simd_float3], normals: [simd_float3], classes: [UInt8]) {
+        let raw = meshRaw(near: centre, radius: radius)
+        return VoxelIndex.average(raw.points, normals: raw.normals, classes: raw.classes, size: size)
+    }
+
+    /// Every mesh vertex (world space) with its normal and class: copied out of ARKit's buffers
+    /// here, averaged elsewhere (off the main thread when saving).
+    func meshRaw(near centre: simd_float3? = nil, radius: Float = 0) -> (points: [simd_float3], normals: [simd_float3], classes: [UInt8]) {
         let meshes = (arView.session.currentFrame?.anchors ?? []).compactMap { $0 as? ARMeshAnchor }
-        var points: [simd_float3] = []
+        var points: [simd_float3] = [], normals: [simd_float3] = [], classes: [UInt8] = []
         for mesh in meshes {
             // Mesh anchors cover about a metre each: skip those clearly out of reach.
             if let centre, simd_distance(mesh.transform.columns.3.xyz, centre) > radius + 1.5 { continue }
-            let vertices = mesh.geometry.vertices
-            let base = vertices.buffer.contents().advanced(by: vertices.offset)
+            let g = mesh.geometry
             let t = mesh.transform
-            for i in 0..<vertices.count {
-                let v = base.advanced(by: i * vertices.stride).assumingMemoryBound(to: Float.self)
+            let vertexBase = g.vertices.buffer.contents().advanced(by: g.vertices.offset)
+            let normalBase = g.normals.buffer.contents().advanced(by: g.normals.offset)
+            // Each vertex takes the class of a face it belongs to.
+            var vertexClass = [UInt8](repeating: 0, count: g.vertices.count)
+            if let cls = g.classification, g.faces.bytesPerIndex == 4 {
+                let faceBase = g.faces.buffer.contents()
+                let clsBase = cls.buffer.contents().advanced(by: cls.offset)
+                for f in 0..<g.faces.count {
+                    let c = clsBase.advanced(by: f * cls.stride).assumingMemoryBound(to: UInt8.self).pointee
+                    let idx = faceBase.advanced(by: f * g.faces.indexCountPerPrimitive * 4).assumingMemoryBound(to: UInt32.self)
+                    for k in 0..<g.faces.indexCountPerPrimitive where Int(idx[k]) < vertexClass.count { vertexClass[Int(idx[k])] = c }
+                }
+            }
+            for i in 0..<g.vertices.count {
+                let v = vertexBase.advanced(by: i * g.vertices.stride).assumingMemoryBound(to: Float.self)
                 let p = (t * simd_float4(v[0], v[1], v[2], 1)).xyz
                 if let centre, simd_distance(p, centre) > radius { continue }
+                let n = normalBase.advanced(by: i * g.normals.stride).assumingMemoryBound(to: Float.self)
                 points.append(p)
+                normals.append((t * simd_float4(n[0], n[1], n[2], 0)).xyz)
+                classes.append(vertexClass[i])
             }
         }
-        return VoxelIndex.downsample(points, size: 0.04)
+        return (points, normals, classes)
+    }
+
+    /// The meshed surfaces as points only (for fitting a live view).
+    func meshPoints(near centre: simd_float3? = nil, radius: Float = 0) -> [simd_float3] {
+        meshSurface(near: centre, radius: radius, size: 0.04).points
     }
 
     func snapshot() -> FrameSnapshot? {

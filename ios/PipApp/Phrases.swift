@@ -46,14 +46,32 @@ struct Phrases {
     var resumed: String { dutch ? "We gaan verder." : "Let's continue." }
     var stopped: String { dutch ? "De taak is gestopt." : "The task is stopped." }
     func searchingMemory(_ what: String) -> String { dutch ? "Ik kijk terug waar ik \(what) zag." : "I'm looking back for \(what)." }
-    func found(_ what: String, minutes: Int, where place: String) -> String {
-        let ago = minutes < 1 ? (dutch ? "net" : "just now") : (dutch ? "\(minutes) minuten geleden" : "\(minutes) minutes ago")
-        return dutch ? "Ik zag \(what) \(ago): \(place). Volg de pijl. Het kan intussen verplaatst zijn."
-                     : "I saw \(what) \(ago): \(place). Follow the arrow. It may have been moved since."
+    var searchingFurther: String { dutch ? "Ik kijk verder terug." : "I'm looking further back." }
+
+    /// "zonet", "12 minuten geleden", "gisteren": how long ago, in the conversation language.
+    func ago(_ date: Date) -> String {
+        let seconds = Date().timeIntervalSince(date)
+        if seconds < 90 { return dutch ? "zonet" : "just now" }
+        let f = RelativeDateTimeFormatter()
+        f.locale = Locale(identifier: dutch ? "nl_BE" : "en_GB")
+        f.unitsStyle = .full
+        f.dateTimeStyle = .named
+        return f.localizedString(for: date, relativeTo: Date())
     }
-    func notFound(_ what: String, minutes: Int) -> String {
-        dutch ? "Ik heb \(what) niet gezien in de laatste \(max(1, minutes)) minuten. Waar was je het laatst?"
-              : "I haven't seen \(what) in the last \(max(1, minutes)) minutes. Where were you last?"
+    func found(_ what: String, at date: Date, where place: String) -> String {
+        dutch ? "Ik zag \(what) \(ago(date)): \(place). Volg de pijl. Het kan intussen verplaatst zijn."
+              : "I saw \(what) \(ago(date)): \(place). Follow the arrow. It may have been moved since."
+    }
+    func foundElsewhere(_ what: String, at date: Date) -> String {
+        dutch ? "Ik zag \(what) \(ago(date)), in een ruimte die ik nu nog niet herken. Loop er even naartoe, dan wijs ik het aan."
+              : "I saw \(what) \(ago(date)), in a room I haven't recognised yet this time. Walk over there and I'll point it out."
+    }
+    func notFound(_ what: String, since date: Date?) -> String {
+        guard let date else {
+            return dutch ? "Ik heb \(what) nog niet gezien. Waar was je het laatst?" : "I haven't seen \(what) yet. Where were you last?"
+        }
+        return dutch ? "Ik heb \(what) niet gezien sinds \(ago(date)). Waar was je het laatst?"
+                     : "I haven't seen \(what) since \(ago(date)). Where were you last?"
     }
     func gotItem(_ item: String) -> String { dutch ? "\(item), afgevinkt." : "\(item), got it." }
     func wrongItem(_ item: String, seen: String) -> String { dutch ? "Let op: ik zie \(seen). Op je lijst staat \(item)." : "Careful: I see \(seen). Your list says \(item)." }

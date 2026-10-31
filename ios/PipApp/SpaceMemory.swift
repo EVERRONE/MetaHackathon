@@ -101,6 +101,7 @@ final class SpaceMemory: ObservableObject {
         try? FileManager.default.removeItem(at: dataURL)
         try? FileManager.default.removeItem(at: mapURL)
         MapStore.removeAll()
+        VisualMemoryStore.removeAll()
     }
 
     /// The map from before map pieces (one room): it becomes a piece of its own, with its places.

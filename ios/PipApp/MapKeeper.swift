@@ -47,13 +47,14 @@ final class MapKeeper {
     /// The fingerprint only proposes: the three most alike stored views are always tried, and
     /// the 3D fit decides.
     static let candidatesPerKeyframe = 3
-    static let maxSurfacePoints = 250_000
+    static let maxSurfacePoints = 400_000
 
     /// `piece`: the stored piece ARKit is relocalising into (its frame becomes this session's).
     func begin(continuing piece: MapPiece?, others: [MapPiece]) {
         current = piece ?? MapPiece()
         self.others = others
         references = [:]
+        pendingSurfaces = []
         targets = [:]
         consensus = LinkConsensus()
         merged = []
@@ -137,8 +138,7 @@ final class MapKeeper {
 
     private func target(for piece: MapPiece) async -> RegistrationTarget {
         if let t = targets[piece.id] { return t }
-        let points = piece.surface
-        let t = await Task.detached(priority: .utility) { RegistrationTarget(points: points) }.value
+        let t = await Task.detached(priority: .utility) { piece.registrationTarget() }.value
         targets[piece.id] = t
         return t
     }
@@ -147,14 +147,14 @@ final class MapKeeper {
         let pieceToLive = refined.transform.inverse
         let moved = piece.transformed(by: pieceToLive)
         // Kept as a reference, so this session's drift against it can be measured and corrected.
-        let surface = moved.surface
         Task.detached(priority: .utility) { [weak self] in
-            let target = RegistrationTarget(points: surface)
+            let target = moved.registrationTarget()
             await self?.addReference(piece.id, target)
         }
         current.keyframes += moved.keyframes
         thinKeyframes()
-        current.setSurface(VoxelIndex.downsample(current.surface + moved.surface, size: 0.04))
+        // Its surfaces join this piece's at the next save, averaged off the main thread.
+        pendingSurfaces.append((moved.surface, moved.surfaceNormals, moved.classes))
         others.removeAll { $0.id == piece.id }
         targets[piece.id] = nil
         consensus.forget(piece.id)
@@ -222,16 +222,39 @@ final class MapKeeper {
         }
     }
 
-    /// Saves this piece with the room surfaces ARKit has meshed so far; merged pieces are removed.
-    func save(mesh: [simd_float3]) {
-        guard enabled else { return }
-        var surface = VoxelIndex.downsample(current.surface + mesh, size: 0.04)
-        if surface.count > Self.maxSurfacePoints { surface = VoxelIndex.downsample(surface, size: 0.06) }
-        current.setSurface(surface)
-        current.updated = Date()
-        MapStore.save(current)
-        for id in merged { MapStore.remove(id) }
-        merged = []
+    /// Surfaces of linked pieces, waiting to be averaged into this piece at the next save.
+    private var pendingSurfaces: [(points: [simd_float3], normals: [simd_float3]?, classes: [UInt8]?)] = []
+    private var saving = false
+
+    /// Saves this piece with the room surfaces ARKit has meshed so far (raw mesh vertices; they
+    /// are averaged and written off the main thread); merged pieces are removed. `done` runs once
+    /// the files are written.
+    func save(mesh: (points: [simd_float3], normals: [simd_float3], classes: [UInt8]), done: @escaping () -> Void = {}) {
+        guard enabled, !saving else { done(); return }
+        saving = true
+        var piece = current
+        let removed = merged
+        let limit = Self.maxSurfacePoints
+        let pending = pendingSurfaces
+        pendingSurfaces = []
+        Task.detached(priority: .userInitiated) { [weak self] in
+            for p in pending { piece.addSurface(p.points, normals: p.normals, classes: p.classes, limit: limit) }
+            piece.addSurface(mesh.points, normals: mesh.normals, classes: mesh.classes, limit: limit)
+            piece.updated = Date()
+            MapStore.save(piece)
+            for id in removed { MapStore.remove(id) }
+            await self?.saved(piece, removed: removed)
+            done()
+        }
+    }
+
+    private func saved(_ piece: MapPiece, removed: [UUID]) {
+        saving = false
+        guard piece.id == current.id else { return }
+        // Keyframes added meanwhile stay; the surfaces are the averaged ones just written.
+        current.setSurface(piece.surface, normals: piece.surfaceNormals, classes: piece.classes)
+        current.updated = piece.updated
+        merged.removeAll { removed.contains($0) }
         dirty = false
     }
 

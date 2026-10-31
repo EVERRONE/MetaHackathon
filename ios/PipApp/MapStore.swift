@@ -13,18 +13,23 @@ enum MapStore {
     }
 
     static func pieceURL(_ id: UUID) -> URL { dir.appendingPathComponent("\(id.uuidString).json") }
+    static func surfaceURL(_ id: UUID) -> URL { dir.appendingPathComponent("\(id.uuidString).surface") }
     static func worldMapURL(_ id: UUID) -> URL { dir.appendingPathComponent("\(id.uuidString).arworldmap") }
 
     static func loadAll() -> [MapPiece] {
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         return files.filter { $0.pathExtension == "json" }.compactMap { url in
-            (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(MapPiece.self, from: $0) }
+            guard var piece = (try? Data(contentsOf: url)).flatMap({ try? JSONDecoder().decode(MapPiece.self, from: $0) }) else { return nil }
+            if let surface = try? Data(contentsOf: surfaceURL(piece.id)) { piece.loadSurface(surface) }
+            return piece
         }
     }
 
+    /// The piece's keyframes as JSON, its surfaces as a compact binary file next to it.
     static func save(_ piece: MapPiece) {
         guard let data = try? JSONEncoder().encode(piece) else { return }
         try? data.write(to: pieceURL(piece.id), options: [.atomic, .completeFileProtection])
+        try? piece.surfaceData().write(to: surfaceURL(piece.id), options: [.atomic, .completeFileProtection])
     }
 
     static func saveWorldMap(_ map: ARWorldMap, for id: UUID) {
@@ -39,6 +44,7 @@ enum MapStore {
 
     static func remove(_ id: UUID) {
         try? FileManager.default.removeItem(at: pieceURL(id))
+        try? FileManager.default.removeItem(at: surfaceURL(id))
         try? FileManager.default.removeItem(at: worldMapURL(id))
     }
 

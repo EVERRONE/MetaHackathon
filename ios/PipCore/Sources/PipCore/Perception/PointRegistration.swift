@@ -71,27 +71,31 @@ public enum PointRegistration {
             let reach = schedule[min(i * schedule.count / max(1, iterations - 6), schedule.count - 1)]
             let m = transform(yaw: yaw, translation: t)
             let index = target.index(for: reach)
-            var moved: [(p: simd_float3, q: simd_float3, n: simd_float3)] = []
+            var moved: [(p: simd_float3, q: simd_float3, n: simd_float3, weight: Float)] = []
             moved.reserveCapacity(source.count)
             for s in source {
                 let p = (m * simd_float4(s, 1)).xyz
-                if let k = index.nearestIndex(to: p, within: reach) { moved.append((p, target.points[k], target.normals[k])) }
+                if let k = index.nearestIndex(to: p, within: reach) { moved.append((p, target.points[k], target.normals[k], target.weights[k])) }
             }
             guard moved.count >= 20 else { return nil }
             // Linearised about the matched points' centre: a small turn δ moves v by δ·(v.z, 0, −v.x).
             let c = moved.reduce(simd_float3.zero) { $0 + $1.p } / Float(moved.count)
             var a = simd_double4x4(0)
             var b = simd_double4(0, 0, 0, 0)
-            for (p, q, n) in moved {
+            var fixed = simd_double4x4(0)
+            for (p, q, n, weight) in moved {
                 let v = p - c
                 let row = simd_double4(Double(simd_dot(n, simd_float3(v.z, 0, -v.x))), Double(n.x), Double(n.y), Double(n.z))
                 let r = Double(simd_dot(n, p - q))
-                // Matches far off count less (a robust fit).
-                let w = abs(r) < Double(reach) / 2 ? 1 : Double(reach) / 2 / abs(r)
-                a += simd_double4x4(columns: (row * (w * row.x), row * (w * row.y), row * (w * row.z), row * (w * row.w)))
+                // Matches far off count less (a robust fit), and so does furniture.
+                let w = (abs(r) < Double(reach) / 2 ? 1 : Double(reach) / 2 / abs(r)) * Double(weight)
+                let outer = simd_double4x4(columns: (row * (w * row.x), row * (w * row.y), row * (w * row.z), row * (w * row.w)))
+                a += outer
+                if weight >= 1 { fixed += outer }
                 b -= row * (w * r)
             }
-            information = a
+            // Only fixed structure counts for "unambiguous": furniture may have moved.
+            information = fixed
             matched = moved.count
             // A little damping keeps a free direction (a bare wall) from running off.
             let damping = 1e-4 * (a[0][0] + a[1][1] + a[2][2] + a[3][3])
@@ -132,18 +136,27 @@ public enum PointRegistration {
 public struct RegistrationTarget: Sendable {
     public let points: [simd_float3]
     public let normals: [simd_float3]
+    /// How much each point counts in a fit: fixed structure (walls, floor, doors) fully, furniture
+    /// that may have moved since (seats, unclassified things) less.
+    public let weights: [Float]
     let levels: [VoxelIndex]
     public var count: Int { points.count }
 
-    public init(points: [simd_float3]) {
+    /// `normals` from the mesh when known (else estimated from neighbours), `weights` per point.
+    public init(points: [simd_float3], normals given: [simd_float3]? = nil, weights: [Float]? = nil) {
         self.points = points
         levels = [0.25, 0.1, 0.04].map { VoxelIndex(points: points, cell: $0) }
-        // Each point's normal from its neighbours within 8 cm (the smallest spread direction).
-        let near = levels[1]
-        normals = points.map { p in
-            let neighbours = near.indices(near: p, within: 0.08).map { points[$0] }
-            return Self.normal(of: neighbours) ?? simd_float3(0, 1, 0)
+        if let given, given.count == points.count {
+            normals = given.map { simd_length($0) > 0.5 ? simd_normalize($0) : simd_float3(0, 1, 0) }
+        } else {
+            // Each point's normal from its neighbours within 8 cm (the smallest spread direction).
+            let near = levels[1]
+            normals = points.map { p in
+                let neighbours = near.indices(near: p, within: 0.08).map { points[$0] }
+                return Self.normal(of: neighbours) ?? simd_float3(0, 1, 0)
+            }
         }
+        self.weights = weights.flatMap { $0.count == points.count ? $0 : nil } ?? Array(repeating: 1, count: points.count)
     }
 
     /// The finest index whose cells are at least half the search reach.
@@ -227,6 +240,30 @@ public struct VoxelIndex: Sendable {
         var out: [simd_float3] = []
         for p in points where seen.insert(key(p, size)).inserted { out.append(p) }
         return out
+    }
+
+    /// One point per `size` cube, the average of every measurement in it (less noise than any
+    /// single one), with the average normal and the most common surface class.
+    public static func average(_ points: [simd_float3], normals: [simd_float3], classes: [UInt8], size: Float) -> (points: [simd_float3], normals: [simd_float3], classes: [UInt8]) {
+        struct Acc { var p = simd_float3.zero; var n = simd_float3.zero; var count: Float = 0; var votes = [UInt8: Int]() }
+        var cells: [SIMD3<Int32>: Acc] = [:]
+        let hasNormals = normals.count == points.count, hasClasses = classes.count == points.count
+        for i in points.indices {
+            var a = cells[key(points[i], size), default: Acc()]
+            a.p += points[i]
+            if hasNormals { a.n += normals[i] }
+            a.count += 1
+            if hasClasses { a.votes[classes[i], default: 0] += 1 }
+            cells[key(points[i], size)] = a
+        }
+        var p: [simd_float3] = [], n: [simd_float3] = [], c: [UInt8] = []
+        p.reserveCapacity(cells.count)
+        for a in cells.values {
+            p.append(a.p / a.count)
+            n.append(simd_length(a.n) > 1e-6 ? simd_normalize(a.n) : .zero)
+            c.append(a.votes.max { $0.value < $1.value }?.key ?? 0)
+        }
+        return (p, n, c)
     }
 }
 

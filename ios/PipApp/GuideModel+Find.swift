@@ -6,44 +6,67 @@ import UIKit
 extension GuideModel {
     // MARK: Visual memory
 
-    /// Wonder picks where the object was seen; SAM must find it there before Pip points.
+    /// Wonder picks where the object was seen; SAM must find it there before Pip points. The last
+    /// half hour first, then the week before it, newest first, a contact sheet batch at a time.
     func findInMemory(_ what: String, phrase: String) async {
-        let frames = keyframes.frames
-        let minutes = Int((frames.first.map { Date().timeIntervalSince($0.time) } ?? 0) / 60)
-        guard !frames.isEmpty else {
-            say(phrases.notFound(what, minutes: 0))
+        let all = keyframes.frames
+        guard let oldest = all.first else {
+            say(phrases.notFound(what, since: nil))
             return
         }
         preparing = phrases.searchingMemory(what)
         defer { preparing = nil }
-        let t0 = Date()
-        let sightings = (try? await MemorySearch(client: client).find(what, in: frames.map(\.jpeg))) ?? []
-        // Cut off by the user: say nothing.
-        if Task.isCancelled { return }
-        log(String(format: "memory search %.1fs over %d snapshots: %d sightings", Date().timeIntervalSince(t0), frames.count, sightings.count))
-        let grounder = Grounder(client: client, frameJPEG: Data())
-        for s in sightings where frames.indices.contains(s.index) {
-            let frame = frames[s.index]
-            guard let image = UIImage(data: frame.jpeg)?.cgImage else { continue }
-            let point = CGPoint(x: s.x / 1000 * Double(frame.width), y: s.y / 1000 * Double(frame.height))
-            // Confirmation: SAM has to find an object there, with depth to place it in the room.
-            let confirmed = await grounder.object(at: point, in: image, id: 1)
-            if Task.isCancelled { return }
-            guard let inst = confirmed, let depth = frame.depth(atPixel: inst.centre) ?? frame.depth(atPixel: point) else {
-                log("sighting in snapshot \(frame.id) not confirmed")
-                continue
-            }
-            let world = inst.regularized().outlinePoints.map { ring in ring.map { frame.worldPoint(atPixel: $0, depth: depth) } }
-            foundCount += 1
-            let id = ARController.foundMarkBase + foundCount % 90_000
-            ar.addFound(world: world, id: id)
-            ar.show(.outline(mark: id))
-            let ago = Int(Date().timeIntervalSince(frame.time) / 60)
-            let place = ar.describe(mark: id, dutch: language == "Dutch") ?? ""
-            say(phrases.found(what, minutes: ago, where: place.components(separatedBy: ";").first ?? place))
-            return
+        let now = Date()
+        let recent = all.filter { now.timeIntervalSince($0.time) <= Keyframes.recentFor }
+        let older = all.filter { now.timeIntervalSince($0.time) > Keyframes.recentFor }.reversed()
+        let batchSize = MemorySearch.tilesPerSheet * MemorySearch.maxSheets
+        var batches: [[Keyframes.Frame]] = recent.isEmpty ? [] : [recent]
+        var rest = Array(older)
+        while !rest.isEmpty, batches.count < 4 {
+            batches.append(Array(rest.prefix(batchSize)).reversed())
+            rest = Array(rest.dropFirst(batchSize))
         }
-        say(phrases.notFound(what, minutes: minutes))
+        let grounder = Grounder(client: client, frameJPEG: Data())
+        var elsewhere: Keyframes.Frame?
+        for (n, batch) in batches.enumerated() {
+            if n == 1 { say(phrases.searchingFurther) }
+            // Only snapshots that can still be read; their order is kept for the mapping back.
+            let readable = batch.compactMap { f in f.jpeg().map { (f, $0) } }
+            let t0 = Date()
+            let sightings = (try? await MemorySearch(client: client).find(what, in: readable.map(\.1))) ?? []
+            if Task.isCancelled { return }
+            log(String(format: "memory search %.1fs over %d snapshots: %d sightings", Date().timeIntervalSince(t0), readable.count, sightings.count))
+            for s in sightings where readable.indices.contains(s.index) {
+                let frame = readable[s.index].0
+                guard frame.located else {
+                    // Seen in a room this session has not recognised yet: say when, not where.
+                    elsewhere = elsewhere ?? frame
+                    continue
+                }
+                guard let image = UIImage(data: readable[s.index].1)?.cgImage else { continue }
+                let point = CGPoint(x: s.x / 1000 * Double(frame.width), y: s.y / 1000 * Double(frame.height))
+                // Confirmation: SAM has to find an object there, with depth to place it in the room.
+                let confirmed = await grounder.object(at: point, in: image, id: 1)
+                if Task.isCancelled { return }
+                guard let inst = confirmed, let depth = frame.depth(atPixel: inst.centre) ?? frame.depth(atPixel: point) else {
+                    log("sighting not confirmed")
+                    continue
+                }
+                let world = inst.regularized().outlinePoints.map { ring in ring.map { frame.worldPoint(atPixel: $0, depth: depth) } }
+                foundCount += 1
+                let id = ARController.foundMarkBase + foundCount % 90_000
+                ar.addFound(world: world, id: id)
+                ar.show(.outline(mark: id))
+                let place = ar.describe(mark: id, dutch: language == "Dutch") ?? ""
+                say(phrases.found(what, at: frame.time, where: place.components(separatedBy: ";").first ?? place))
+                return
+            }
+        }
+        if let elsewhere {
+            say(phrases.foundElsewhere(what, at: elsewhere.time))
+        } else {
+            say(phrases.notFound(what, since: oldest.time))
+        }
     }
 
     // MARK: Shopping list

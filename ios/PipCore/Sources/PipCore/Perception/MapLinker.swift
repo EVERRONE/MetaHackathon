@@ -103,34 +103,39 @@ public enum MapLinker {
         var yaw = PointRegistration.yaw(of: initial)
         var t = initial.columns.3.xyz
         var information = simd_double4x4(0)
+        var structure = simd_double4x4(0)
         var centre = simd_float3.zero
         var residuals: [Float] = []
         let index = target.index(for: 0.06)
         for i in 0..<iterations {
             let reach: Float = i < iterations / 2 ? 0.06 : 0.04
             let m = PointRegistration.transform(yaw: yaw, translation: t)
-            var pairs: [(p: simd_float3, q: simd_float3, n: simd_float3)] = []
+            var pairs: [(p: simd_float3, q: simd_float3, n: simd_float3, weight: Float)] = []
             pairs.reserveCapacity(source.count)
             for s in source {
                 let p = (m * simd_float4(s, 1)).xyz
-                if let k = index.nearestIndex(to: p, within: reach) { pairs.append((p, target.points[k], target.normals[k])) }
+                if let k = index.nearestIndex(to: p, within: reach) { pairs.append((p, target.points[k], target.normals[k], target.weights[k])) }
             }
             guard pairs.count >= 60 else { return nil }
             centre = pairs.reduce(simd_float3.zero) { $0 + $1.p } / Float(pairs.count)
             var a = simd_double4x4(0)
             var b = simd_double4(0, 0, 0, 0)
+            var fixed = simd_double4x4(0)
             residuals = []
-            for (p, q, n) in pairs {
+            for (p, q, n, weight) in pairs {
                 let v = p - centre
                 let row = simd_double4(Double(simd_dot(n, simd_float3(v.z, 0, -v.x))), Double(n.x), Double(n.y), Double(n.z))
                 let r = Double(simd_dot(n, p - q))
                 residuals.append(Float(r))
-                // Tukey-like: matches over 2 cm off the surface hardly count.
-                let w = abs(r) < 0.02 ? 1 : 0.02 / abs(r)
-                a += simd_double4x4(columns: (row * (w * row.x), row * (w * row.y), row * (w * row.z), row * (w * row.w)))
+                // Tukey-like: matches over 2 cm off the surface hardly count, and furniture less.
+                let w = (abs(r) < 0.02 ? 1 : 0.02 / abs(r)) * Double(weight)
+                let outer = simd_double4x4(columns: (row * (w * row.x), row * (w * row.y), row * (w * row.z), row * (w * row.w)))
+                a += outer
+                if weight >= 1 { fixed += outer }
                 b -= row * (w * r)
             }
             information = a
+            structure = fixed
             let damping = 1e-6 * (a[0][0] + a[1][1] + a[2][2] + a[3][3])
             let x = (a + simd_double4x4(diagonal: simd_double4(repeating: damping))).inverse * b
             guard x.x.isFinite, x.y.isFinite, x.z.isFinite, x.w.isFinite else { return nil }
@@ -144,7 +149,8 @@ public enum MapLinker {
         // Residual spread along the normals, the measurement noise of this fit.
         let sigma2 = Double(residuals.reduce(0) { $0 + $1 * $1 }) / Double(max(1, residuals.count))
         let covariance = information.inverse * (sigma2 * correlation)
-        let constraint = Float((SymmetricEigen.values(information).min() ?? 0) / Double(max(1, residuals.count)))
+        // Only fixed structure counts for "unambiguous": furniture may have moved.
+        let constraint = Float((SymmetricEigen.values(structure).min() ?? 0) / Double(max(1, residuals.count)))
         return Refined(transform: final, rms: rms, inlierRatio: ratio, covariance: covariance, centre: centre, matched: residuals.count, constraint: max(0, constraint))
     }
 }
