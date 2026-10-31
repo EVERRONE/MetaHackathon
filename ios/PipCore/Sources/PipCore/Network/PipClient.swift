@@ -64,6 +64,41 @@ public struct PipClient: Sendable {
         return try JSONDecoder().decode(UsageStatus.self, from: data)
     }
 
+    /// Speech for one sentence from the Worker's ElevenLabs route: 24 kHz 16-bit mono PCM plus the
+    /// start time of every character (times run from the start of the sentence).
+    public func speak(text: String, voice: String, language: String?) async throws -> SpokenAudio {
+        struct Chunk: Decodable {
+            struct Alignment: Decodable {
+                var characters: [String]
+                var character_start_times_seconds: [Double]
+            }
+            var audio_base64: String?
+            var alignment: Alignment?
+        }
+        var r = request("v1/speak")
+        var body: [String: String] = ["text": text, "voice": voice]
+        if let language { body["language"] = language }
+        r.httpBody = try JSONEncoder().encode(body)
+        r.timeoutInterval = 20
+        let (bytes, response) = try await session.bytes(for: r)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            var data = Data()
+            for try await b in bytes { data.append(b) }
+            try Self.check(response, body: data)
+        }
+        var out = SpokenAudio(pcm: Data(), characters: [], starts: [])
+        let decoder = JSONDecoder()
+        for try await line in bytes.lines {
+            guard let chunk = try? decoder.decode(Chunk.self, from: Data(line.utf8)) else { continue }
+            if let b64 = chunk.audio_base64, let pcm = Data(base64Encoded: b64) { out.pcm.append(pcm) }
+            if let a = chunk.alignment {
+                out.characters += a.characters
+                out.starts += a.character_start_times_seconds
+            }
+        }
+        return out
+    }
+
     /// Streams a chat completion as text deltas, a finish reason and the usage.
     public func chatStream(_ body: ChatRequest) -> AsyncThrowingStream<ChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in

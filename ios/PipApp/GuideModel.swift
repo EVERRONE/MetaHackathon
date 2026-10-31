@@ -32,10 +32,13 @@ final class GuideModel: ObservableObject {
     @Published var muted = false
     @Published var language = "English" {
         didSet {
-            speaker.voice = Speaker.bestVoice(for: language)
+            configureVoice()
             restartListening()
         }
     }
+
+    /// ElevenLabs voices: Sharon (Flemish, multilingual) and Alice (British English).
+    static let cloudVoices = ["Dutch": "g7B5PNoscIXomLNUmHAb", "English": "Xb7hH8MSUJpSbSDYk0k2"]
 
     let ar = ARController()
     private let audio = AudioIO()
@@ -53,7 +56,8 @@ final class GuideModel: ObservableObject {
         let base = URL(string: info["PIPBaseURL"] as? String ?? "") ?? URL(string: "https://pip.unveil.be")!
         client = PipClient(baseURL: base, token: info["PIPAppToken"] as? String ?? "")
         speaker = Speaker(engine: audio.engine, player: audio.player)
-        speaker.voice = Speaker.bestVoice(for: language)
+        configureVoice()
+        speaker.onLog = { [weak self] line in self?.log(line) }
         speaker.onSentenceStart = { [weak self] s in
             self?.caption = s.text
             self?.spokenThisTurn.append(s.text)
@@ -78,6 +82,13 @@ final class GuideModel: ObservableObject {
                 do { try self.audio.start() } catch { self.phase = .failed("Audio unavailable: \(error)") }
                 self.restartListening()
             }
+        }
+    }
+
+    private func configureVoice() {
+        speaker.voice = Speaker.bestVoice(for: language)
+        speaker.cloud = Self.cloudVoices[language].map {
+            Speaker.CloudVoice(client: client, voiceId: $0, language: language == "Dutch" ? "nl" : "en")
         }
     }
 

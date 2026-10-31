@@ -2,4 +2,5 @@
 interface Env {
   MODEL_API_KEY: string;
   PIP_APP_TOKEN: string;
+  ELEVENLABS_API_KEY: string;
 }

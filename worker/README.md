@@ -13,6 +13,7 @@ Every route except `/v1/health` needs `Authorization: Bearer <PIP_APP_TOKEN>`.
 | `POST /v1/segment` | SAM 3.1. Concept prompts run in parallel; box/point prompts run as one request. Returns merged instances with outlines, numbered in reading order. |
 | `POST /v1/transcribe` | Body: a mono 16-bit WAV (16 or 24 kHz). Query: `mode` (`PUSH_TO_TALK` or `ENDPOINTING`), `languages` (e.g. `English,Dutch`), `keywords`. |
 | `GET /v1/asr` | WebSocket relay to realtime transcription. The first frame is the handshake without a key (`audioEncoding`, `mode`, `partialMode`, `languageBias`, `keywords`). Then send binary PCM and `{"type":"endStream"}` to finish. |
+| `POST /v1/speak` | `{ text, voice, language }` → ElevenLabs Flash v2.5 speech as newline-delimited JSON: base64 PCM (24 kHz, 16-bit mono) plus each character's start time, used to time the cues. ElevenLabs is the only non-Meta model: Meta has no text-to-speech. |
 | `GET /v1/usage` | Estimated spend: today and total, in USD. |
 
 ### `/v1/segment`
@@ -64,6 +65,6 @@ npm test            # unit tests (geometry, costs, WAV parsing, stream tap)
 npm run typecheck
 ```
 
-The secrets `MODEL_API_KEY` and `PIP_APP_TOKEN` live in the repo-root `.dev.vars`, which is gitignored. `worker/.dev.vars` is a symlink to it.
+The secrets `MODEL_API_KEY`, `PIP_APP_TOKEN` and `ELEVENLABS_API_KEY` live in the repo-root `.dev.vars`, which is gitignored. `worker/.dev.vars` is a symlink to it.
 
 Deploy with `npx wrangler deploy`. The first deploy also passes `--secrets-file ../.dev.vars`. The account needs the Workers Paid plan, because decoding SAM masks takes more than the free plan's 10 ms of CPU time.

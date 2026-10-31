@@ -115,3 +115,24 @@ public struct WorkerError: Error, Equatable, Sendable, CustomStringConvertible {
     public var message: String
     public var description: String { "\(status) \(code): \(message)" }
 }
+
+/// One sentence of synthesised speech.
+public struct SpokenAudio: Sendable {
+    /// 24 kHz, 16-bit, mono, little-endian.
+    public var pcm: Data
+    public var characters: [String]
+    /// Start time of each character, in seconds from the start of the sentence.
+    public var starts: [Double]
+
+    public static let sampleRate = 24_000.0
+
+    public var duration: Double { Double(pcm.count / 2) / Self.sampleRate }
+
+    /// Start time of the character at a UTF-16 offset in `text` (the cue anchors are UTF-16).
+    public func startTime(atUTF16 offset: Int, in text: String) -> Double? {
+        guard !starts.isEmpty else { return nil }
+        let prefix = String(decoding: Array(text.utf16.prefix(offset)), as: UTF16.self)
+        let index = min(prefix.count, starts.count - 1)
+        return starts[max(0, index)]
+    }
+}

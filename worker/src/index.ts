@@ -6,6 +6,7 @@ import { asrCost, samCost } from "./cost";
 import { HttpError } from "./http";
 import { meter } from "./meter";
 import { MAX_PROMPTS, segment, type SegmentRequest } from "./segment";
+import { speak, type SpeakRequest } from "./speak";
 import { UpstreamError } from "./upstream";
 
 export { Meter } from "./meter";
@@ -102,6 +103,13 @@ app.post("/v1/transcribe", bodyLimit({ maxSize: 32 * MB }), async (c) => {
   });
   charger(c)(asrCost(seconds));
   return c.json(json as object);
+});
+
+app.post("/v1/speak", bodyLimit({ maxSize: 64 * 1024 }), async (c) => {
+  const req = await c.req.json<SpeakRequest>().catch(() => {
+    throw new HttpError(400, "invalid_json", "Body must be JSON");
+  });
+  return speak(c.env.ELEVENLABS_API_KEY, req, charger(c));
 });
 
 app.get("/v1/asr", (c) => {
