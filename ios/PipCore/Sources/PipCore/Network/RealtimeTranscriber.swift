@@ -32,9 +32,11 @@ public final class RealtimeTranscriber: NSObject, @unchecked Sendable, URLSessio
     private var backlog: [Data] = []
     private var backlogBytes = 0
 
-    /// `sampleRate` is 16 000 or 24 000. Diarization labels each turn with its speaker, at the same
-    /// latency as plain endpointing (measured), so Pip can keep to the person it talks with.
-    public init(baseURL: URL, token: String, sampleRate: Int = 16_000, languages: [String] = ["English", "Dutch"], keywords: [String] = [], diarization: Bool = true) {
+    /// `sampleRate` is 16 000 or 24 000. Diarization labels each turn with its speaker, but since
+    /// 31 Oct 2026 (about 17:00 CET) the service no longer ends turns in that mode: it sends only one
+    /// ever-growing transcript and never `speechComplete`, so nothing would reach Pip. Plain
+    /// endpointing ends each turn about 1 s after the user stops. Off by default until that is fixed.
+    public init(baseURL: URL, token: String, sampleRate: Int = 16_000, languages: [String] = ["English", "Dutch"], keywords: [String] = [], diarization: Bool = false) {
         var components = URLComponents(url: baseURL.appendingPathComponent("v1/asr"), resolvingAgainstBaseURL: false)!
         components.scheme = components.scheme == "http" ? "ws" : "wss"
         var r = URLRequest(url: components.url!)
