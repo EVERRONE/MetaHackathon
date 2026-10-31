@@ -74,7 +74,8 @@ extension GuideModel {
         guard let result = try? await StepChecker(client: client).check(snapshot.image, step: context, focus: focus), !Task.isCancelled else { return }
         log(String(format: "watch step %d: %@ %.2f %@ · problem %@ %.2f %@", index + 1, result.done ? "done" : "not yet", result.confidence, result.seen,
                    result.problem.rawValue, result.problemConfidence, result.problemText))
-        guard let now = runtime, now.index == index, now.statuses[index] == .awaitingAction, !lookActive, !speaker.isSpeaking else { return }
+        // The user started talking during the check: their turn goes first, not "well done".
+        guard let now = runtime, now.index == index, now.statuses[index] == .awaitingAction, !lookActive, !speaker.isSpeaking, phase != .hearing else { return }
 
         // A mistake seen twice in a row is checked by Wonder, which corrects the user and points at
         // the right object, or stays silent when it was a false alarm.
@@ -218,7 +219,7 @@ extension GuideModel {
                 }
             }
             let distance = snapshot.depth(atSensor: snapshot.sensorPoint(CGPoint(x: k.midX, y: k.midY)), minConfidence: 1) ?? 0.4
-            guard let made = ImageLock.make(markID: id, key: key, object: parent, snapshot: snapshot, distance: distance) else {
+            guard let made = ImageLock.make(key: key, object: parent, snapshot: snapshot, distance: distance) else {
                 self.log("lock: mark \(id % 1000): no region to lock to")
                 return
             }

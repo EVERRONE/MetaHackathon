@@ -27,7 +27,6 @@ final class GuideModel: ObservableObject {
     @Published var phase: Phase = .connecting
     @Published var caption = ""
     @Published var heard = ""
-    @Published var markedImage: UIImage?
     @Published var trace: [String] = []
     @Published var muted = false
     @Published var language = "English" {
@@ -53,6 +52,8 @@ final class GuideModel: ObservableObject {
     /// Long-term memory: the room map, places and facts, only with the user's consent.
     let memory = SpaceMemory()
     var awaitingConsent = false
+    /// The consent question waits for Pip to be free before it is asked.
+    var consentQueued = false
     var pendingPlaces: [SpaceMemory.Place] = []
     var pendingFacts: [(key: String, value: String, source: String)] = []
 
@@ -93,8 +94,6 @@ final class GuideModel: ObservableObject {
     /// The look in progress, by number: an older look ending never clears a newer one's flag.
     private var activeLook: Int?
     var lookActive: Bool { activeLook != nil }
-    /// When the last look ended: re-measuring outlines stops a while after.
-    var lastLookAt = Date.distantPast
     /// Mark numbers restart in every look; an offset per look keeps earlier marks apart, so their
     /// cues can stay on screen.
     private var lookCount = 0
@@ -218,7 +217,13 @@ final class GuideModel: ObservableObject {
         AVAudioApplication.requestRecordPermission { granted in
             Task { @MainActor in
                 guard granted else { self.phase = .failed("Microphone access is off"); return }
-                do { try self.audio.start() } catch { self.phase = .failed("Audio unavailable: \(error)") }
+                do {
+                    try self.audio.start()
+                } catch {
+                    // Without audio there is nothing to listen with: the failure stays on screen.
+                    self.phase = .failed("Audio unavailable: \(error)")
+                    return
+                }
                 self.restartListening()
             }
         }
@@ -289,7 +294,8 @@ final class GuideModel: ObservableObject {
             }
         case .partial(let text):
             guard !muted, !isEcho(text) else { return }
-            if bargeInPending, wordCount(text) >= 2 {
+            // A hazard stops Pip at once, also as a single word ("Sparks!", "Rook!").
+            if bargeInPending, wordCount(text) >= 2 || SafetyPolicy.spokenHazard(in: text) != nil {
                 log("barge-in")
                 bargeInPending = false
                 interrupt()
@@ -300,15 +306,25 @@ final class GuideModel: ObservableObject {
             break
         case .final(_, let text, let speaker):
             bargeInPending = false
+            // A hazard is never dropped, also not while Pip speaks or looks, and not for being
+            // said by someone else: it stops everything.
+            let hazard = !muted && text.count >= 2 && !isEcho(text) && SafetyPolicy.spokenHazard(in: text) != nil
+            if hazard, busy {
+                log("barge-in: hazard")
+                interrupt()
+            }
             guard !muted, text.count >= 2, !isEcho(text), !busy else {
                 if phase == .hearing { phase = .listening }
                 return
             }
             // Only real user speech chooses who Pip talks with, never its own echo.
-            guard acceptSpeaker(speaker, text: text) else { return }
+            guard hazard || acceptSpeaker(speaker, text: text) else { return }
             heard = text
             // The frame the user was looking at when they finished speaking.
-            guard let snapshot = ar.snapshot() else { return }
+            guard let snapshot = ar.snapshot() else {
+                phase = muted ? .muted : .listening
+                return
+            }
             route(text, snapshot: snapshot)
         case .error(let message):
             log("asr error: \(message)")
@@ -348,10 +364,7 @@ final class GuideModel: ObservableObject {
         lookCount += 1
         let me = lookCount
         activeLook = me
-        defer {
-            if activeLook == me { activeLook = nil }
-            lastLookAt = Date()
-        }
+        defer { if activeLook == me { activeLook = nil } }
         phase = .looking
         spokenThisTurn = []
         // A question from the user: any open yes/no question of the runtime is stale now.
@@ -405,9 +418,9 @@ final class GuideModel: ObservableObject {
                     } else {
                         note(String(format: "target %d not grounded (%@)", id, method))
                     }
-                case .segmented(let s, let marked):
-                    for inst in s.instances { ar.addMark(inst.renumbered(inst.id + offset), snapshot: snapshot) }
-                    markedImage = UIImage(data: marked)
+                case .segmented:
+                    // Marks mode (`LookRequest.prompts`) is for pipeval; the app never asks for it.
+                    break
                 case .sentence(var s, let traces):
                     firstWord = firstWord ?? Date().timeIntervalSince(started)
                     phase = .speaking
@@ -476,11 +489,10 @@ final class GuideModel: ObservableObject {
 
     func resetConversation() {
         interrupt()
-        prepTask?.cancel()
-        prepTask = nil
-        preparingGoal = nil
+        cancelPreparing()
         cancelReading()
         awaitingConsent = false
+        consentQueued = false
         shopping = []
         history = []
         facts = [:]

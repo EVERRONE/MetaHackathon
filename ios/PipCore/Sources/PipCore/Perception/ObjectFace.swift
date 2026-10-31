@@ -10,8 +10,6 @@ public enum ObjectFace {
         public var physicalWidth: CGFloat
         /// The key's outline in the image's plane: x right, y out of the image, z down the image.
         public var local: [[simd_float3]]
-        /// Where the image was cut from, in the snapshot's pixels.
-        public var region: CGRect
     }
 
     /// `key`: the pointed-at instance, `object`: the object it is on (pixels of `image`),
@@ -34,7 +32,7 @@ public enum ObjectFace {
                             Float(((p.y - region.minY) / region.height - 0.5) * height))
             }
         }
-        return Made(image: face, physicalWidth: width, local: local, region: region)
+        return Made(image: face, physicalWidth: width, local: local)
     }
 
     /// The crop with everything outside the object's mask a flat grey, so the background (which

@@ -72,12 +72,15 @@ public enum Utterance {
     ]
     /// Words that turn a yes into something else ("ja, maar…", "yes, but not…").
     static let qualifiers: Set<String> = ["maar", "but", "behalve", "except", "niet", "not", "nog", "geen", "no", "nee", "wacht", "wait", "eerst", "first"]
+    /// Words that make the rest a question ("okay, where is the breaker?"): no answer to anything.
+    static let questionWords: Set<String> = ["where", "where's", "what", "what's", "which", "how", "why", "when", "who",
+                                             "waar", "wat", "welke", "welk", "hoe", "waarom", "wanneer", "wie", "hoeveel"]
 
-    /// "Yes, I'm in Settings now": an unqualified yes followed by more words. nil when the
-    /// utterance does not start with yes or the rest qualifies it.
+    /// "Yes, I'm in Settings now": an unqualified yes followed by more words. False when the
+    /// utterance does not start with yes, the rest qualifies it, or it is a question.
     public static func startsWithYes(_ text: String) -> Bool {
         let w = words(text)
-        guard let start = yesStarts.first(where: { w.starts(with: $0) }) else { return false }
-        return !w.dropFirst(start.count).contains(where: { qualifiers.contains($0) })
+        guard !text.contains("?"), let start = yesStarts.first(where: { w.starts(with: $0) }) else { return false }
+        return !w.dropFirst(start.count).contains(where: { qualifiers.contains($0) || questionWords.contains($0) })
     }
 }

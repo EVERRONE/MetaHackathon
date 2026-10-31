@@ -30,6 +30,12 @@ final class CaptureGate {
     /// Sharpness of recent accepted frames (variance of the image's Laplacian), for a relative test.
     private var sharpness: Double = 0
     private var sharpnessSamples = 0
+    /// Frames held steady have scored as blurred since then (nil once one passes).
+    private var blurredSince: TimeInterval?
+    private var lastBlurredAt: TimeInterval = 0
+    /// Steady frames scoring this long below the usual sharpness are a plainer scene, not blur:
+    /// the gate learns the new level instead of refusing the rest of the room for good.
+    static let relearnAfter: TimeInterval = 2
 
     /// Something went wrong at this moment: drop what was recorded since `since`.
     var onTrouble: ((Date) -> Void)?
@@ -73,7 +79,13 @@ final class CaptureGate {
         if let light = frame.lightEstimate?.ambientIntensity, light < Self.minLight { return false }
         let s = Self.sharpness(frame.capturedImage)
         // Blurred compared with what this camera usually gives here (after a few frames to learn).
-        if sharpnessSamples >= 8, s < 0.45 * sharpness { return false }
+        if sharpnessSamples >= 8, s < 0.45 * sharpness {
+            if t - lastBlurredAt > 0.5 { blurredSince = t }
+            lastBlurredAt = t
+            guard let start = blurredSince, t - start >= Self.relearnAfter else { return false }
+            sharpnessSamples = 0
+        }
+        blurredSince = nil
         sharpness = sharpnessSamples == 0 ? s : 0.9 * sharpness + 0.1 * s
         sharpnessSamples += 1
         return true

@@ -152,6 +152,8 @@ public struct LookPipeline: Sendable {
             }
         }
         var groundTasks: [Task<Void, Never>] = []
+        /// Targets whose grounding was started: the only marks worth waiting for.
+        var grounding = Set<Int>()
         defer {
             chatTask.cancel()
             ticker.cancel()
@@ -171,6 +173,7 @@ public struct LookPipeline: Sendable {
             for e in events {
                 switch e {
                 case .target(let id, let spec):
+                    grounding.insert(id)
                     emit(.target(id: id, spec: spec))
                     groundTasks.append(Task {
                         let r = await grounder.ground(spec, id: id, frame: frame, describe: { notes.get(id) })
@@ -189,8 +192,10 @@ public struct LookPipeline: Sendable {
         /// Releases sentences in order once their targets are grounded (or the wait is over).
         func flush() {
             while let first = pending.first {
-                let needed = Set(first.sentence.cues.flatMap { $0.cue.marks })
-                guard needed.isSubset(of: resolved) || since(first.completed) > groundingTimeout else { return }
+                // A mark that is neither known nor being grounded (a mistyped m=N) never resolves:
+                // waiting for it would only hold up the speech; the validator rejects its cue.
+                let waiting = Set(first.sentence.cues.flatMap { $0.cue.marks }).subtracting(resolved).intersection(grounding)
+                guard waiting.isEmpty || since(first.completed) > groundingTimeout else { return }
                 var s = first.sentence
                 var traces: [CueTrace] = []
                 var kept: [TimedCue] = []

@@ -135,18 +135,14 @@ struct AnchoredMark {
         observation = nil
     }
 
-    /// Start and end of a straight arrow for `move`, in world space.
-    func arrow(_ direction: MoveDirection) -> (simd_float3, simd_float3) {
+    /// Start and end of a straight arrow for `move`, in world space, laid on the surface the mark
+    /// was measured on. nil without such a surface (a remembered place, an outline locked to its
+    /// object): the arrow is then drawn along the screen.
+    func arrow(_ direction: MoveDirection) -> (simd_float3, simd_float3)? {
+        guard imageExtent > 0 else { return nil }
         let len = max(40, imageExtent * 0.55)
-        let (dx, dy): (CGFloat, CGFloat)
-        switch direction {
-        case .up: (dx, dy) = (0, -1)
-        case .down: (dx, dy) = (0, 1)
-        case .left: (dx, dy) = (-1, 0)
-        case .right: (dx, dy) = (1, 0)
-        case .in, .out: (dx, dy) = (0, 0)
-        }
-        return (centroid, apply(lift(CGPoint(x: imageCentre.x + dx * len, y: imageCentre.y + dy * len))))
+        let v = direction.screenVector
+        return (centroid, apply(lift(CGPoint(x: imageCentre.x + v.dx * len, y: imageCentre.y + v.dy * len))))
     }
 
     // MARK: Depth
@@ -211,5 +207,18 @@ struct AnchoredMark {
             j = i
         }
         return inside
+    }
+}
+
+extension MoveDirection {
+    /// The direction in image or screen coordinates (y down); zero for in and out.
+    var screenVector: CGVector {
+        switch self {
+        case .up: return CGVector(dx: 0, dy: -1)
+        case .down: return CGVector(dx: 0, dy: 1)
+        case .left: return CGVector(dx: -1, dy: 0)
+        case .right: return CGVector(dx: 1, dy: 0)
+        case .in, .out: return CGVector(dx: 0, dy: 0)
+        }
     }
 }

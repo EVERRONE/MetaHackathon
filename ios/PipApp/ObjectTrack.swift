@@ -1,4 +1,3 @@
-import CoreGraphics
 import PipCore
 import QuartzCore
 import simd
@@ -44,7 +43,6 @@ struct ObjectTrack {
     private(set) var observations: [RayFusion.Observation]
     /// What the model asked to point at, to find the object again after drift.
     let spec: TargetSpec?
-    var box: CGRect
     let created: TimeInterval
     private(set) var lastMeasured: TimeInterval
     private var lastTried: TimeInterval = 0
@@ -69,10 +67,9 @@ struct ObjectTrack {
     static let followFor: TimeInterval = 5 * 60
     static let maxFailures = 3
 
-    init(observation: RayFusion.Observation, spec: TargetSpec?, box: CGRect, imageSize: CGSize) {
+    init(observation: RayFusion.Observation, spec: TargetSpec?) {
         observations = [observation]
         self.spec = spec
-        self.box = box
         created = observation.time
         lastMeasured = observation.time
     }
@@ -82,7 +79,6 @@ struct ObjectTrack {
     init(place spec: TargetSpec?, now: TimeInterval) {
         observations = []
         self.spec = spec
-        box = .zero
         created = now
         lastMeasured = 0
         needsCheck = true
@@ -132,8 +128,9 @@ struct ObjectTrack {
         let newPoint = obs.point ?? (obs.origin + obs.direction * simd_dot(prior - obs.origin, obs.direction))
         if reason == .reentry {
             // Coming back: the earlier views carry the drift. This view is the truth now, and the
-            // difference is the drift every other object in the room has too.
-            offset = newPoint - prior
+            // difference is the drift every other object in the room has too. A remembered place
+            // has no views from this session: its difference is its own storage or link error.
+            offset = observations.isEmpty ? nil : newPoint - prior
             observations = [obs]
             reset = true
             needsCheck = false

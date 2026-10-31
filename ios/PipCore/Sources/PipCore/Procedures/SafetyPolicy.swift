@@ -52,9 +52,15 @@ public enum SafetyPolicy {
     /// The text as lower-case words with single spaces, padded so phrases match on word boundaries.
     static func normalized(_ text: String) -> [String] { Utterance.words(text) }
 
+    /// A keyword's words, folded like the user's (lower case, no accents: "plafonnière" must
+    /// match the spoken "plafonniere"). A trailing `*` stays.
+    static func keywordParts(_ keyword: String) -> [String] {
+        keyword.lowercased().folding(options: .diacriticInsensitive, locale: nil).split(separator: " ").map(String.init)
+    }
+
     /// Whether `keyword` (a word, a phrase, or a prefix ending in `*`) occurs in `words`.
     static func contains(_ words: [String], _ keyword: String) -> Bool {
-        let parts = keyword.lowercased().split(separator: " ").map(String.init)
+        let parts = keywordParts(keyword)
         guard !parts.isEmpty, parts.count <= words.count else { return false }
         for start in 0...(words.count - parts.count) {
             var all = true
@@ -72,7 +78,7 @@ public enum SafetyPolicy {
     static func withoutHarmless(_ words: [String]) -> [String] {
         var out = words
         for phrase in harmless {
-            let parts = phrase.split(separator: " ").map(String.init)
+            let parts = keywordParts(phrase)
             guard parts.count <= out.count else { continue }
             for start in 0...(out.count - parts.count) {
                 let hit = parts.enumerated().allSatisfy { k, part in
@@ -144,17 +150,32 @@ public enum SafetyPolicy {
                                 "i'm hurt", "im hurt", "i am hurt", "injured", "bleeding"]
     /// A negation just before the hazard word ("geen rook", "no smoke", "there's no sparks").
     static let negations: Set<String> = ["geen", "niet", "niks", "niets", "no", "not", "never", "nothing", "zonder", "without"]
+    /// A negation just after it, which only Dutch word order has ("ik rook niks", "het vonkt niet").
+    /// In English a "not" after the hazard contrasts it ("smoke, not steam"): still a hazard.
+    static let negationsAfter: Set<String> = ["niet", "niks", "niets"]
 
     public static func spokenHazard(in utterance: String) -> String? {
-        let words = withoutHarmless(normalized(utterance))
+        // A negation counts only in the hazard's own clause: "no smoke" is calm, but in "Oh no,
+        // sparks!" or "No! It's on fire" the "no" is a cry, not a negation.
+        let clauses = utterance.split(whereSeparator: { ".,!?;:…\n".contains($0) })
+        for clause in clauses {
+            if let hazard = spokenHazard(inClause: withoutHarmless(normalized(String(clause)))) { return hazard }
+        }
+        return nil
+    }
+
+    private static func spokenHazard(inClause words: [String]) -> String? {
         for hazard in spokenHazards {
             let parts = hazard.split(separator: " ").map(String.init)
             guard parts.count <= words.count else { continue }
             for start in 0...(words.count - parts.count) where Array(words[start..<start + parts.count]) == parts {
-                let before = words[max(0, start - 3)..<start]
+                // "oh no sparks" without the comma: that "no" is a cry too.
+                let negatedBefore = (max(0, start - 3)..<start).contains { i in
+                    negations.contains(words[i]) && !(words[i] == "no" && i > 0 && words[i - 1] == "oh")
+                }
                 let after = words[(start + parts.count)..<min(words.count, start + parts.count + 2)]
                 // "geen rook", "no smoke", "ik rook niks": not a hazard.
-                if before.contains(where: { negations.contains($0) }) || after.contains(where: { negations.contains($0) }) { continue }
+                if negatedBefore || after.contains(where: { negationsAfter.contains($0) }) { continue }
                 return hazard
             }
         }

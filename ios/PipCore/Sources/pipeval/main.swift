@@ -51,12 +51,9 @@ if args.first == "face", args.count >= 7 {
     let box = CGRect(x: Double(args[2])!, y: Double(args[3])!, width: Double(args[4])! - Double(args[2])!, height: Double(args[5])! - Double(args[3])!)
     let grounder = Grounder(client: client, frameJPEG: Data())
     guard let key = await grounder.reground(box: box, id: 1, frame: image) else { fail("SAM found no key there") }
-    let side = max(key.boxRect.width, key.boxRect.height)
-    let around = key.boxRect.insetBy(dx: -4 * side, dy: -4 * side).intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
     // With a phrase (what the key is on), SAM looks for that object; it must contain the key.
     let centre = CGPoint(x: key.boxRect.midX, y: key.boxRect.midY)
     let object = args.count > 7 ? await grounder.object(named: args[7], at: centre, in: image, id: 2).flatMap { Grounding.contains($0, centre) ? $0 : nil } : nil
-    _ = around
     print("key \(key.box), object \(object.map { "\($0.box)" } ?? "none")")
     guard let made = ObjectFace.make(key: key, object: object, image: image, focal: 1000, distance: 0.4) else { fail("no face") }
     // Draw the key's outline back onto the face, from its local coordinates, to check the mapping.
@@ -184,12 +181,18 @@ if args.first == "check", args.count >= 3 {
 if args.first == "find", args.count >= 3 {
     let env = ProcessInfo.processInfo.environment
     let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
-    let images = args.dropFirst(2).compactMap { FileManager.default.contents(atPath: $0) }.compactMap { SetOfMarks.load($0, maxSide: 768) }
+    // A file that cannot be read stops the run: skipping it would shift every index after it.
+    let paths = Array(args.dropFirst(2))
+    let loaded = paths.map { path -> (image: CGImage, jpeg: Data) in
+        guard let data = FileManager.default.contents(atPath: path), let image = SetOfMarks.load(data, maxSide: 768),
+              let jpeg = SetOfMarks.jpeg(image, quality: 0.6) else { fail("cannot read \(path)") }
+        return (image, jpeg)
+    }
     let t0 = Date()
-    let hits = try await MemorySearch(client: client).find(args[1], in: images.compactMap { SetOfMarks.jpeg($0, quality: 0.6) })
-    print(String(format: "%.1fs", Date().timeIntervalSince(t0)), hits.map { "snapshot \($0.index + 1) (\(args[$0.index + 2].split(separator: "/").last ?? "")) @\(Int($0.x)),\(Int($0.y)) conf \($0.confidence)" })
+    let hits = try await MemorySearch(client: client).find(args[1], in: loaded.map(\.jpeg))
+    print(String(format: "%.1fs", Date().timeIntervalSince(t0)), hits.map { "snapshot \($0.index + 1) (\(paths[$0.index].split(separator: "/").last ?? "")) @\(Int($0.x)),\(Int($0.y)) conf \($0.confidence)" })
     if let first = hits.first {
-        let img = images[first.index]
+        let img = loaded[first.index].image
         let p = CGPoint(x: first.x / 1000 * Double(img.width), y: first.y / 1000 * Double(img.height))
         let inst = await Grounder(client: client, frameJPEG: Data()).object(at: p, in: img, id: 1)
         print("SAM:", inst.map { "box \($0.box) conf \($0.confidence)" } ?? "nothing at that point")
@@ -227,7 +230,13 @@ let request = LookRequest(
     history: history,
     utterance: utterance
 )
-let outDir = URL(fileURLWithPath: options["out"] ?? FileManager.default.currentDirectoryPath)
+// The previews show the camera's view (often someone's home): never next to where pipeval runs,
+// which may be a repository, unless asked for with out=.
+let outDir: URL = {
+    let dir = options["out"].map { URL(fileURLWithPath: $0) } ?? FileManager.default.temporaryDirectory.appendingPathComponent("pipeval")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return dir
+}()
 
 func word(at anchor: Int, in text: String) -> String {
     let u = Array(text.utf16)
@@ -330,5 +339,6 @@ if let ctx = CGContext(data: nil, width: frame.width, height: frame.height, bits
     }
     if let img = ctx.makeImage(), let jpg = SetOfMarks.jpeg(img) {
         try? jpg.write(to: outDir.appendingPathComponent("cues.jpg"))
+        print("preview: \(outDir.appendingPathComponent("cues.jpg").path)")
     }
 }

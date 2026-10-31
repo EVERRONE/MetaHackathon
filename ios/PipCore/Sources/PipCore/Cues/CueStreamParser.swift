@@ -200,6 +200,8 @@ public struct CueStreamParser: Sendable {
                 while text.last == " " || text.last == "\t" { text.removeLast() }
                 let end = text.utf16.count
                 cues = cues.map { var c = $0; c.anchor = min(c.anchor, end); return c }
+                // The words after a tag start before this punctuation, not past it.
+                describing = describing.mapValues { min($0, end) }
             }
         }
         text += chunk
@@ -242,7 +244,10 @@ public struct CueStreamParser: Sendable {
         let units = Array(text.utf16)
         for (id, start) in describing where start <= units.count {
             let tail = String(decoding: units[start...], as: UTF16.self)
-            let clause = tail.split(whereSeparator: { ".!?…\n".contains($0) }).first.map(String.init) ?? tail
+            // Empty pieces count: a tag right before the full stop has no words of its own, and
+            // must not take the next sentence's.
+            let clause = tail.split(maxSplits: 1, omittingEmptySubsequences: false, whereSeparator: { ".!?…\n".contains($0) })
+                .first.map(String.init) ?? tail
             var parts = clause.split(whereSeparator: \.isWhitespace).prefix(12).map(String.init)
             // Trailing words about the action, not the object ("the power symbol there once").
             let filler: Set<String> = ["there", "here", "once", "twice", "now", "again", "together", "down", "first", "then",

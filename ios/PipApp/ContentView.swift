@@ -162,10 +162,6 @@ struct ContentView: View {
 
     private var debugTrace: some View {
         HStack(alignment: .top, spacing: 8) {
-            if let img = model.markedImage {
-                Image(uiImage: img).resizable().scaledToFit().frame(width: 130)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(model.trace.suffix(30).enumerated()), id: \.offset) { _, line in

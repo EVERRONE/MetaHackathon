@@ -10,14 +10,12 @@ import simd
 @MainActor
 final class TrackingLog {
     private let url: URL?
-    private var errors: [Double] = []
 
     init() {
         url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent("tracking.log")
     }
 
     func record(id: Int, reason: ObjectTrack.Reason, update: ObjectTrack.Update) {
-        if let e = update.pixelError { errors.append(e) }
         let line = String(format: "%@\t%d\t%@\t%.1f\t%.2f\t%d\t%@\t%.1f\t%@\n", ISO8601DateFormatter().string(from: Date()), id, reason.rawValue,
                           update.pixelError ?? -1, update.correction * 100, update.views, update.reset ? "reset" : "fused",
                           (update.offset.map { simd_length($0) } ?? 0) * 100, update.method)
@@ -56,10 +54,4 @@ final class TrackingLog {
 
     /// One queue for all appends, so lines keep their order.
     nonisolated private static let appendQueue = DispatchQueue(label: "pip.log")
-
-    /// Median distance between outline and object over this session's re-measurements.
-    var medianError: Double? {
-        guard !errors.isEmpty else { return nil }
-        return errors.sorted()[errors.count / 2]
-    }
 }

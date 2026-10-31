@@ -31,13 +31,26 @@ final class OverlayView: UIView {
     /// Marks whose object moved in the image: drawn where the object is now (see ImageFollower).
     var adjust: [Int: ImageFollower.Adjust] = [:]
 
-    func render(_ annotations: [AnnotationBoard.Annotation], now: TimeInterval, marks: [Int: AnchoredMark], project base: @escaping (simd_float3) -> CGPoint?) {
+    /// `project`: a world point on screen, nil behind the camera. `direction`: the way to turn
+    /// towards a world point on screen (x right, y down), also when it is behind the camera.
+    func render(_ annotations: [AnnotationBoard.Annotation], now: TimeInterval, marks: [Int: AnchoredMark],
+                project base: @escaping (simd_float3) -> CGPoint?, direction: @escaping (simd_float3) -> CGVector?) {
         // Each mark's projection: from its room anchor, moved on screen when its object moved.
         let adjust = self.adjust
         func proj(_ mark: AnchoredMark?) -> (simd_float3) -> CGPoint? {
             guard let mark, let a = adjust[mark.id] else { return base }
             if a.hidden { return { _ in nil } }
             return { w in base(w).map { CGPoint(x: a.to.x + ($0.x - a.from.x) * a.scale, y: a.to.y + ($0.y - a.from.y) * a.scale) } }
+        }
+        // Where an edge arrow points for a mark: its place on screen or, behind the camera, far
+        // off in its direction. Nothing for an outline hidden because its object moved.
+        let centre = CGPoint(x: bounds.midX, y: bounds.midY)
+        func aim(_ mark: AnchoredMark?) -> CGPoint? {
+            guard let mark else { return nil }
+            if let p = proj(mark)(mark.centroid) { return p }
+            guard adjust[mark.id] == nil, let d = direction(mark.centroid) else { return nil }
+            let len = max(hypot(d.dx, d.dy), 1e-6)
+            return CGPoint(x: centre.x + d.dx / len * 10_000, y: centre.y + d.dy / len * 10_000)
         }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -52,14 +65,14 @@ final class OverlayView: UIView {
                !a.cue.marks.contains(where: { screenPolygons(marks[$0], proj(marks[$0])) != nil }) {
                 if case .danger(_, let reason) = a.cue { generalDanger = reason }
                 if hinted.insert(first).inserted {
-                    edgeHint(mark, proj(mark), color: { if case .danger = a.cue { return Self.danger } else { return Self.action } }(), force: true)
+                    edgeHint(aim(mark), color: { if case .danger = a.cue { return Self.danger } else { return Self.action } }(), force: true)
                 }
                 continue
             }
             switch a.cue {
             case .outline(let m):
                 if let p = screenPolygons(marks[m], proj(marks[m])) { highlight(p, pop: pop(a, now), alpha: alpha, fill: 0.10) }
-                else { edgeHint(marks[m], proj(marks[m]), color: Self.action) }
+                else { edgeHint(aim(marks[m]), color: Self.action) }
             case .candidates(let ms):
                 for (i, m) in ms.enumerated() {
                     guard let p = screenPolygons(marks[m], proj(marks[m])) else { continue }
@@ -68,7 +81,7 @@ final class OverlayView: UIView {
                 }
             case .ring(let m, let label):
                 guard let mark = marks[m] else { continue }
-                guard let p = screenPolygons(mark, proj(mark)) else { edgeHint(mark, proj(mark), color: Self.action); continue }
+                guard let p = screenPolygons(mark, proj(mark)) else { edgeHint(aim(mark), color: Self.action); continue }
                 // A small target: the contour itself, tinted, with its step number above it.
                 highlight(p, pop: pop(a, now), alpha: alpha, fill: 0.22)
                 if let label {
@@ -82,9 +95,13 @@ final class OverlayView: UIView {
                 if let p = screenPolygons(mark, proj(mark)) { stroke(p, color: Self.action, width: 3, alpha: alpha * 0.8) }
                 if dir == .in || dir == .out {
                     if let c = proj(mark)(mark.centroid) { ring(at: c, radius: 22, color: Self.action, alpha: alpha) }
-                } else {
-                    let (s, e) = mark.arrow(dir)
+                } else if let (s, e) = mark.arrow(dir) {
                     if let a0 = proj(mark)(s), let a1 = proj(mark)(e) { arrow(from: a0, to: a1, color: Self.action, alpha: alpha) }
+                } else if let c = proj(mark)(mark.centroid) {
+                    // No surface to lay it on: along the screen, about half the outline's size.
+                    let size = screenPolygons(mark, proj(mark)).map { b in max(bounds(b).width, bounds(b).height) } ?? 80
+                    let len = max(60, size * 0.55), v = dir.screenVector
+                    arrow(from: c, to: CGPoint(x: c.x + v.dx * len, y: c.y + v.dy * len), color: Self.action, alpha: alpha)
                 }
             case .rotate(let m, let dir, _):
                 guard let mark = marks[m], let c = proj(mark)(mark.centroid) else { continue }
@@ -111,7 +128,7 @@ final class OverlayView: UIView {
                 let b = bounds(p)
                 stepBadge(name, at: CGPoint(x: b.midX, y: b.minY - 22), alpha: alpha)
             case .offscreen(let m):
-                edgeHint(marks[m], proj(marks[m]), color: Self.action, force: true)
+                edgeHint(aim(marks[m]), color: Self.action, force: true)
             case .verified(let m):
                 guard let mark = marks[m] else { continue }
                 if let p = screenPolygons(mark, proj(mark)) { stroke(p, color: Self.verified, width: 4, alpha: alpha) }
@@ -303,9 +320,9 @@ final class OverlayView: UIView {
         layer.addSublayer(l)
     }
 
-    /// A wedge at the screen edge pointing at a mark that is out of view.
-    private func edgeHint(_ mark: AnchoredMark?, _ project: (simd_float3) -> CGPoint?, color: UIColor, force: Bool = false) {
-        guard let mark, let p = project(mark.centroid) else { return }
+    /// A wedge at the screen edge pointing at a mark that is out of view (`p`, see `aim`).
+    private func edgeHint(_ p: CGPoint?, color: UIColor, force: Bool = false) {
+        guard let p else { return }
         let inner = bounds.insetBy(dx: 28, dy: 60)
         if inner.contains(p), !force { return }
         let c = CGPoint(x: bounds.midX, y: bounds.midY)

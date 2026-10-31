@@ -4,12 +4,10 @@ import Foundation
 public struct MarkInfo: Equatable, Sendable {
     public var id: Int
     public var confidence: Double
-    public var label: String?
 
-    public init(id: Int, confidence: Double, label: String? = nil) {
+    public init(id: Int, confidence: Double) {
         self.id = id
         self.confidence = confidence
-        self.label = label
     }
 }
 

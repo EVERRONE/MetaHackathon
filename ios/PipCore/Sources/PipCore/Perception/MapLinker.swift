@@ -94,7 +94,9 @@ public enum MapLinker {
     public static let turnFloor: Double = 0.15 * .pi / 180
     public static let driftPerMetre: Double = 0.005
     public static let overlapRadius: Double = 2
-    /// A place is shown only when it lands within this (one standard deviation).
+    /// How closely a linked place should land (one standard deviation): the accuracy the linking
+    /// is tested against. Places are brought over whatever their uncertainty (it is logged) and
+    /// found again on sight the first time Pip points at them.
     public static let showWithin: Float = 0.015
 
     /// The fine fit over the whole overlap, from a linked start (within a few centimetres).

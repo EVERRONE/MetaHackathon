@@ -5,7 +5,6 @@ public struct ManualReference: Codable, Equatable, Sendable {
     public var title: String
     public var publisher: String
     public var url: String
-    public var pageURL: String?
 }
 
 /// Builds procedures: finds the official manual for a product on the web, then compiles the
@@ -48,7 +47,7 @@ public struct ProcedureCompiler: Sendable {
         let prompt = """
         Find the official assembly instructions, installation guide or user manual for: \(product).
         Use only the manufacturer's own website, never mirror or manual-collection sites. I need the direct link to the PDF file.
-        Reply with JSON only: {"found": true|false, "title": "...", "publisher": "...", "pdf_url": "https://... or empty", "page_url": "https://... or empty"}
+        Reply with JSON only: {"found": true|false, "title": "...", "publisher": "...", "pdf_url": "https://... or empty"}
         """
         let body: JSONValue = .object([
             "model": .string(finderModel),
@@ -57,7 +56,7 @@ public struct ProcedureCompiler: Sendable {
             "reasoning": .object(["effort": .string("low")]),
         ])
         let text = try await client.responsesText(body)
-        struct Found: Decodable { var found: Bool?; var title: String?; var publisher: String?; var pdf_url: String?; var page_url: String? }
+        struct Found: Decodable { var found: Bool?; var title: String?; var publisher: String?; var pdf_url: String? }
         guard let json = Self.firstJSONObject(in: text), let found = try? JSONDecoder().decode(Found.self, from: Data(json.utf8)),
               found.found == true, let url = found.pdf_url, !url.isEmpty else { return nil }
         guard let host = URL(string: url)?.host?.lowercased(), !Self.unofficial(host) else { return nil }
@@ -66,7 +65,7 @@ public struct ProcedureCompiler: Sendable {
         let check = try await client.sourceCheck(url)
         let finalHost = (check.host ?? host).lowercased()
         guard check.ok, check.pdf == true, !Self.unofficial(finalHost) else { return nil }
-        return ManualReference(title: found.title ?? product, publisher: found.publisher ?? host, url: check.finalUrl ?? url, pageURL: found.page_url)
+        return ManualReference(title: found.title ?? product, publisher: found.publisher ?? host, url: check.finalUrl ?? url)
     }
 
     // MARK: Compiling

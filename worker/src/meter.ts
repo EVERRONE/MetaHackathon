@@ -26,15 +26,17 @@ export class Meter extends DurableObject<Env> {
 
   /**
    * Records spend. A negative amount corrects an estimate charged before the call (calls = 0),
-   * so the total never drops below what was really used.
+   * so the total never drops below what was really used. A day never goes below zero, also
+   * not when the correction is the first entry of a new UTC day.
    */
   add(usd: number, calls = 1): void {
     if (!Number.isFinite(usd) || usd === 0) return;
     this.ctx.storage.sql.exec(
-      "INSERT INTO spend (day, usd, calls) VALUES (?, ?, ?) ON CONFLICT(day) DO UPDATE SET usd = MAX(0, usd + excluded.usd), calls = calls + excluded.calls",
+      "INSERT INTO spend (day, usd, calls) VALUES (?, MAX(0, ?), ?) ON CONFLICT(day) DO UPDATE SET usd = MAX(0, usd + ?), calls = calls + excluded.calls",
       utcDay(),
       usd,
       calls,
+      usd,
     );
   }
 }

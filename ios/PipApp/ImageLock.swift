@@ -19,12 +19,14 @@ struct ImageLock {
     let local: [[simd_float3]]
     var tracked = false
     var seen = false
+    /// When the lock was made: the oldest gives way when there are too many.
+    let created = Date()
 
     var name: String { reference.name ?? "" }
 
     /// Builds the reference image and the outline in its plane (see ObjectFace). nil when the
     /// region is too small to track.
-    static func make(markID: Int, key: SegmentInstance, object: SegmentInstance?, snapshot: FrameSnapshot, distance: Float) -> (image: CGImage, physicalWidth: CGFloat, local: [[simd_float3]])? {
+    static func make(key: SegmentInstance, object: SegmentInstance?, snapshot: FrameSnapshot, distance: Float) -> (image: CGImage, physicalWidth: CGFloat, local: [[simd_float3]])? {
         let focal = CGFloat(snapshot.intrinsics[0][0]) * CGFloat(snapshot.image.height) / snapshot.sensorSize.width
         guard let made = ObjectFace.make(key: key, object: object, image: snapshot.image, focal: focal, distance: distance) else { return nil }
         return (made.image, made.physicalWidth, made.local)

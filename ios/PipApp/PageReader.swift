@@ -54,10 +54,15 @@ final class PageReader {
     static func fingerprint(_ image: CGImage) -> UInt64 {
         let w = 9, h = 8
         var pixels = [UInt8](repeating: 0, count: w * h)
-        guard let ctx = CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
-                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return 0 }
-        ctx.interpolationQuality = .medium
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        // The context draws into the array's memory, so it may only live inside this closure.
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let ctx = CGContext(data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
+                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            ctx.interpolationQuality = .medium
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard drawn else { return 0 }
         var hash: UInt64 = 0
         for y in 0..<h {
             for x in 0..<(w - 1) where pixels[y * w + x] > pixels[y * w + x + 1] {

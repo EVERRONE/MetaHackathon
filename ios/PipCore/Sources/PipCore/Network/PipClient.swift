@@ -19,13 +19,12 @@ public struct PipClient: Sendable {
         return e
     }()
 
-    func request(_ path: String, method: String = "POST", contentType: String? = "application/json", query: [URLQueryItem] = []) -> URLRequest {
-        var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
-        if !query.isEmpty { components.queryItems = query }
-        var r = URLRequest(url: components.url!)
-        r.httpMethod = method
+    /// A JSON POST to the Worker with the app token.
+    func request(_ path: String) -> URLRequest {
+        var r = URLRequest(url: baseURL.appendingPathComponent(path))
+        r.httpMethod = "POST"
         r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        if let contentType { r.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
         r.timeoutInterval = 60
         return r
     }
@@ -45,23 +44,6 @@ public struct PipClient: Sendable {
         let (data, response) = try await session.data(for: r)
         try Self.check(response, body: data)
         return try JSONDecoder().decode(SegmentResponse.self, from: data)
-    }
-
-    public func transcribe(wav: Data, languages: [String] = ["English", "Dutch"], keywords: [String] = []) async throws -> Transcript {
-        var query = [URLQueryItem(name: "languages", value: languages.joined(separator: ","))]
-        if !keywords.isEmpty { query.append(URLQueryItem(name: "keywords", value: keywords.joined(separator: ","))) }
-        var r = request("v1/transcribe", contentType: "audio/wav", query: query)
-        r.httpBody = wav
-        let (data, response) = try await session.data(for: r)
-        try Self.check(response, body: data)
-        return try JSONDecoder().decode(Transcript.self, from: data)
-    }
-
-    public func usage() async throws -> UsageStatus {
-        let r = request("v1/usage", method: "GET", contentType: nil)
-        let (data, response) = try await session.data(for: r)
-        try Self.check(response, body: data)
-        return try JSONDecoder().decode(UsageStatus.self, from: data)
     }
 
     /// Speech for one sentence from the Worker's ElevenLabs route: 24 kHz 16-bit mono PCM plus the

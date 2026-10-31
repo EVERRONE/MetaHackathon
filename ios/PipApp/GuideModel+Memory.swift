@@ -121,12 +121,16 @@ extension GuideModel {
     }
 
     private func askConsentOnce() {
-        guard !awaitingConsent else { return }
-        awaitingConsent = true
+        guard !awaitingConsent, !consentQueued else { return }
+        consentQueued = true
         // After Pip has finished its sentence about what it will remember, and not over the user.
+        // Only once the question is asked does a yes or no answer it: an "okay" said before it
+        // is no consent to keep camera snapshots for a week.
         Task {
             while speaker.isSpeaking || lookActive || phase == .hearing { try? await Task.sleep(nanoseconds: 200_000_000) }
-            guard awaitingConsent, memory.consent == nil else { return }
+            consentQueued = false
+            guard memory.consent == nil else { return }
+            awaitingConsent = true
             say(phrases.askMemory)
         }
     }
@@ -134,6 +138,7 @@ extension GuideModel {
     /// The switch in the memory sheet: the same as answering the question.
     func setConsent(_ yes: Bool) {
         awaitingConsent = false
+        consentQueued = false
         memory.setConsent(yes)
         mapKeeper.enabled = yes
         if yes {
@@ -179,14 +184,18 @@ extension GuideModel {
             memory.update(ar.restoredPlaces.map { var p = $0; p.piece = mapKeeper.current.id; return p })
             ar.restoredPlaces = []
         }
-        // iOS gives the app a little time in the background to finish writing.
-        let background = UIApplication.shared.beginBackgroundTask(withName: "Pip map")
+        // iOS gives the app a little time in the background to finish writing: until both the
+        // map piece and ARKit's own map (which may wait for ARKit and retry) are written.
+        let background = BackgroundWork(name: "Pip map", parts: 2)
         mapKeeper.save(mesh: ar.meshRaw()) {
-            Task { @MainActor in UIApplication.shared.endBackgroundTask(background) }
+            Task { @MainActor in background.done() }
         }
         keyframes.saveIndex()
         let id = mapKeeper.current.id
-        ar.saveMap { map in MapStore.saveWorldMap(map, for: id) }
+        ar.saveMap { map in
+            if let map { MapStore.saveWorldMap(map, for: id) }
+            background.done()
+        }
     }
 
     func forget(place id: UUID) {
@@ -205,9 +214,37 @@ extension GuideModel {
         ar.forgetAllPlaces()
         keyframes.forgetAll()
         mapKeeper.begin(continuing: nil, others: [])
+        // New snapshots belong to the new piece, not to the one just deleted.
+        keyframes.currentPiece = mapKeeper.current.id
         facts = [:]
         pendingPlaces = []
         pendingFacts = []
         memory.forgetAll()
+    }
+}
+
+/// A background task that ends once each of its parts is done, or when iOS's time is up (iOS
+/// ends the app if a background task outlives it).
+@MainActor
+private final class BackgroundWork {
+    private var id: UIBackgroundTaskIdentifier = .invalid
+    private var left: Int
+
+    init(name: String, parts: Int) {
+        left = parts
+        id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            MainActor.assumeIsolated { self?.end() }
+        }
+    }
+
+    func done() {
+        left -= 1
+        if left == 0 { end() }
+    }
+
+    private func end() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
     }
 }

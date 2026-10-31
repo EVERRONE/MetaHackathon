@@ -123,6 +123,31 @@ private func gated() -> Procedure {
         #expect(SafetyPolicy.spokenHazard(in: "ik ruik gas") == "ruik gas")
     }
 
+    @Test func aCryIsNoNegation() {
+        // "no" in another clause, or "oh no", does not cancel the hazard; "not" after it contrasts.
+        #expect(SafetyPolicy.spokenHazard(in: "Oh no, sparks!") == "sparks")
+        #expect(SafetyPolicy.spokenHazard(in: "oh no sparks") == "sparks")
+        #expect(SafetyPolicy.spokenHazard(in: "No! It's on fire") == "on fire")
+        #expect(SafetyPolicy.spokenHazard(in: "smoke, not steam") == "smoke")
+        #expect(SafetyPolicy.spokenHazard(in: "Niet aankomen, het vonkt!") == "vonkt")
+        // Still calm.
+        #expect(SafetyPolicy.spokenHazard(in: "No smoke, no sparks") == nil)
+        #expect(SafetyPolicy.spokenHazard(in: "het vonkt niet meer") == nil)
+    }
+
+    @Test func accentedKeywordsMatch() {
+        #expect(SafetyPolicy.classify("vervang de plafonnière") == .refused(reason: "mains"))
+        #expect(SafetyPolicy.classify("vervang de plafonniere") == .refused(reason: "mains"))
+    }
+
+    @Test func aQuestionIsNoYes() {
+        // A safety gate must not be confirmed by "okay, where is the breaker?".
+        for q in ["Okay, where is the breaker?", "Ja, waar zit de zekering", "Yes, which one?", "ja?"] {
+            #expect(!Utterance.startsWithYes(q), "\(q)")
+        }
+        #expect(Utterance.startsWithYes("Ja, de stroom is af"))
+    }
+
     @Test func classificationOnWholeWords() {
         for ok in ["hang a medicine cabinet", "medicijnkastje ophangen", "wasmiddel doseren", "in verband met de verhuis een kast bouwen",
                    "remove the remains of the sealant", "install doorbell wiring"] {
@@ -217,5 +242,18 @@ private func gated() -> Procedure {
         _ = p.finish()
         #expect(p.descriptions[1] == "the play triangle, left of the 180 degrees")
         #expect(p.descriptions[2] == "the power symbol")
+    }
+
+    @Test func aTagBeforeTheFullStopTakesNoWordsFromTheNextSentence() {
+        var p = CueStreamParser()
+        _ = p.feed(#"Press the round button [[ring at=500,500 obj="button"]]. Then wait for the light. "#)
+        _ = p.finish()
+        #expect(p.descriptions[1] == nil)
+        // Also when the full stop arrives in a later chunk.
+        var q = CueStreamParser()
+        _ = q.feed(#"Press the round button [[ring at=500,500 obj="button"]]"#)
+        _ = q.feed(". Then wait for the light. ")
+        _ = q.finish()
+        #expect(q.descriptions[1] == nil)
     }
 }

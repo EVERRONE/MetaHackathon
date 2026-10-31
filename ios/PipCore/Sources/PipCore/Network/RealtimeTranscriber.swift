@@ -118,9 +118,11 @@ public final class RealtimeTranscriber: NSObject, @unchecked Sendable, URLSessio
         guard let data = text.data(using: .utf8),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
         guard let type = json["type"] as? String else {
-            // The acknowledgement is the only frame without a type.
+            // The acknowledgement is the only frame without a type. Once open, a typeless frame
+            // must not close the session again, or the audio would pile up in the backlog.
             // Flush the held audio before opening, inside the lock, so live audio cannot overtake it.
             lock.lock()
+            if open { lock.unlock(); return }
             let accepted = json["sessionId"] != nil
             if accepted, let t = task {
                 for chunk in backlog { t.send(.data(chunk)) { _ in } }

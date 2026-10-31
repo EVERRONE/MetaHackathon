@@ -225,10 +225,6 @@ public struct VoxelIndex: Sendable {
         return best
     }
 
-    public func nearest(to p: simd_float3, within radius: Float) -> simd_float3? {
-        nearestIndex(to: p, within: radius).map { points[$0] }
-    }
-
     /// Every point within `radius`.
     public func indices(near p: simd_float3, within radius: Float) -> [Int] {
         cells(around: p, within: radius).map(Int.init).filter { simd_distance_squared(p, points[$0]) <= radius * radius }

@@ -24,17 +24,21 @@ final class ImageFollower {
 
     private struct Follow {
         var box: CGRect?          // sensor-normalised, Vision's (bottom-left) convention
-        var confidence: Float = 1
         var movingFrames = 0
         var moving = false
         var lostFrames = 0
         var lastCentre: CGPoint?
         var stillSince: TimeInterval?
-        var screenBox: CGRect = .zero
     }
 
     /// Marks to start following: the snapshot they were measured in and their box there.
     private var pending: [Int: (image: CGImage, box: CGRect)] = [:]
+    /// The same, kept while a mark is followed: an object that lay still and was lost (a hand over
+    /// it) is looked for again with it, until it is found.
+    private var templates: [Int: (image: CGImage, box: CGRect)] = [:]
+    /// When to look again for a lost object that lay still.
+    private var retryAt: [Int: TimeInterval] = [:]
+    static let retryInterval: TimeInterval = 0.5
     private var follows: [Int: Follow] = [:]
     private let worker = Worker()
     private var busy = false
@@ -51,12 +55,16 @@ final class ImageFollower {
     /// A mark was just placed from `image` (the frame the user asked about), `box` in its pixels.
     func start(_ id: Int, image: CGImage, box: CGRect) {
         pending[id] = (image, box)
+        templates[id] = (image, box)
+        retryAt[id] = nil
         follows[id] = nil
         adjust[id] = nil
     }
 
     func stop(_ id: Int) {
         pending[id] = nil
+        templates[id] = nil
+        retryAt[id] = nil
         follows[id] = nil
         adjust[id] = nil
         worker.drop(id)
@@ -78,7 +86,7 @@ final class ImageFollower {
         let t = frame.timestamp
         guard !busy, t - lastRun >= Self.rate, viewSize.width > 0 else { return }
         let ids = Set(shown.map(\.id))
-        for id in follows.keys where !ids.contains(id) && pending[id] == nil { stop(id) }
+        for id in Set(follows.keys).union(retryAt.keys) where !ids.contains(id) && pending[id] == nil { stop(id) }
         let wanted = shown.prefix(Self.maxFollowed)
         guard !wanted.isEmpty else { return }
         lastRun = t
@@ -86,10 +94,15 @@ final class ImageFollower {
         let toImage = frame.displayTransform(for: .portrait, viewportSize: viewSize).inverted()
         let toScreen = frame.displayTransform(for: .portrait, viewportSize: viewSize)
         // Starts: the snapshot's object looked for in this frame near where its anchor projects.
-        var starts: [(Int, CGImage, CGRect, CGRect)] = []
+        // A lost object is only taken up again where it is really found, never on what covered it.
+        var starts: [(id: Int, image: CGImage, box: CGRect, predicted: CGRect, strict: Bool)] = []
         for (id, box) in wanted {
+            let predicted = Self.visionRect(screen: box, viewSize: viewSize, toImage: toImage)
             if let p = pending.removeValue(forKey: id) {
-                starts.append((id, p.image, p.box, Self.visionRect(screen: box, viewSize: viewSize, toImage: toImage)))
+                starts.append((id, p.image, p.box, predicted, false))
+            } else if let due = retryAt[id], t >= due, let p = templates[id] {
+                retryAt[id] = t + Self.retryInterval
+                starts.append((id, p.image, p.box, predicted, true))
             }
         }
         let tracked = wanted.map(\.id).filter { follows[$0] != nil }
@@ -98,8 +111,8 @@ final class ImageFollower {
         let shownNow = Array(wanted)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var found: [Int: CGRect] = [:]
-            for (id, image, box, predicted) in starts {
-                found[id] = worker.reacquire(id: id, template: image, box: box, predicted: predicted, in: buffer)
+            for s in starts {
+                found[s.id] = worker.reacquire(id: s.id, template: s.image, box: s.box, predicted: s.predicted, strict: s.strict, in: buffer)
             }
             let results = worker.track(tracked, in: buffer)
             DispatchQueue.main.async {
@@ -110,26 +123,28 @@ final class ImageFollower {
 
     private func apply(found: [Int: CGRect], results: [Int: (CGRect, Float)], shown: [(id: Int, box: CGRect)], toScreen: CGAffineTransform, viewSize: CGSize, time t: TimeInterval) {
         busy = false
-        for (id, box) in found {
+        for (id, box) in found where templates[id] != nil {
             follows[id] = Follow(box: box)
-            onLog?("follow: mark \(id % 1000) found in the live image")
+            onLog?(retryAt.removeValue(forKey: id) != nil ? "follow: mark \(id % 1000) found again" : "follow: mark \(id % 1000) found in the live image")
         }
         for (id, projected) in shown {
             guard var f = follows[id] else { continue }
             if let (box, confidence) = results[id] {
                 f.box = box
-                f.confidence = confidence
                 f.lostFrames = confidence < 0.3 ? f.lostFrames + 1 : 0
             }
             guard let box = f.box, f.lostFrames < 5 else {
-                // Lost. A moving object's outline is hidden rather than left behind.
+                // Lost. A moving object's outline is hidden rather than left behind. One that lay
+                // still keeps its room anchor and is looked for again (see `templates`).
                 adjust[id] = f.moving ? Adjust(from: .zero, to: .zero, scale: 1, hidden: true) : nil
                 follows[id] = f.moving ? f : nil
-                if !f.moving { worker.drop(id) }
+                if !f.moving {
+                    worker.drop(id)
+                    retryAt[id] = t + Self.retryInterval
+                }
                 continue
             }
             let screen = Self.screenRect(vision: box, viewSize: viewSize, toScreen: toScreen)
-            f.screenBox = screen
             let off = hypot(screen.midX - projected.midX, screen.midY - projected.midY)
             let size = max(projected.width, projected.height, 20)
             if off > max(14, 0.3 * size) { f.movingFrames = min(f.movingFrames + 1, 10) } else { f.movingFrames = max(f.movingFrames - 1, 0) }
@@ -181,28 +196,45 @@ final class ImageFollower {
 private final class Worker: @unchecked Sendable {
     private let lock = NSLock()
     private var requests: [Int: VNTrackObjectRequest] = [:]
+    /// Trackers to release: Vision frees a tracker only after a last frame with `isLastFrame`,
+    /// and refuses new ones once too many are held.
+    private var finishing: [VNTrackObjectRequest] = []
     private let handler = VNSequenceRequestHandler()
 
     func drop(_ id: Int) {
-        lock.lock(); requests[id] = nil; lock.unlock()
+        lock.lock()
+        if let r = requests.removeValue(forKey: id) { finish(r) }
+        lock.unlock()
+    }
+
+    /// Call with the lock held. `isLastFrame` is set in `track`, on the tracking thread, never
+    /// while Vision may be running the request.
+    private func finish(_ request: VNTrackObjectRequest) {
+        finishing.append(request)
     }
 
     /// The object of `box` (pixels of the upright snapshot `template`) in this frame, searched around
-    /// `predicted` (Vision-normalised). Starts a tracker on it. Falls back to the prediction.
-    func reacquire(id: Int, template: CGImage, box: CGRect, predicted: CGRect, in buffer: CVPixelBuffer) -> CGRect {
-        let found = Self.match(template: template, box: box, predicted: predicted, in: buffer) ?? predicted
+    /// `predicted` (Vision-normalised). Starts a tracker on it. Falls back to the prediction, unless
+    /// `strict`: then nil when the object is not found.
+    func reacquire(id: Int, template: CGImage, box: CGRect, predicted: CGRect, strict: Bool, in buffer: CVPixelBuffer) -> CGRect? {
+        guard let found = Self.match(template: template, box: box, predicted: predicted, in: buffer) ?? (strict ? nil : predicted) else { return nil }
         let request = VNTrackObjectRequest(detectedObjectObservation: VNDetectedObjectObservation(boundingBox: found))
         request.trackingLevel = .accurate
-        lock.lock(); requests[id] = request; lock.unlock()
+        lock.lock()
+        if let old = requests.updateValue(request, forKey: id) { finish(old) }
+        lock.unlock()
         return found
     }
 
     func track(_ ids: [Int], in buffer: CVPixelBuffer) -> [Int: (CGRect, Float)] {
         lock.lock()
         let active = ids.compactMap { id in requests[id].map { (id, $0) } }
+        let done = finishing
+        finishing = []
         lock.unlock()
-        guard !active.isEmpty else { return [:] }
-        try? handler.perform(active.map(\.1), on: buffer, orientation: .up)
+        guard !active.isEmpty || !done.isEmpty else { return [:] }
+        for r in done { r.isLastFrame = true }
+        try? handler.perform(active.map(\.1) + done, on: buffer, orientation: .up)
         var out: [Int: (CGRect, Float)] = [:]
         for (id, request) in active {
             guard let obs = request.results?.first as? VNDetectedObjectObservation else { continue }
@@ -275,10 +307,14 @@ private final class Worker: @unchecked Sendable {
     /// The image scaled to `width` × `height` grey levels.
     static func grey(_ image: CGImage, width: Int, height: Int) -> [Float]? {
         var px = [UInt8](repeating: 0, count: width * height)
-        guard let ctx = CGContext(data: &px, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width,
-                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
-        ctx.interpolationQuality = .medium
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return px.map(Float.init)
+        // The context draws into the array's memory, so it may only live inside this closure.
+        let drawn = px.withUnsafeMutableBytes { buffer -> Bool in
+            guard let ctx = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width,
+                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            ctx.interpolationQuality = .medium
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        return drawn ? px.map(Float.init) : nil
     }
 }

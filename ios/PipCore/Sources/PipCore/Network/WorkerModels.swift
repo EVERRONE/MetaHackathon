@@ -7,8 +7,7 @@ public struct SegmentObjectPrompt: Codable, Equatable, Sendable {
     public struct Point: Codable, Equatable, Sendable {
         public var x: Int
         public var y: Int
-        public var negative: Bool?
-        public init(x: Int, y: Int, negative: Bool? = nil) { self.x = x; self.y = y; self.negative = negative }
+        public init(x: Int, y: Int) { self.x = x; self.y = y }
     }
 
     public var id: Int
@@ -100,15 +99,6 @@ public struct SegmentResponse: Codable, Equatable, Sendable {
     public var dropped: Int
 }
 
-public struct Transcript: Codable, Equatable, Sendable {
-    public var transcript: String
-}
-
-public struct UsageStatus: Codable, Equatable, Sendable {
-    public var today: Double
-    public var total: Double
-}
-
 public struct WorkerError: Error, Equatable, Sendable, CustomStringConvertible {
     public var status: Int
     public var code: String
@@ -125,8 +115,6 @@ public struct SpokenAudio: Sendable {
     public var starts: [Double]
 
     public static let sampleRate = 24_000.0
-
-    public var duration: Double { Double(pcm.count / 2) / Self.sampleRate }
 
     /// Start time of the character at a UTF-16 offset in `text` (the cue anchors are UTF-16).
     public func startTime(atUTF16 offset: Int, in text: String) -> Double? {

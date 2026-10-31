@@ -19,7 +19,8 @@ extension GuideModel {
         if let hazard = SafetyPolicy.spokenHazard(in: text) {
             sessionLog.add(.hazard, step: runtime?.index, "user said: \(text)")
             task?.cancel()
-            prepTask?.cancel()
+            // No plan is offered after a hazard, and a later task can start.
+            cancelPreparing()
             if var rt = runtime, rt.isActive {
                 let actions = rt.handle(.hazard(hazard))
                 runtime = rt
@@ -48,10 +49,7 @@ extension GuideModel {
         }
         if pageReader != nil, handleWhileReading(text, command: command) { return }
         if prepTask != nil, command == .stop {
-            prepTask?.cancel()
-            prepTask = nil
-            preparingGoal = nil
-            preparing = nil
+            cancelPreparing()
             say(phrases.cancelled, heard: text)
             return
         }
@@ -142,11 +140,14 @@ extension GuideModel {
         return true
     }
 
-    /// While the user shows paper pages: "klaar" finishes, "stop" cancels, "next page" is ignored.
+    /// While the user shows paper pages: "klaar" finishes, "stop" cancels, "wacht" and "next page"
+    /// change nothing (the reader takes pages by itself).
     private func handleWhileReading(_ text: String, command: Command?) -> Bool {
         let words = Set(Utterance.words(text))
         let lower = text.lowercased()
-        if command == .stop || command == .pause || words.contains("annuleer") || words.contains("cancel") {
+        // A bare "stop" is a pause elsewhere; here it ends the reading. "Wacht" or "hold on"
+        // (turning a page) must not throw away the pages taken so far.
+        if command == .stop || (command == .pause && words.contains("stop")) || words.contains("annuleer") || words.contains("cancel") {
             cancelReading()
             say(phrases.cancelled, heard: text)
             return true
@@ -155,13 +156,20 @@ extension GuideModel {
             || ["dat was het", "dat was alles", "that's all", "that was all", "that's it"].contains { lower.contains($0) }
         if finished, command != .no {
             let pages = pageReader?.pages ?? []
+            guard !pages.isEmpty else {
+                // Nothing taken yet: keep reading, so the page the user holds up next still counts.
+                say(phrases.noPages, heard: text)
+                return true
+            }
             let goal = readingGoal.isEmpty ? "the task in these instructions" : readingGoal
             cancelReading()
             startPreparing(goal: goal, product: nil, pages: pages, heard: text)
             return true
         }
-        // "volgende", "next page", "skip": the reader takes pages by itself.
-        return command == .done || command == .skip || command == .resume || command == .no
+        // "volgende", "next page", "skip", "wacht": nothing to say.
+        guard command == .done || command == .skip || command == .resume || command == .no || command == .pause else { return false }
+        phase = muted ? .muted : .listening
+        return true
     }
 
     /// Carries out the runtime's actions in order.
@@ -292,20 +300,26 @@ extension GuideModel {
         preparing = nil
     }
 
+    /// Stops preparing a plan, and forgets which goal it was for.
+    func cancelPreparing() {
+        prepTask?.cancel()
+        prepTask = nil
+        preparingGoal = nil
+        // While pages are being read, `preparing` shows that instead.
+        if pageReader == nil { preparing = nil }
+    }
+
     /// Prepares a plan in the background: the conversation goes on while Pip searches and reads
     /// (about a minute), and Pip offers the plan when it is ready. Only "stop" cancels it.
+    /// `pages`: photos of paper instructions (at least one).
     func startPreparing(goal: String, product: String?, pages: [Data]? = nil, heard: String? = nil) {
         prepTask?.cancel()
         preparingGoal = goal
         prepTask = Task {
             if let pages {
-                if pages.isEmpty {
-                    say(phrases.noPages, heard: heard)
-                } else {
-                    say(phrases.readPages(pages.count), heard: heard)
-                    facts["instructions"] = Fact(value: "\(pages.count) pages shown for: \(goal)", source: "seen")
-                    await prepareTask(goal: goal, product: nil, source: .images(pages))
-                }
+                say(phrases.readPages(pages.count), heard: heard)
+                facts["instructions"] = Fact(value: "\(pages.count) pages shown for: \(goal)", source: "seen")
+                await prepareTask(goal: goal, product: nil, source: .images(pages))
             } else {
                 await prepareTask(goal: goal, product: product)
             }
