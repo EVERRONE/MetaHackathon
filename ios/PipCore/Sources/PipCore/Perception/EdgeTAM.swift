@@ -50,14 +50,16 @@ public final class EdgeTAM: @unchecked Sendable {
     public let loadSeconds: Double
 
     /// `folder` holds the compiled models (`.mlmodelc`), as Xcode puts them in the app.
-    public init(compiledIn folder: URL) throws {
+    /// `encoderOnGPU`: the image encoder runs on the GPU, so it can work on the next frame while
+    /// the propagator, on the Neural Engine, works on this one (see `encode` and `track(_:)`).
+    public init(compiledIn folder: URL, encoderOnGPU: Bool = false) throws {
         let t0 = CACurrentMediaTime()
         func load(_ name: String, _ units: MLComputeUnits) throws -> MLModel {
             let config = MLModelConfiguration()
             config.computeUnits = units
             return try MLModel(contentsOf: folder.appendingPathComponent(name + ".mlmodelc"), configuration: config)
         }
-        encoder = try load(Self.names[0], .cpuAndNeuralEngine)
+        encoder = try load(Self.names[0], encoderOnGPU ? .cpuAndGPU : .cpuAndNeuralEngine)
         // The initializer is fp32, which the Neural Engine does not run: the GPU (the CPU takes 4× longer).
         initializer = try load(Self.names[1], .all)
         memoryEncoder = try load(Self.names[2], .cpuAndNeuralEngine)
@@ -103,6 +105,9 @@ public final class EdgeTAM: @unchecked Sendable {
         public let outline: [CGPoint]
         public let encodeMs: Double
         public let decodeMs: Double
+        /// The parts of `decodeMs`: filling the memory bank, the propagator on the Neural Engine,
+        /// and reading its output (masks, outline).
+        public var bankMs = 0.0, propagateMs = 0.0, readMs = 0.0
 
         public var present: Bool { objectScore > 0 && box != nil }
 
@@ -160,13 +165,33 @@ public final class EdgeTAM: @unchecked Sendable {
         return try frame(out, encodeMs: (t1 - t0) * 1000, decodeMs: (CACurrentMediaTime() - t1) * 1000)
     }
 
+    /// A frame's image features, ready for `track(_:)`.
+    public struct Features: @unchecked Sendable {
+        let provider: MLFeatureProvider
+        public let encodeMs: Double
+    }
+
+    /// The image encoder alone: it does not touch the memory bank, so it may run on another
+    /// thread while `track(_:)` works on the previous frame (with the encoder on the GPU, both
+    /// run at the same time).
+    public func encode(_ image: CVPixelBuffer) throws -> Features {
+        let t0 = CACurrentMediaTime()
+        let p = try encoder.prediction(from: MLDictionaryFeatureProvider(dictionary: ["image": MLFeatureValue(pixelBuffer: image)]))
+        return Features(provider: p, encodeMs: (CACurrentMediaTime() - t0) * 1000)
+    }
+
     /// The object in the next frame (`image`: a 1024² BGRA input).
     public func track(image: CVPixelBuffer) throws -> Frame {
+        try track(try encode(image))
+    }
+
+    /// The object in the frame these features come from. Frames go in order, one at a time.
+    public func track(_ encoded: Features) throws -> Frame {
         guard let seed = seedMemory else { throw Failure.notSeeded }
-        let t0 = CACurrentMediaTime()
-        let features = try encoder.prediction(from: MLDictionaryFeatureProvider(dictionary: ["image": MLFeatureValue(pixelBuffer: image)]))
+        let features = encoded.provider
         let t1 = CACurrentMediaTime()
         fillBank(seed: seed)
+        let t2 = CACurrentMediaTime()
         let out = try propagator.prediction(from: MLDictionaryFeatureProvider(dictionary: [
             "raw_vision_features": try value(features, "raw_vision_features"),
             "high_res_feature_0": try value(features, "high_res_feature_0"),
@@ -176,11 +201,16 @@ public final class EdgeTAM: @unchecked Sendable {
             "pointer_bank": MLFeatureValue(multiArray: pointerBank),
             "attention_bias": MLFeatureValue(multiArray: attentionBias),
         ]))
+        let t3 = CACurrentMediaTime()
         recent.append(Memory(features: Self.copy(try array(out, "memory_features")),
                              positions: Self.copy(try array(out, "memory_positions")),
                              pointer: Self.copy(try array(out, "object_pointer"))))
         if recent.count > 15 { recent.removeFirst(recent.count - 15) }
-        return try frame(out, encodeMs: (t1 - t0) * 1000, decodeMs: (CACurrentMediaTime() - t1) * 1000)
+        var f = try frame(out, encodeMs: encoded.encodeMs, decodeMs: (CACurrentMediaTime() - t1) * 1000)
+        f.bankMs = (t2 - t1) * 1000
+        f.propagateMs = (t3 - t2) * 1000
+        f.readMs = (CACurrentMediaTime() - t3) * 1000
+        return f
     }
 
     public func reset() {

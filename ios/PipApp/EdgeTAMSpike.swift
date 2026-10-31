@@ -177,12 +177,12 @@ final class EdgeTAMSpike {
             let recent = self.doneTimes.filter { done - $0 <= 1 }.count
             let f = r.frame
             let b = f.box ?? .zero
-            Self.append(String(format: "%@\t%d\t%.1f\t%.1f\t%.1f\t%.1f\t%.2f\t%.3f\t%.5f\t%.4f\t%.4f\t%.4f\t%.4f\t%@\t%d\t%d\t%d\t%@\t%.3f\n",
+            Self.append(String(format: "%@\t%d\t%.1f\t%.1f\t%.1f\t%.1f\t%.2f\t%.3f\t%.5f\t%.4f\t%.4f\t%.4f\t%.4f\t%@\t%d\t%d\t%d\t%@\t%.3f\t%.1f\t%.1f\t%.1f\n",
                                Self.now(), id % 1000, r.prepMs, f.encodeMs, f.decodeMs, r.ms, f.objectScore, f.iou, f.area,
                                b.minX, b.minY, b.maxX, b.maxY,
                                r.world.map { String(format: "%.4f,%.4f,%.4f", $0.x, $0.y, $0.z) } ?? "-", r.depthSamples, arFps, recent,
                                // ARKit's frame times run on the same clock as CACurrentMediaTime.
-                               Self.heat(), done - r.time))
+                               Self.heat(), done - r.time, f.bankMs, f.propagateMs, f.readMs))
             if done - self.lastStatus > 0.25 {
                 self.lastStatus = done
                 self.status(String(format: "EdgeTAM %d fps · %.0f ms · score %.1f · AR %d fps · %@", recent, r.ms, f.objectScore, arFps, Self.heat()))
@@ -323,7 +323,7 @@ final class EdgeTAMSpike {
 
     /// Columns: time, mark, prep ms, encode ms, decode ms, total ms, score, predicted IoU, area,
     /// box (x0 y0 x1 y1, upright 0…1), world centre, depth samples, ARKit fps, EdgeTAM fps, heat,
-    /// seconds from the frame to its mask.
+    /// seconds from the frame to its mask, then the decoder's parts: bank, propagator, reading (ms).
     static func append(_ line: String) {
         appendQueue.async {
             let url = documents.appendingPathComponent("edgetam.log")
@@ -389,6 +389,7 @@ private final class EdgeTAMWorker: @unchecked Sendable {
     static let depthJump: Float = 0.03
     private let input = EdgeTAM.Input()
     private let context = CIContext(options: [.cacheIntermediates: false])
+    private let keepQueue = DispatchQueue(label: "pip.edgetam.keep", qos: .utility)
 
     /// The models, once (on the queue).
     private func loaded() throws -> EdgeTAM {
@@ -438,7 +439,11 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                 let world = depth.flatMap { d in f.centroid.map { Self.lift([$0], depth: d, camera: r.camera)[0] } } ?? rawWorld
                 let outline = depth.map { Self.lift(f.outline, depth: $0, camera: r.camera) } ?? []
                 let ms = (CACurrentMediaTime() - t0) * 1000
-                if let keep = r.keep { self.keep(r.buffer, f, world: world, at: keep) }
+                // Kept frames are written on the side, so they never hold up the next frame.
+                if let keep = r.keep {
+                    let buffer = r.buffer
+                    self.keepQueue.async { self.keep(buffer, f, world: world, at: keep) }
+                }
                 return Tracked(frame: f, prepMs: prep, ms: ms, world: world, outline: outline, depthSamples: samples, time: r.time,
                                camera: r.camera, depth: depth)
             }

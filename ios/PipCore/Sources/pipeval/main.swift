@@ -51,7 +51,9 @@ if args.first == "edgetam", args.count >= 7 {
     let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
     let compiled = FileManager.default.temporaryDirectory.appendingPathComponent("pipeval-edgetam")
     try await EdgeTAM.compile(packagesIn: URL(fileURLWithPath: args[1]), into: compiled)
-    let tracker = try EdgeTAM(compiledIn: compiled)
+    // --gpu: the encoder on the GPU, encoding the next frame while the propagator tracks this one.
+    let pipelined = args.contains("--gpu")
+    let tracker = try EdgeTAM(compiledIn: compiled, encoderOnGPU: pipelined)
     let names = ((try? FileManager.default.contentsOfDirectory(atPath: args[2])) ?? []).filter { $0.lowercased().hasSuffix(".jpg") }.sorted()
     let images = names.map { name -> CGImage in
         guard let data = FileManager.default.contents(atPath: args[2] + "/" + name), let image = SetOfMarks.load(data, maxSide: 4096) else { fail("cannot read \(name)") }
@@ -69,14 +71,36 @@ if args.first == "edgetam", args.count >= 7 {
     let size = CGSize(width: first.width, height: first.height)
     let mask = EdgeTAM.Input.mask(polygons: polygons, in: size)
     print(#"{"loaded_s": \#(String(format: "%.2f", tracker.loadSeconds)), "seed": "\#(seededBy)", "frames": \#(images.count)}"#)
+    // With --gpu, frame i + 1 is encoded on another thread while frame i is tracked.
+    let encodeQueue = DispatchQueue(label: "encode")
+    func encoded(_ i: Int) -> Task<EdgeTAM.Features?, Never> {
+        Task.detached {
+            await withCheckedContinuation { c in
+                encodeQueue.async { c.resume(returning: input.image(images[i]).flatMap { try? tracker.encode($0) }) }
+            }
+        }
+    }
+    var next: Task<EdgeTAM.Features?, Never>? = nil
+    let started = Date()
     for (i, image) in images.enumerated() {
         let t0 = Date()
         guard let pixels = input.image(image) else { fail("cannot convert frame \(i)") }
         let prep = Date().timeIntervalSince(t0) * 1000
-        let f = i == 0 ? try tracker.seed(image: pixels, mask: mask) : try tracker.track(image: pixels)
+        let f: EdgeTAM.Frame
+        if i == 0 {
+            f = try tracker.seed(image: pixels, mask: mask)
+            if pipelined, images.count > 1 { next = encoded(1) }
+        } else if pipelined, let pending = next {
+            guard let features = await pending.value else { fail("cannot encode frame \(i)") }
+            if i + 1 < images.count { next = encoded(i + 1) }
+            f = try tracker.track(features)
+        } else {
+            f = try tracker.track(image: pixels)
+        }
         let b = f.box.map { [Int($0.minX * size.width), Int($0.minY * size.height), Int($0.maxX * size.width), Int($0.maxY * size.height)] }
         print(#"{"frame": \#(i), "box": \#(b.map { "\($0)" } ?? "null"), "score": \#(String(format: "%.2f", f.objectScore)), "iou": \#(String(format: "%.3f", f.iou)), "prep_ms": \#(String(format: "%.1f", prep)), "encode_ms": \#(String(format: "%.1f", f.encodeMs)), "decode_ms": \#(String(format: "%.1f", f.decodeMs))}"#)
     }
+    print(String(format: #"{"frames_per_second": %.1f, "pipelined": %@}"#, Double(images.count - 1) / Date().timeIntervalSince(started), pipelined ? "true" : "false"))
     exit(0)
 }
 
