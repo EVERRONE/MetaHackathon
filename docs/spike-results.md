@@ -51,3 +51,26 @@ Flip [[arrow:13:up]] it upward to switch it back on.
 - Pip's speech is one streamed text with cue tags.
 - The client parses the tags while streaming, speaks the clean text sentence by sentence, and shows each annotation at the moment its words are spoken. On iOS this is driven by the speech synthesizer's word-range callbacks.
 - Tool calls are reserved for actions that change state (for example "request a new look"), which go through the runtime.
+
+## Day 1 (31 October): measurements from the first build
+
+Test media: the breaker photo above and ["Cherry G85-23000FR"](https://commons.wikimedia.org/wiki/File:Cherry_g85-23000FR-2_S7301761.jpg) (Wikimedia Commons, Free Art License), a French AZERTY keyboard on which @ is on the 0/à key. Neither image is committed. Runs from the Mac through the live Worker.
+
+| Test | Result |
+|---|---|
+| Worker on Cloudflare free plan | Refused: decoding 22 SAM masks costs ~30–40 ms CPU, the free limit is 10 ms → Workers Paid |
+| SAM concept "key" on the whole keyboard | 105 instances; set-of-marks with that many numbers is unreadable for Spark |
+| Spark plan call (image, JSON, `minimal`), 1.3 vs 1.2 | 3.2–4.0 s vs 2.7–4.1 s: no faster model; ~550 reasoning tokens even at `minimal` |
+| Spark's own point for a key (0–1000 grid) | Typically ½–1½ keys off; never usable alone for small look-alikes |
+| Spark answering "how do I type @" on the 1024 px frame | Answered from memory once (Belgian layout: é/2); fixed by 1280 px and "read the legends, layouts differ" |
+| Apple Vision OCR on key legends | Reads words ("alt gr", "entrée", "10F", "F10"), misses or misreads single symbols ("^" → "00") |
+| SAM "breaker" on a 2.5× enlarged crop | 0 instances (22 on the whole frame) → SAM looks at both |
+| Grounding (crop + whole frame + OCR) | alt gr ✓ (text), 10F ✓ / 11F ✓ (text), 0/à/@ ✓ via Spark check on a numbered crop (one key off → moved), three keys off → refused |
+| Grounding time per target | 1.2–2.5 s; 3–5 s when the Spark check runs. The first OCR on a Mac loads models (~25 s once); the app warms it up at launch |
+| Full look, v1.1 (one streamed call) | First sentence 3.0–4.0 s after the transcript; the cue sentences follow when their targets are grounded |
+| Realtime ASR through the relay | Ready in ~1 s; final turn 0.2–0.4 s after the audio ends (Dutch and English, correct) |
+| ElevenLabs Flash v2.5 / Turbo v2.5, streaming with timestamps | First audio ~0.25 s; character times are absolute within the sentence and the characters match the text exactly |
+| `AVSpeechSynthesisMarker.byteSampleOffset` | A **byte** offset into the synthesised audio (Float32, 4 bytes per frame), not a sample index |
+
+**Design changes:** the look became one streamed Spark call that points by position + printed text, grounded in parallel on the device (`build-plan.md` §3); the voice became ElevenLabs (§5); cues wait for their grounding instead of guessing.
+

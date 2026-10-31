@@ -1,7 +1,7 @@
-# Pip — build plan v1.0
+# Pip — build plan v1.1
 
-30 October 2026. **What:** `product-brief.md`. **Why these choices:** `research.md`, `spike-results.md`. **Constraints:** `hackathon-rules.md`.
-Status: proposal for approval. Items marked **DECIDE** need the team's answer.
+30 October 2026, updated 31 October with what the first build taught us (§3, §5, §12, §15). **What:** `product-brief.md`. **Why these choices:** `research.md`, `spike-results.md`. **Constraints:** `hackathon-rules.md`.
+Status: approved; v1.1 records the changes made while building.
 
 ---
 
@@ -23,7 +23,7 @@ The gap we fill: no product combines (a) AI-chosen annotations anchored on the e
 ┌─────────────────────────── iPhone 15 Pro — Pip app (Swift, SwiftUI) ───────────────────────────┐
 │ ARKit session (world tracking + LiDAR depth) ──► FrameSnapshot (image, pose, intrinsics, depth) │
 │ Audio engine (voice processing / echo cancellation)                                            │
-│   mic ─► ASR stream ───────┐               TTS buffers + word markers ◄─ Speech scheduler      │
+│   mic ─► ASR stream ───────┐          speech PCM + character timings ◄─ Speech scheduler      │
 │                            ▼                                                   ▲               │
 │ Conversation engine ─► Turn builder ─► Perception client ─► Cue stream parser ─┘               │
 │        ▲                     │                                   │                             │
@@ -36,10 +36,11 @@ The gap we fill: no product combines (a) AI-chosen annotations anchored on the e
 │ /v1/chat     → Muse Spark SSE pass-through (key injected, prompt cache key)                    │
 │ /v1/segment  → SAM 3.1 (prompt variants in parallel) → parse masks → polygons, boxes, scores   │
 │ /v1/asr      → WebSocket relay to Meta realtime ASR (key injected)                             │
-│ /v1/transcribe → batch ASR fallback   · rate limits · spend cap · request logs (no images)     │
+│ /v1/transcribe → batch ASR fallback   /v1/speak → ElevenLabs speech + character timings        │
+│ rate limits · spend cap · request logs (no images, audio or text)                               │
 └────────────────────────────────────┬───────────────────────────────────────────────────────────┘
                                      ▼
-                     Meta Model API: muse-spark-1.3 · sam-3.1 · muse-voice-transcribe-1.0
+     Meta Model API: muse-spark-1.3 · sam-3.1 · muse-voice-transcribe-1.0   ·   ElevenLabs (voice only)
 ```
 
 **Code layout (monorepo):**
@@ -49,7 +50,7 @@ ios/            XcodeGen project.yml
   PipCore/      Swift package: domain types, procedure runtime, policy, memory, cue grammar + parser,
                 prompt builders, API clients, SSE parser — no UIKit/ARKit; unit-tested; also used by eval
   PipApp/       SwiftUI app: AR view, annotation renderer, audio/speech, screens
-  PipEval/      macOS command-line tool: runs PipCore perception on photo sets → test report
+  PipCore/Sources/pipeval  macOS command-line tool: runs PipCore perception on photos → test report
 worker/         Cloudflare Worker (TypeScript, Hono, @meta-sam/parser), deployed at pip.unveil.be
 docs/  spikes/  eval/ (datasets: our own photos + ground truth JSON)
 ```
@@ -61,32 +62,23 @@ docs/  spikes/  eval/ (datasets: our own photos + ground truth JSON)
 
 ## 3. The perception pipeline: one "look"
 
-**Inputs:**
-- a `FrameSnapshot`: the JPEG (long side 1280 px, EXIF-correct), the camera pose, the intrinsics and a copy of the depth map at capture time;
-- the current step, with its target `ObjectSpec`s.
+v1.0 planned set-of-marks on the whole frame: SAM first, then Spark picks a numbered mark. The first build showed two limits (measured in `spike-results.md`, day 1):
+- dense small targets: a keyboard gives 105 SAM instances, too many numbers for Spark to read;
+- every Spark call with an image takes 3–4 s (reasoning cannot be turned off), so plan-then-speak in two calls costs 7+ s.
 
-1. **Segment** (`/v1/segment`, ~1.5 s). SAM 3.1 runs 2–3 noun-phrase variants per target object in parallel. The Worker merges overlapping instances, decodes the masks into polygons (`decodeMaskToSVGPath`), and returns the instances with box, polygon and confidence.
-   - **Speculative start:** the look begins as soon as the ASR reports `speechStart`, so segmentation runs while the user is still talking.
-2. **Mark.** The app draws numbered marks onto the snapshot with CoreGraphics (set-of-marks, as in the spike).
-3. **Reason and speak** (`/v1/chat`, stream, `reasoning_effort: minimal`, first token ~2.9 s).
-   - **Spark receives:**
-     - a cached prefix: Pip's persona and rules, the cue grammar and the procedure;
-     - the variable tail: session memory, the user's utterance, the marked image and the step context.
-   - **It streams spoken text with inline cue tags** (§4), plus one final `[[state …]]` tag with structured observations, e.g. `[[state target=13 seen=off conf=0.9]]`.
-4. **Anchor.** For each referenced mark:
-   - **Polygon to 3D:** each polygon point is turned into a world point, using the stored depth and pose (unproject with K⁻¹, then the camera transform).
-   - **Depth fallback:** if depth confidence is low, raycast against an estimated plane.
-   - **Placement:** an `ARAnchor` goes at the centroid, and the world polygon is kept.
-   - **Between looks:** Vision object tracking on the target box keeps the 2D outline tight when depth is weak (glossy or dark surfaces).
-5. **Fallback grounding.** If Spark says the object exists but no mark fits, it emits `[[locate x=… y=…]]` on the 0–1000 grid. A SAM point prompt refines it into a mask. If that fails as well, Pip asks for a better view; it never draws a guess.
+**v1.1: one streamed Spark call, grounded in parallel.**
 
-**Latency budget**, from end of user speech to the first spoken word:
-- ASR final ~1–2 s;
-- SAM already running;
-- Spark first token ~3 s;
-- the first sentence starts speaking as soon as it is complete.
+1. **Speak and point by position** (`/v1/chat`, stream, `minimal`). Spark sees the frame and starts with a short sentence without a cue ("That takes two keys."). Each later cue names its target by position, kind and printed text: `[[ring at=455,830 obj="key" text="alt gr" label="1"]]`.
+2. **Ground each target as soon as its tag streams in** (`Grounder`, ~1.5–3 s, in parallel with speech):
+   - SAM 3.1 on an enlarged crop around the point (small objects) and on the whole frame (large objects), plus a point prompt;
+   - Apple Vision text recognition on the crop: the instance under the printed text wins (words only; single characters must match exactly, because OCR misreads small symbols);
+   - otherwise the instance under the point; for look-alikes that the text cannot confirm, a short Spark check on a numbered, enlarged crop picks the right one, or answers "none", and then Pip does not point.
+3. **Gate the speech.** A sentence is released when its targets are grounded (or after 6 s, without the cues). The tag-free first sentence covers the grounding time, so cues are never late and never on a guess.
+4. **Anchor in 3D** (`AnchoredMark`): a plane is fitted to the LiDAR points around the object (orientation), moved to the object's own median depth (position); every outline point is the intersection of its camera ray with that plane. Fallback: a camera-facing plane at the median depth.
 
-Target: **median ≤ 5 s**. A short acknowledgement ("Let me look…") is spoken immediately if nothing is ready after 1.5 s.
+**Measured on test photos (Mac, home connection):** first word 3.0–4.0 s after the transcript; alt gr, the 0/à/@ key, breakers 10F and 11F grounded correctly; a point three keys off is refused.
+
+**Marks mode** (fixed SAM prompts, every instance numbered on the frame, Spark answers with `m=N`) remains for the evaluation of large objects, such as rows of breakers.
 
 ## 4. The cue language: how Pip points
 
@@ -108,6 +100,8 @@ Target: **median ≤ 5 s**. A short acknowledgement ("Let me look…") is spoken
 [[clear]]                        remove transient cues
 [[state …]] [[locate …]] [[need_view reason=… hint="closer"]]   structured side channel (not drawn)
 ```
+
+**Targets in v1.1** (live): instead of `m=N`, a pointing cue names its target as `at=X,Y obj="kind" text="printed|alternatives"`, e.g. `[[ring at=455,830 obj="key" text="alt gr" label="1"]]`; the app grounds it (§3) and gives it a mark number. `m=N` remains for marks mode (eval). A `ring` with a step `label` stays until the step is done, so a sequence ("hold 1, then press 2") is visible as a whole.
 
 **Validation by the runtime, before anything is drawn:**
 - every `m` must exist and have SAM confidence ≥ the threshold;
@@ -131,17 +125,20 @@ Target: **median ≤ 5 s**. A short acknowledgement ("Let me look…") is spoken
 
 ## 5. Speech and pointing in sync
 
-- Spark's stream is cut into sentences. Each sentence goes to `AVSpeechSynthesizer.write(_:toBufferCallback:toMarkerCallback:)`, which produces PCM buffers plus word markers with sample offsets. The buffers are played through the same `AVAudioEngine` as the microphone, so echo cancellation works.
+- Spark's stream is cut into sentences (`CueStreamParser`). Each sentence is rendered as soon as it is queued, so the next one is ready when the current one ends.
+- **Voice: ElevenLabs Flash v2.5** through the Worker's `/v1/speak` (first audio ~0.25 s; Flemish voice Sharon for Dutch, Alice for English). Meta has no text-to-speech model; ElevenLabs is the only non-Meta model and is listed as third party. The iPhone voice is the fallback.
+- **Timing:** ElevenLabs returns the start time of every character; the iPhone voice returns word markers (`byteSampleOffset` is a byte offset into the audio: 4 bytes per Float32 frame, measured).
 - **Cue timing:**
-  - a cue tag binds to the next word in the text;
-  - the cue fires **400 ms before** that word's sample offset, but no earlier than the start of the sentence;
+  - a cue tag binds to the next word in the text (to the last word if it closes the sentence);
+  - the cue fires **400 ms before** that word, plus the output latency;
   - this follows the research: show the cue 300–800 ms before the noun, never after it.
+- Audio plays through the same `AVAudioEngine` as the microphone, with voice processing on, so echo cancellation lets the user talk over Pip.
 - **Text style** (enforced by the prompt and checked in the eval):
   - one referent and one action per sentence;
   - the "one-breath test";
   - a distinguishing feature is named for look-alikes ("the third one, labelled 10F");
   - provenance words: *I see / you told me / the manual says / I'm not sure*.
-- **Voices:** iOS enhanced voices, in English and Dutch (Ellen nl-BE or Xander nl-NL). Text captions are always on screen.
+- Text captions are always on screen.
 
 ## 6. Conversation engine
 
@@ -239,26 +236,29 @@ Target: **median ≤ 5 s**. A short acknowledgement ("Let me look…") is spoken
 
 ## 12. Schedule
 
-| Day | Must be true by the end of the day |
-|---|---|
-| **Thu 30 Oct (evening)** | Xcode installed + Apple ID + iPhone in Developer Mode; plan approved |
-| **Fri 31 Oct** | Worker live at pip.unveil.be (chat SSE, segment + parser, batch ASR). App skeleton on the iPhone: AR view, snapshot, push-to-talk → look → **one outline anchored on the right object, spoken in sync** |
-| **Sat 1 Nov** | Full cue vocabulary + renderer rules; sentence streaming with marker-synced cues; procedure runtime + compiler (photos/text) + verification looks; session log |
-| **Sun 2 Nov** | Realtime ASR relay + barge-in; watching mode; safety policy + gates; long-term memory with consent + memory screen; Dutch |
-| **Mon 3 Nov** | Trace screen; eval sets + PipEval + report; user test; polish (companion states, haptics); README with architecture + "Built during the hackathon". **Feature freeze 20:00** |
-| **Tue 4 Nov** | Re-sign the build; script + video (together); write-up; **submit by 18:00 CET** |
+Weekdays corrected in v1.1 (4 November is a Wednesday). Status on Saturday 31 October, evening.
 
-**Cut order** if behind (last to cut first): long-term memory UI → watching mode → realtime ASR (push-to-talk stays) → rotate/place/seq cues → compiler from PDF (photos/text stay). **Never cut:** the anchored outline + synced speech + verification + safety gates.
+| Day | Must be true by the end of the day | Status |
+|---|---|---|
+| **Fri 30 Oct** | Xcode, Apple ID, iPhone in Developer Mode; plan approved | ✅ (Xcode and signing on 31 Oct) |
+| **Sat 31 Oct** | Worker live at pip.unveil.be; app on the iPhone: look → **outline anchored on the right object, spoken in sync** | ✅ plus, ahead of plan: realtime ASR relay, hands-free listening, barge-in, ElevenLabs voice, grounding v1.1 |
+| **Sun 1 Nov** | Procedure runtime + compiler (photos/text) + verification looks; safety policy and gates; session log | |
+| **Mon 2 Nov** | Watching mode; long-term memory with consent + memory screen; trace screen ("How Pip sees") | |
+| **Tue 3 Nov** | Eval sets + `pipeval` report; user test; polish; README with architecture + "Built during the hackathon". **Feature freeze 20:00** | |
+| **Wed 4 Nov** | Re-sign the build; script + video (together); write-up; **submit by 18:00 CET** (deadline 21:00 ET = 03:00 CET 5 Nov) | |
+
+**Cut order** if behind (last to cut first): long-term memory UI → watching mode → rotate/place/seq cues → compiler from PDF (photos/text stay). **Never cut:** the anchored outline + synced speech + verification + safety gates.
 
 ## 13. What we need
 
 | Need | Status / action |
 |---|---|
-| Full Xcode + iOS platform (~13 GB) | **Today** (App Store); Mac: M4, macOS 27, 44 GB free ✓ |
-| Apple ID in Xcode (free Personal Team, 7-day signing) | Today; re-sign on 3/4 Nov |
-| iPhone 15 Pro: Developer Mode, trust the Mac, enhanced voices (English + Dutch) | Today |
+| Full Xcode + iOS platform | ✓ Xcode 27.2 |
+| Apple ID in Xcode (free Personal Team, 7-day signing) | ✓; re-sign on 3/4 Nov; installs over the cable |
+| iPhone 15 Pro: Developer Mode, trust the Mac | ✓ (iOS 26.6.1) |
 | XcodeGen (`brew install xcodegen`) | I install it |
-| Cloudflare: Worker on `pip.unveil.be` + secrets | I deploy; the user runs `wrangler login` once on this Mac |
+| Cloudflare: Worker on `pip.unveil.be` + secrets | ✓ live; Workers Paid ($5/month), because decoding SAM masks needs more than the free plan's 10 ms CPU |
+| ElevenLabs API key (text-to-speech only) | ✓ in `.dev.vars` and as a Worker secret |
 | Meta API key | ✓ in `.dev.vars` |
 | Physical test objects | Electrical panel, household appliance, mechanical object, lift installation ✓ |
 | 2–3 test users | Mon 3 Nov |
@@ -277,9 +277,12 @@ Target: **median ≤ 5 s**. A short acknowledgement ("Let me look…") is spoken
 | Model overclaims verification | `verified` only from runtime evidence; provenance wording; eval checks it |
 | Banned category "simple image analyser" | The product is the closed loop: procedure → point → act → watch → verify → remember |
 
-## 15. Decisions (30 Oct 2026)
+## 15. Decisions
 
 1. **Platform:** native Swift app + TypeScript Worker, no Rust. ✅ Approved.
 2. **Deploy:** I deploy the Worker to `pip.unveil.be` myself (`wrangler login` on this Mac). ✅
 3. **Listening:** hands-free by default, with a mute button; push-to-talk as fallback. ✅
 4. **Test domains:** electrical panel, household appliance, mechanical object, lift / technical installation (Verolift). ✅ Four domains are available; the eval uses at least three.
+5. **Voice:** Meta has no text-to-speech model, so Pip speaks with ElevenLabs (Flash v2.5, through the Worker); every other model is Meta's. ✅ (31 Oct)
+6. **Hosting:** Cloudflare Workers Paid ($5/month) for the CPU that SAM mask decoding needs. ✅ (31 Oct)
+7. **Installs:** over the USB cable (Wi-Fi debugging did not connect). ✅ (31 Oct)
