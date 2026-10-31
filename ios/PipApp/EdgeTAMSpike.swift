@@ -5,20 +5,29 @@ import PipCore
 import UIKit
 import UniformTypeIdentifiers
 
-/// Spike T1 (docs/research-precision.md): Meta's EdgeTAM follows the latest pointed-at object live
-/// on the Neural Engine, next to Pip's own outline, drawn as a cyan mask. It measures what decides
-/// whether it can carry the object tier: the time per frame with ARKit running, ARKit's own frame
-/// rate, the phone's heat, and the mask itself. Per frame a line in Documents/edgetam.log; every
-/// second a frame with its mask in Documents/edgetam/<start>/, to compare with SAM 3.1 on the Mac.
-/// One object at a time, for at most two minutes.
+/// Meta's EdgeTAM follows the latest pointed-at object live on the Neural Engine, and Pip's outline
+/// is drawn from its mask: the mask's outline lifted into the room at the object's raw LiDAR depth,
+/// renewed about ten times a second, and moved with ARKit's camera in between (see
+/// ARController.steer). An object that moved and is no longer seen loses its outline until it is
+/// seen again. The device test (spike T1, docs/research-precision.md): EdgeTAM agreed with SAM 3.1
+/// on every kept frame about whether the object was in view, box IoU 0.87–0.94, at 9–10 fps.
+/// Per frame a line in Documents/edgetam.log; every second a frame with its mask in
+/// Documents/edgetam/<start>/, to compare with SAM 3.1 on the Mac. One object at a time.
 final class EdgeTAMSpike {
     static let enabledKey = "pip.edgetamSpike"
     static var enabled: Bool {
         get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
     }
+    /// EdgeTAM's own mask drawn in cyan as well (for tests).
+    static let maskKey = "pip.edgetamMask"
+    static var showMask: Bool { UserDefaults.standard.bool(forKey: maskKey) }
 
-    static let followFor: TimeInterval = 120
+    static let followFor: TimeInterval = 600
+    /// Moved this far in the last half second: a moving object, hidden when it is lost.
+    static let movingDistance: Float = 0.02
+    /// Folders of kept frames beyond this many runs are deleted.
+    static let keepRuns = 10
     static let keepEvery: TimeInterval = 1
     static let maxKept = 90
 
@@ -27,6 +36,11 @@ final class EdgeTAMSpike {
     private let maskLayer = CALayer()
     var onStatus: ((String) -> Void)?
     var onLog: ((String) -> Void)?
+    /// The object's outline in the room (world space), from this frame's mask.
+    var onOutline: ((Int, [[simd_float3]]) -> Void)?
+    /// Not seen in this frame; `moving`: it moved just before.
+    var onLost: ((Int, Bool) -> Void)?
+    private var centres: [(t: TimeInterval, p: simd_float3)] = []
 
     private let worker = EdgeTAMWorker()
     private(set) var markID: Int?
@@ -76,6 +90,8 @@ final class EdgeTAMSpike {
         lastKept = 0
         totals = []
         doneTimes = []
+        centres = []
+        Self.pruneRuns()
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let folder = Self.documents.appendingPathComponent("edgetam/\(stamp)")
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -152,7 +168,8 @@ final class EdgeTAMSpike {
             let done = CACurrentMediaTime()
             self.doneTimes.append(done)
             self.totals.append(r.ms)
-            self.draw(r.frame, display: display, viewSize: viewSize)
+            if Self.showMask { self.draw(r.frame, display: display, viewSize: viewSize) } else { self.maskLayer.contents = nil }
+            self.steer(id, r, time: done)
             let recent = self.doneTimes.filter { done - $0 <= 1 }.count
             let f = r.frame
             let b = f.box ?? .zero
@@ -167,6 +184,27 @@ final class EdgeTAMSpike {
                 self.status(String(format: "EdgeTAM %d fps · %.0f ms · score %.1f · AR %d fps · %@", recent, r.ms, f.objectScore, arFps, Self.heat()))
             }
         }
+    }
+
+    /// Pip's outline follows the mask; when the object is not seen, it waits where it was, unless
+    /// it was moving (then it is hidden until seen again).
+    private func steer(_ id: Int, _ r: EdgeTAMWorker.Tracked, time: TimeInterval) {
+        if r.frame.present, r.outline.count >= 3, let c = r.world {
+            centres.append((time, c))
+            centres.removeAll { time - $0.t > 0.6 }
+            onOutline?(id, [r.outline])
+        } else {
+            let moving = centres.count >= 2 && simd_distance(centres.first!.p, centres.last!.p) > Self.movingDistance
+            onLost?(id, moving)
+        }
+    }
+
+    /// Keeps the kept frames of the last few runs only.
+    static func pruneRuns() {
+        let dir = documents.appendingPathComponent("edgetam")
+        let runs = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+            .filter(\.hasDirectoryPath).sorted { $0.lastPathComponent < $1.lastPathComponent }
+        for old in runs.dropLast(keepRuns - 1) { try? FileManager.default.removeItem(at: old) }
     }
 
     /// The mask where the camera image shows it: the 1024² square is the upright image stretched.
@@ -273,6 +311,8 @@ private final class EdgeTAMWorker: @unchecked Sendable {
         let prepMs: Double
         let ms: Double
         let world: simd_float3?
+        /// The outline in the room, at the object's depth.
+        let outline: [simd_float3]
         let depthSamples: Int
         let time: TimeInterval
     }
@@ -325,10 +365,11 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                 guard let pixels = input.image(r.buffer, orientation: .right) else { throw Failure.noInput }
                 let prep = (CACurrentMediaTime() - t0) * 1000
                 let f = try tracker.track(image: pixels)
-                let (world, samples) = Self.centre(f, depth: r.depth, camera: r.camera)
+                let (world, samples, depth) = Self.centre(f, depth: r.depth, camera: r.camera)
+                let outline = depth.map { Self.lift(f.outline, depth: $0, camera: r.camera) } ?? []
                 let ms = (CACurrentMediaTime() - t0) * 1000
                 if let keep = r.keep { self.keep(r.buffer, f, world: world, at: keep) }
-                return Tracked(frame: f, prepMs: prep, ms: ms, world: world, depthSamples: samples, time: r.time)
+                return Tracked(frame: f, prepMs: prep, ms: ms, world: world, outline: outline, depthSamples: samples, time: r.time)
             }
             DispatchQueue.main.async { done(result) }
         }
@@ -336,8 +377,8 @@ private final class EdgeTAMWorker: @unchecked Sendable {
 
     /// The object's centre in the room: the mask's centre at the median raw LiDAR depth inside the
     /// mask (raw, not smoothed: smoothing lags a moving object).
-    static func centre(_ f: EdgeTAM.Frame, depth: DepthCopy?, camera: ARCamera) -> (simd_float3?, Int) {
-        guard f.present, let c = f.centroid, let depth else { return (nil, 0) }
+    static func centre(_ f: EdgeTAM.Frame, depth: DepthCopy?, camera: ARCamera) -> (simd_float3?, Int, Float?) {
+        guard f.present, let c = f.centroid, let depth else { return (nil, 0, nil) }
         var samples: [Float] = []
         for dy in 0..<depth.height {
             for dx in 0..<depth.width {
@@ -350,7 +391,7 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                 if d.isFinite, d > 0.05 { samples.append(d) }
             }
         }
-        guard !samples.isEmpty else { return (nil, 0) }
+        guard !samples.isEmpty else { return (nil, 0, nil) }
         samples.sort()
         let d = samples[samples.count / 2]
         let size = camera.imageResolution
@@ -359,7 +400,21 @@ private final class EdgeTAMWorker: @unchecked Sendable {
         let k = camera.intrinsics
         let x = (px - k[2][0]) / k[0][0] * d, y = -(py - k[2][1]) / k[1][1] * d
         let p = camera.transform * simd_float4(x, y, -d, 1)
-        return (simd_float3(p.x, p.y, p.z), samples.count)
+        return (simd_float3(p.x, p.y, p.z), samples.count, d)
+    }
+
+    /// Normalised upright points (the mask's outline) on their camera rays at depth `d`, in the
+    /// room: the object taken as facing the camera. Over the 0.1 s until the next mask, a depth
+    /// error only shows as far as the camera moves meanwhile.
+    static func lift(_ points: [CGPoint], depth d: Float, camera: ARCamera) -> [simd_float3] {
+        let size = camera.imageResolution, k = camera.intrinsics, t = camera.transform
+        return points.map { p in
+            // Upright (u, v) is sensor (v, 1 − u).
+            let px = Float(p.y) * Float(size.width), py = Float(1 - p.x) * Float(size.height)
+            let x = (px - k[2][0]) / k[0][0] * d, y = -(py - k[2][1]) / k[1][1] * d
+            let w = t * simd_float4(x, y, -d, 1)
+            return simd_float3(w.x, w.y, w.z)
+        }
     }
 
     /// The upright frame (720×960 JPEG), the full-resolution mask around the object (PNG, pixels of

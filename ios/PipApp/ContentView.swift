@@ -267,6 +267,7 @@ struct MemorySheet: View {
     @ObservedObject var memory: SpaceMemory
     @ObservedObject var ar: ARController
     @AppStorage(EdgeTAMSpike.enabledKey) private var edgeTAMTest = true
+    @AppStorage(EdgeTAMSpike.maskKey) private var edgeTAMMask = false
 
     var body: some View {
         NavigationStack {
@@ -296,7 +297,8 @@ struct MemorySheet: View {
                     Button("Forget everything", role: .destructive) { model.forgetEverything() }
                 }
                 Section {
-                    Toggle("EdgeTAM test (cyan mask)", isOn: $edgeTAMTest)
+                    Toggle("Follow objects with EdgeTAM", isOn: $edgeTAMTest)
+                    Toggle("Show EdgeTAM's mask (cyan)", isOn: $edgeTAMMask)
                     ForEach(ar.spikeStatus.sorted { $0.key < $1.key }.map(\.value), id: \.self) { Text($0).font(.caption.monospaced()) }
                 } header: {
                     Text("Tests")

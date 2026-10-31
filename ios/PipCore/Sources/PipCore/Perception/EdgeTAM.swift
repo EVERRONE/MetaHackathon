@@ -99,6 +99,8 @@ public final class EdgeTAM: @unchecked Sendable {
         /// The mask at full resolution (1024²) inside `cropRect` (pixels of the 1024² square).
         public let crop: [UInt8]
         public let cropRect: CGRect
+        /// The object's outline from the full-resolution mask, normalised like `box`.
+        public let outline: [CGPoint]
         public let encodeMs: Double
         public let decodeMs: Double
 
@@ -231,7 +233,7 @@ public final class EdgeTAM: @unchecked Sendable {
             }
         }
         guard score > 0, maxX >= 0 else {
-            return Frame(objectScore: score, iou: iou, box: nil, centroid: nil, area: 0, lowRes: lowRes, crop: [], cropRect: .zero,
+            return Frame(objectScore: score, iou: iou, box: nil, centroid: nil, area: 0, lowRes: lowRes, crop: [], cropRect: .zero, outline: [],
                          encodeMs: encodeMs, decodeMs: decodeMs)
         }
         // The full-resolution mask only around the object (the low-res box, a little wider).
@@ -255,8 +257,116 @@ public final class EdgeTAM: @unchecked Sendable {
         let side = Double(Self.side)
         let box = count > 0 ? CGRect(x: Double(bx0) / side, y: Double(by0) / side, width: Double(bx1 - bx0 + 1) / side, height: Double(by1 - by0 + 1) / side) : nil
         let centroid = count > 0 ? CGPoint(x: (sumX / Double(count) + 0.5) / side, y: (sumY / Double(count) + 0.5) / side) : nil
+        let outline = count > 0 ? Self.outline(crop, width: x1 - x0, height: y1 - y0).map { CGPoint(x: (Double(x0) + $0.x) / side, y: (Double(y0) + $0.y) / side) } : []
         return Frame(objectScore: score, iou: iou, box: box, centroid: centroid, area: Double(count) / (side * side), lowRes: lowRes,
-                     crop: crop, cropRect: CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0), encodeMs: encodeMs, decodeMs: decodeMs)
+                     crop: crop, cropRect: CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0), outline: outline,
+                     encodeMs: encodeMs, decodeMs: decodeMs)
+    }
+
+    // MARK: Outline
+
+    /// The outer boundary of the largest region of a binary mask (row-major, nonzero = in), traced
+    /// through its boundary pixels' centres (Moore neighbours, Jacob's stop) and simplified to
+    /// within `tolerance` pixels: the object's outline as the mask draws it.
+    public static func outline(_ mask: [UInt8], width w: Int, height h: Int, tolerance: Double = 1.0, maxPoints: Int = 80) -> [CGPoint] {
+        guard w > 0, h > 0, mask.count == w * h else { return [] }
+        // The largest 8-connected region.
+        var label = [Int32](repeating: 0, count: w * h)
+        var best: Int32 = 0, bestSize = 0, next: Int32 = 0
+        var stack: [Int] = []
+        for i in 0..<(w * h) where mask[i] != 0 && label[i] == 0 {
+            next += 1
+            var size = 0
+            label[i] = next
+            stack.append(i)
+            while let p = stack.popLast() {
+                size += 1
+                let x = p % w, y = p / w
+                for dy in -1...1 {
+                    for dx in -1...1 where dx != 0 || dy != 0 {
+                        let nx = x + dx, ny = y + dy
+                        guard nx >= 0, ny >= 0, nx < w, ny < h else { continue }
+                        let q = ny * w + nx
+                        if mask[q] != 0, label[q] == 0 {
+                            label[q] = next
+                            stack.append(q)
+                        }
+                    }
+                }
+            }
+            if size > bestSize { bestSize = size; best = next }
+        }
+        guard bestSize > 0, let start = label.firstIndex(of: best) else { return [] }
+        func inside(_ x: Int, _ y: Int) -> Bool { x >= 0 && y >= 0 && x < w && y < h && label[y * w + x] == best }
+        // Clockwise with y down: E, SE, S, SW, W, NW, N, NE.
+        let dirs = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
+        let sx = start % w, sy = start / w
+        // The first pixel in raster order: its west neighbour is outside.
+        func step(from x: Int, _ y: Int, back: Int) -> (x: Int, y: Int, dir: Int, back: Int)? {
+            for k in 1...8 {
+                let d = (back + k) % 8
+                let nx = x + dirs[d].0, ny = y + dirs[d].1
+                // The neighbour looked at just before, seen from the new pixel.
+                if inside(nx, ny) { return (nx, ny, d, d % 2 == 0 ? (d + 6) % 8 : (d + 5) % 8) }
+            }
+            return nil
+        }
+        guard let first = step(from: sx, sy, back: 4) else {
+            return [CGPoint(x: Double(sx) + 0.5, y: Double(sy) + 0.5)]
+        }
+        var points = [CGPoint(x: Double(sx) + 0.5, y: Double(sy) + 0.5)]
+        var cur = first
+        let limit = 4 * w * h + 8
+        var steps = 0
+        while steps < limit {
+            steps += 1
+            if cur.x == sx, cur.y == sy {
+                // Back at the start: done when the next move is the first one again (Jacob).
+                guard let n = step(from: cur.x, cur.y, back: cur.back), n.dir != first.dir || n.x != first.x || n.y != first.y else { break }
+                points.append(CGPoint(x: Double(cur.x) + 0.5, y: Double(cur.y) + 0.5))
+                cur = n
+                continue
+            }
+            points.append(CGPoint(x: Double(cur.x) + 0.5, y: Double(cur.y) + 0.5))
+            guard let n = step(from: cur.x, cur.y, back: cur.back) else { break }
+            cur = n
+        }
+        var tol = tolerance
+        var simple = simplify(points, tolerance: tol)
+        while simple.count > maxPoints {
+            tol *= 1.5
+            simple = simplify(points, tolerance: tol)
+        }
+        return simple
+    }
+
+    /// Ramer–Douglas–Peucker on a closed ring (split at the point farthest from the first).
+    static func simplify(_ ring: [CGPoint], tolerance: Double) -> [CGPoint] {
+        guard ring.count > 3 else { return ring }
+        let far = ring.indices.max { hypot(ring[$0].x - ring[0].x, ring[$0].y - ring[0].y) < hypot(ring[$1].x - ring[0].x, ring[$1].y - ring[0].y) } ?? 0
+        guard far > 0 else { return [ring[0]] }
+        func rdp(_ a: Int, _ b: Int, _ out: inout [CGPoint]) {
+            let p = ring[a], q = ring[b % ring.count]
+            var worst = -1.0, at = -1
+            let dx = q.x - p.x, dy = q.y - p.y, len = max(hypot(dx, dy), 1e-9)
+            if b - a > 1 {
+                for i in (a + 1)..<b {
+                    let r = ring[i % ring.count]
+                    let d = abs(dy * (r.x - p.x) - dx * (r.y - p.y)) / len
+                    if d > worst { worst = d; at = i }
+                }
+            }
+            if worst > tolerance, at > a {
+                rdp(a, at, &out)
+                rdp(at, b, &out)
+            } else {
+                out.append(p)
+            }
+        }
+        var out: [CGPoint] = []
+        rdp(0, far, &out)
+        rdp(far, ring.count, &out)
+        return out
     }
 
     // MARK: Arrays

@@ -94,3 +94,46 @@ import Testing
     }
 }
 #endif
+
+#if arch(arm64)
+/// The outline Pip draws from EdgeTAM's mask.
+@Suite struct EdgeTAMOutlineTests {
+    static func mask(_ w: Int, _ h: Int, _ inside: (Int, Int) -> Bool) -> [UInt8] {
+        var m = [UInt8](repeating: 0, count: w * h)
+        for y in 0..<h { for x in 0..<w where inside(x, y) { m[y * w + x] = 1 } }
+        return m
+    }
+
+    @Test func aRectangleBecomesItsFourCorners() {
+        let m = Self.mask(40, 30) { x, y in x >= 10 && x < 30 && y >= 5 && y < 25 }
+        let ring = EdgeTAM.outline(m, width: 40, height: 30)
+        #expect(ring.count == 4)
+        let xs = ring.map(\.x), ys = ring.map(\.y)
+        #expect(xs.min() == 10.5 && xs.max() == 29.5 && ys.min() == 5.5 && ys.max() == 24.5)
+    }
+
+    @Test func aDiscIsTracedAllRound() {
+        let m = Self.mask(100, 100) { x, y in hypot(Double(x) - 50, Double(y) - 50) < 30 }
+        let ring = EdgeTAM.outline(m, width: 100, height: 100)
+        #expect(ring.count >= 12 && ring.count <= 80)
+        // Every point lies on the circle, and the points go all the way round.
+        for p in ring { #expect(abs(hypot(p.x - 50, p.y - 50) - 29.5) < 1.6) }
+        let angles = Set(ring.map { Int((atan2($0.y - 50, $0.x - 50) + .pi) / (2 * .pi) * 8) % 8 })
+        #expect(angles.count == 8)
+    }
+
+    @Test func onlyTheLargestRegionCounts() {
+        let m = Self.mask(60, 40) { x, y in (x >= 2 && x < 6 && y >= 2 && y < 6) || (x >= 20 && x < 50 && y >= 10 && y < 30) }
+        let ring = EdgeTAM.outline(m, width: 60, height: 40)
+        #expect(ring.allSatisfy { $0.x > 19 })
+    }
+
+    @Test func aThinShapeDoesNotStopHalfway() {
+        // An L: the trace passes its corner pixel twice.
+        let m = Self.mask(30, 30) { x, y in (x >= 5 && x < 8 && y >= 5 && y < 25) || (x >= 5 && x < 25 && y >= 22 && y < 25) }
+        let ring = EdgeTAM.outline(m, width: 30, height: 30)
+        let xs = ring.map(\.x), ys = ring.map(\.y)
+        #expect(xs.max()! > 24 && ys.max()! > 24 && ys.min()! < 6)
+    }
+}
+#endif

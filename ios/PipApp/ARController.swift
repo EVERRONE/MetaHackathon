@@ -21,8 +21,12 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     private var trackingRecovered = false
     /// Follows pointed-at objects in the image, so outlines stay on things that move (a remote in the hand).
     let follower = ImageFollower()
-    /// Spike T1: EdgeTAM follows the latest pointed-at object, drawn as a cyan mask (see EdgeTAMSpike).
+    /// EdgeTAM follows the latest pointed-at object; its mask draws that object's outline (see `steer`).
     let edgeSpike = EdgeTAMSpike()
+    /// Marks whose outline EdgeTAM's mask draws now, and those of them hidden because the object
+    /// moved and is not seen.
+    private var steered = Set<Int>()
+    private var steerHidden = Set<Int>()
     /// How recognising the saved room at start goes, and how well the room is being mapped.
     let relocalisation = Relocalisation()
     /// One line per running test, for the screen.
@@ -70,6 +74,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         follower.onSettled = { [weak self] id, box in self?.onMovedObjectSettled?(id, box) }
         edgeSpike.onStatus = { [weak self] s in self?.setSpikeStatus("edgetam", s) }
         edgeSpike.onLog = { [weak self] s in self?.onLockLog?(s) }
+        edgeSpike.onOutline = { [weak self] id, world in self?.steer(id, world: world) }
+        edgeSpike.onLost = { [weak self] id, moving in self?.steerLost(id, moving: moving) }
         if EdgeTAMSpike.enabled { edgeSpike.preload() }
     }
 
@@ -259,6 +265,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             tracks[id] = nil
             targetCorrections[id] = nil
             follower.stop(id)
+            steered.remove(id)
+            steerHidden.remove(id)
         }
         let gone = imageLocks.filter { marks[$0.value.markID] == nil }.map(\.key)
         if !gone.isEmpty {
@@ -359,6 +367,31 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
+    /// EdgeTAM saw the object: its outline is the mask's, in the room. A flat face that ARKit's image
+    /// tracking holds is more exact (under a millimetre to 1.5 mm): there the lock keeps the outline.
+    func steer(_ id: Int, world: [[simd_float3]]) {
+        guard marks[id] != nil else { return }
+        if imageLocks.values.contains(where: { $0.markID == id && $0.seen && $0.tracked }) { return }
+        if !steered.contains(id) {
+            // From now on EdgeTAM holds the outline, not the room anchor or the box tracker.
+            steered.insert(id)
+            if let a = anchors[id] { arView.session.remove(anchor: a.anchor) }
+            anchors[id] = nil
+            targetCorrections[id] = nil
+            follower.stop(id)
+            onLockLog?("edgetam: mark \(id % 1000) is drawn from EdgeTAM's mask")
+        }
+        steerHidden.remove(id)
+        marks[id] = AnchoredMark(id: id, world: world)
+    }
+
+    /// EdgeTAM does not see the object: if it was moving, its outline waits hidden until it is seen
+    /// again; if not, it stays where the object was (out of view, or covered for a moment).
+    func steerLost(_ id: Int, moving: Bool) {
+        guard steered.contains(id), moving else { return }
+        steerHidden.insert(id)
+    }
+
     /// After Pip found one object again and saw it had drifted, the other objects pointed at in
     /// the same room have drifted the same way: they move by the same offset until they are
     /// measured themselves.
@@ -385,8 +418,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         trackingRecovered = false
         var out: [(Int, CGRect, ObjectTrack.Reason, Int)] = []
         // Remembered places too: one brought back from storage is found again when Pip points at it.
-        // Once an outline is locked to its object, only the lock moves it.
-        let locked = Set(imageLocks.values.filter(\.seen).map(\.markID))
+        // Once an outline is locked to its object, only the lock (or EdgeTAM) moves it.
+        let locked = Set(imageLocks.values.filter(\.seen).map(\.markID)).union(steered)
         for (id, box) in visibleMarkBoxes(in: snapshot) where !locked.contains(id) {
             guard var track = tracks[id], let m = marks[id] else { continue }
             if recovered { track.needsCheck = true; tracks[id] = track }
@@ -562,8 +595,11 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         // A locked object ARKit has lost sight of may have moved: its outline waits, hidden, until
         // ARKit finds the object again, rather than staying where the object was.
         var adjust = follower.adjust
-        for lock in imageLocks.values where lock.seen && !lock.tracked {
+        for lock in imageLocks.values where lock.seen && !lock.tracked && !(steered.contains(lock.markID) && !steerHidden.contains(lock.markID)) {
             adjust[lock.markID] = ImageFollower.Adjust(from: .zero, to: .zero, scale: 1, hidden: true)
+        }
+        for id in steerHidden where !imageLocks.values.contains(where: { $0.markID == id && $0.tracked }) {
+            adjust[id] = ImageFollower.Adjust(from: .zero, to: .zero, scale: 1, hidden: true)
         }
         overlay.adjust = adjust
         // Points behind the camera are never drawn (a projection would mirror them onto the
@@ -582,7 +618,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     /// Pointed-at objects with a cue on screen, followed in the image (see ImageFollower).
     private func followObjects(_ frame: ARFrame) {
-        let locked = Set(imageLocks.values.filter(\.seen).map(\.markID))
+        let locked = Set(imageLocks.values.filter(\.seen).map(\.markID)).union(steered)
         let shownIDs = Set(board.annotations.flatMap { $0.cue.marks }).filter { $0 < Self.placeMarkBase && tracks[$0] != nil && !locked.contains($0) }
         guard !shownIDs.isEmpty else { return }
         var shown: [(id: Int, box: CGRect)] = []
