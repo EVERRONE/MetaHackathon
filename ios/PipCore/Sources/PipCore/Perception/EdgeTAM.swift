@@ -285,6 +285,20 @@ public final class EdgeTAM: @unchecked Sendable {
         let shape = a.shape.map(\.intValue), strides = a.strides.map(\.intValue)
         var out = [Float16](repeating: 0, count: shape.reduce(1, *))
         guard !out.isEmpty else { return out }
+        // Row-major without padding (the usual case): one copy.
+        var expected = 1, dense = true
+        for k in stride(from: shape.count - 1, through: 0, by: -1) {
+            if shape[k] > 1, strides[k] != expected { dense = false; break }
+            expected *= shape[k]
+        }
+        if dense {
+            a.withUnsafeBufferPointer(ofType: Float16.self) { p in
+                out.withUnsafeMutableBufferPointer { o in
+                    if let src = p.baseAddress, let dst = o.baseAddress { dst.update(from: src, count: o.count) }
+                }
+            }
+            return out
+        }
         a.withUnsafeBufferPointer(ofType: Float16.self) { p in
             var index = [Int](repeating: 0, count: shape.count)
             for i in 0..<out.count {
@@ -306,7 +320,7 @@ public final class EdgeTAM: @unchecked Sendable {
     // MARK: Inputs
 
     /// Turns camera frames and snapshots into the encoder's 1024² BGRA input: upright, stretched to
-    /// the square with a Lanczos filter, and rasterises object masks the same way.
+    /// the square, and rasterises object masks the same way.
     public final class Input: @unchecked Sendable {
         private let context = CIContext(options: [.cacheIntermediates: false])
         private var pool: CVPixelBufferPool?
@@ -327,12 +341,10 @@ public final class EdgeTAM: @unchecked Sendable {
             let e = image.extent
             guard e.width > 0, e.height > 0, let out = buffer() else { return nil }
             let side = CGFloat(EdgeTAM.side)
-            let moved = image.transformed(by: CGAffineTransform(translationX: -e.minX, y: -e.minY))
-            let scaled = moved.applyingFilter("CILanczosScaleTransform", parameters: [
-                kCIInputScaleKey: side / e.height,
-                kCIInputAspectRatioKey: (side / e.width) / (side / e.height),
-            ])
-            // Lanczos can spill a pixel past the edges: exactly the square.
+            // Bilinear: the Lanczos filter took about 10 ms a frame on an iPhone 15 Pro (31 Oct).
+            let scaled = image.transformed(by: CGAffineTransform(translationX: -e.minX, y: -e.minY)
+                .concatenating(CGAffineTransform(scaleX: side / e.width, y: side / e.height)))
+            // Exactly the square.
             context.render(scaled.cropped(to: CGRect(x: 0, y: 0, width: side, height: side)), to: out, bounds: CGRect(x: 0, y: 0, width: side, height: side),
                            colorSpace: CGColorSpaceCreateDeviceRGB())
             return out

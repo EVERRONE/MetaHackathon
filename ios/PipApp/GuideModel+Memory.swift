@@ -73,6 +73,13 @@ extension GuideModel {
         }
     }
 
+    /// The user asked something while ARKit still tries a saved room: no more tries this session.
+    func giveUpRecognising() {
+        log("map: the user asked something; no more waiting for a saved room")
+        mapCandidates = []
+        relocalisationGaveUp()
+    }
+
     private func relocalisationGaveUp() {
         ar.relocalisation.gaveUp()
         // Another saved room first, if there is one.

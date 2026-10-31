@@ -93,6 +93,16 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         return config
     }
 
+    /// Until ARKit tracks normally (a fresh session takes about a second), at most `seconds`.
+    @MainActor
+    func waitForTracking(seconds: TimeInterval) async {
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            if let state = arView.session.currentFrame?.camera.trackingState, case .normal = state { return }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
     /// The saved room was not recognised: ARKit tries another saved room's map.
     func restart(initialMap: ARWorldMap) {
         awaitingFirstRelocalisation = true

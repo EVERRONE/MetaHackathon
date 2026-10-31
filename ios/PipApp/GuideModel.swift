@@ -32,6 +32,8 @@ final class GuideModel: ObservableObject {
     @Published var language = "English" {
         didSet {
             configureVoice()
+            lastModelCall = .distantPast
+            warmPrompt()
             // Speech recognition already hears both languages: it restarts only for the switch on screen.
             if !languageFromSpeech { restartListening() }
         }
@@ -194,6 +196,7 @@ final class GuideModel: ObservableObject {
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try? session.setActive(true)
         startMap()
+        warmPrompt()
         // Every camera frame: the visual memory, the map of the home, and reading mode when it is on.
         captureGate.onTrouble = { [weak self] since in
             self?.keyframes.purge(since: since)
@@ -261,13 +264,13 @@ final class GuideModel: ObservableObject {
 
     // MARK: Answering before the turn officially ends
 
-    /// The transcription service ends a turn about a second after the user stops. Pip does not
-    /// wait for that: when the words have stood still for `earlyAfter`, the look starts on them,
+    /// When the service says the user stopped (`speechEnd`), the look starts on the words at once,
     /// with its answer held back until the final transcript confirms the same words. Different
     /// words (the user went on, or the service heard it otherwise): the early look is dropped
     /// unseen and the final goes the usual way. Only questions for the model start early; commands,
-    /// answers, hazards and the like always wait for the final transcript.
-    static let earlyAfter: TimeInterval = 0.45
+    /// answers, hazards and the like always wait for the final transcript. (Starting after a
+    /// silence of our own, 0.45 s, gained nothing on 31 Oct: the final came within 0.02 s of
+    /// `speechEnd`, and pauses inside long questions started six looks for one question.)
     /// Without a final transcript this long after the early start, the words stand if the user stayed quiet.
     static let earlyConfirmAfter: TimeInterval = 2.5
 
@@ -279,20 +282,11 @@ final class GuideModel: ObservableObject {
     }
 
     private var early: EarlyTurn?
-    private var earlyTimer: Task<Void, Never>?
-
-    private func scheduleEarly(_ text: String) {
-        earlyTimer?.cancel()
-        guard early == nil, phase == .hearing else { return }
-        earlyTimer = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(Self.earlyAfter * 1_000_000_000))
-            guard let self, !Task.isCancelled else { return }
-            self.startEarly(text)
-        }
-    }
 
     private func startEarly(_ text: String) {
-        guard early == nil, !busy, !muted, phase == .hearing, wouldLook(text), let snapshot = ar.snapshot() else { return }
+        // While ARKit still tries to recognise a saved room, the final transcript decides (see `.final`).
+        guard early == nil, !busy, !muted, phase == .hearing, !ar.awaitingFirstRelocalisation, wouldLook(text),
+              let snapshot = ar.snapshot() else { return }
         if let spoken = Utterance.language(of: text), spoken != language {
             log("language: \(spoken)")
             adoptLanguage(spoken)
@@ -323,7 +317,6 @@ final class GuideModel: ObservableObject {
 
     /// The early look is dropped unseen (it has not spoken or shown anything yet).
     private func dropEarly() {
-        earlyTimer?.cancel()
         guard let e = early else { return }
         early = nil
         e.gate.open(false)
@@ -352,6 +345,17 @@ final class GuideModel: ObservableObject {
 
     private var busy: Bool { speaker.isSpeaking || lookActive }
 
+    /// When the look model was last asked anything (its prompt cache lasts a few minutes).
+    private var lastModelCall = Date.distantPast
+
+    /// Warms the look model's prompt cache unless it was used in the last four minutes.
+    func warmPrompt() {
+        guard Date().timeIntervalSince(lastModelCall) > 240 else { return }
+        lastModelCall = Date()
+        let pipeline = LookPipeline(client: client, language: language)
+        Task.detached(priority: .utility) { try? await pipeline.warm() }
+    }
+
     private func handle(_ event: RealtimeTranscriber.Event) {
         switch event {
         case .ready:
@@ -360,6 +364,8 @@ final class GuideModel: ObservableObject {
             if phase == .connecting { phase = muted ? .muted : .listening }
         case .speechStart:
             guard !muted else { return }
+            // The user is about to ask: the prompt is warmed while they speak, if it went cold.
+            warmPrompt()
             // Pip stops only once this is clearly the user (a cough or Pip's own echo is not).
             if busy {
                 bargeInPending = true
@@ -384,17 +390,12 @@ final class GuideModel: ObservableObject {
                 interrupt()
                 phase = .hearing
             }
-            if !busy {
-                heard = text
-                scheduleEarly(text)
-            }
+            if !busy { heard = text }
         case .speechEnd:
             // The service heard the user stop: Pip starts on the words at once (see `startEarly`).
-            earlyTimer?.cancel()
             if !busy, !heard.isEmpty { startEarly(heard) }
         case .final(_, let text, let speaker):
             bargeInPending = false
-            earlyTimer?.cancel()
             // A hazard is never dropped, also not while Pip speaks or looks, and not for being
             // said by someone else: it stops everything.
             let hazard = !muted && text.count >= 2 && !isEcho(text) && SafetyPolicy.spokenHazard(in: text) != nil
@@ -423,6 +424,22 @@ final class GuideModel: ObservableObject {
             // Only real user speech chooses who Pip talks with, never its own echo.
             guard hazard || acceptSpeaker(speaker, text: text) else { return }
             heard = text
+            // ARKit still tries to recognise a saved room: giving up later would wipe this answer's
+            // outlines (31 Oct: the first answer's outline vanished), so Pip gives up now and
+            // answers in a fresh map once tracking runs (about a second).
+            if ar.awaitingFirstRelocalisation {
+                giveUpRecognising()
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.ar.waitForTracking(seconds: 2)
+                    guard let snapshot = self.ar.snapshot() else {
+                        self.phase = self.muted ? .muted : .listening
+                        return
+                    }
+                    self.route(text, snapshot: snapshot)
+                }
+                return
+            }
             // The frame the user was looking at when they finished speaking.
             guard let snapshot = ar.snapshot() else {
                 phase = muted ? .muted : .listening
@@ -467,6 +484,7 @@ final class GuideModel: ObservableObject {
     /// remembered until it opens, and the look ends unseen if it opens with false.
     func look(_ utterance: String, snapshot: FrameSnapshot, started: Date, directive: String? = nil, gate: TurnGate? = nil,
               onState: (([String: String]) -> Void)? = nil) async {
+        lastModelCall = Date()
         lookCount += 1
         let me = lookCount
         activeLook = me

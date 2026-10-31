@@ -81,6 +81,16 @@ public struct LookPipeline: Sendable {
 
     var promptCacheKey: String { "pip-\(PipPrompt.version)-\(model)-\(language.lowercased())" }
 
+    /// Puts the system prompt in the service's prompt cache with a reply nobody hears: the first
+    /// question after a quiet while otherwise waits for the whole prompt (31 Oct: first token
+    /// 3.5 s uncached against 1.5–2.3 s cached).
+    public func warm() async throws {
+        var chat = ChatRequest(messages: [.system(PipPrompt.system(language: language)), .user("Reply with the single word: ok")],
+                               stream: true, reasoningEffort: effort, promptCacheKey: promptCacheKey, maxCompletionTokens: 16)
+        chat.model = model
+        for try await _ in client.chatStream(chat) {}
+    }
+
     public func run(_ request: LookRequest) -> AsyncThrowingStream<LookEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {

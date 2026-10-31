@@ -122,6 +122,16 @@ Same 60-frame clip, seeded with SAM 3.1's mask of the 50×26 px key (`pipeval ed
 - On 9 of 60 frames the mask spilled onto a neighbouring key: the centre was 10–21 px off and the minimum box IoU 0.45.
 - Speed: 11.7 ms in the encoder plus 34.9 ms in the propagator and memory bank, or 21 fps of model time. This matches the conversion's own figure of 49 ms per frame on an M4.
 
+**On the iPhone 15 Pro, with ARKit running** (31 October, 4 runs: a keyboard key, glasses, the steam slider and switch of an iron; 614 frames). Each kept frame was compared with SAM 3.1 tracking from the same seed over the same frames:
+- **Presence:** EdgeTAM and SAM 3.1 agreed on all 77 kept frames about whether the object was in view.
+- **Overlap:** box IoU median 0.87–0.94 per object, minimum 0.50 on one slider frame.
+- **Centre:** 1.1–1.3 px median of 720×960, at most 4.4 px.
+- **Speed:** 95–102 ms per frame, or 9–10 fps (frame preparation 10 ms, encoder 19–22 ms, propagator and bank 66–69 ms). The mask is about 150–180 ms behind the live frame.
+- **Cost to ARKit and heat:** ARKit stayed at 60 fps; the phone went from cool to warm.
+- **Since then:** frame preparation is bilinear instead of Lanczos (same accuracy on the Mac clip, 1.4 px median), and dense output arrays are copied in one go.
+
+Quality: go. Speed is enough to carry the outline at 10 Hz, with ARKit's camera motion in between.
+
 It follows the object reliably. Small parts spill onto look-alike neighbours, so they should be carried by their parent object (the plan in section 4) or gated on area. The iPhone test decides the rest:
 - speed with ARKit running;
 - heat;
