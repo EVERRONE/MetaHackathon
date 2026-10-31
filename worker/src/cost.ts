@@ -27,7 +27,17 @@ export function asrCost(seconds: number): number {
   return Math.floor(seconds) * ASR_PER_SECOND;
 }
 
-/** Upper-bound estimate used when a response carries no usage (e.g. a stream cut short). */
-export function sparkFallbackCost(requestBytes: number, responseBytes: number): number {
-  return (requestBytes / 3) * SPARK_INPUT + (responseBytes / 3) * SPARK_OUTPUT;
+/** Rough tokens for one inline image, used only when a response carries no usage. */
+const TOKENS_PER_IMAGE = 1_600;
+/** SSE framing: each streamed chunk carries ~150 bytes of JSON for about one token. */
+const SSE_BYTES_PER_TOKEN = 150;
+
+/**
+ * Estimate used when a response carries no usage (a stream cut short by barge-in).
+ * `textBytes` excludes inline images, which are counted per image instead.
+ */
+export function sparkFallbackCost(textBytes: number, responseBytes: number, images: number): number {
+  const input = textBytes / 4 + images * TOKENS_PER_IMAGE;
+  const output = Math.min(responseBytes / SSE_BYTES_PER_TOKEN, 4_000);
+  return input * SPARK_INPUT + output * SPARK_OUTPUT;
 }

@@ -31,7 +31,8 @@ export async function speak(apiKey: string, req: SpeakRequest, charge: (usd: num
     headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
     body: JSON.stringify({ text, model_id: MODEL, ...(language ? { language_code: language } : {}) }),
   });
-  if (!res.ok || !res.body) throw await UpstreamError.from(res, "speak");
+  if (!res.ok) throw await UpstreamError.from(res, "speak");
+  if (!res.body) throw new UpstreamError(502, "speak", "empty response");
   charge(text.length * USD_PER_CHAR);
   return new Response(res.body, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" } });
 }

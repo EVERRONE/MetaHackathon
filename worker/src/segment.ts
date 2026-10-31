@@ -8,6 +8,7 @@ import {
   type SegmentationMaskRecord,
 } from "@meta-sam/parser";
 import {
+  boxIntersection,
   boxIoU,
   maskArea,
   maskCentroid,
@@ -115,15 +116,28 @@ export async function callSam(apiKey: string, imageUrl: string, text: string): P
   return out;
 }
 
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.min(Math.max(v, lo), hi);
+}
+
+/** Whole pixels inside the image, with right/bottom half-open and at least one pixel wide. */
+function clampBox(b: Box, width: number, height: number) {
+  const left = clamp(Math.floor(b[0]), 0, width - 1);
+  const top = clamp(Math.floor(b[1]), 0, height - 1);
+  const right = clamp(Math.ceil(b[2]), left + 1, width);
+  const bottom = clamp(Math.ceil(b[3]), top + 1, height);
+  return { left, top, right, bottom };
+}
+
 export function buildObjectText(objects: ObjectPromptInput[], width: number, height: number): string {
   const prompt: PromptObject[] = objects.map((o) => ({
     id: o.id,
     prompts: [
       {
-        box: o.box ? { left: o.box[0], top: o.box[1], right: o.box[2], bottom: o.box[3] } : undefined,
+        box: o.box ? clampBox(o.box, width, height) : undefined,
         points: o.points?.map((p) => ({
-          x: Math.floor(p.x),
-          y: Math.floor(p.y),
+          x: clamp(Math.floor(p.x), 0, width - 1),
+          y: clamp(Math.floor(p.y), 0, height - 1),
           label: p.negative ? ("negative" as const) : ("positive" as const),
         })),
       },
@@ -158,8 +172,9 @@ export function candidatesFrom(text: string, label: string | null, minConfidence
 }
 
 export function frameSize(text: string): { width: number; height: number } | null {
-  const m = /;w=(\d+);h=(\d+)/.exec(text);
-  return m ? { width: Number(m[1]), height: Number(m[2]) } : null;
+  const w = /;w=(\d+)/.exec(text);
+  const h = /;h=(\d+)/.exec(text);
+  return w && h ? { width: Number(w[1]), height: Number(h[1]) } : null;
 }
 
 function iou(a: BoxMask, b: BoxMask, inter: number): number {
@@ -177,7 +192,8 @@ export function buildInstances(all: Candidate[], maxInstances: number): { instan
         ? kept.find(
             (k) =>
               k.objectId === undefined &&
-              boxIoU(k.mask.box, c.mask.box) > 0.3 &&
+              // Mask IoU > 0.75 needs the boxes to overlap by at least 0.75 of the larger mask.
+              boxIntersection(k.mask.box, c.mask.box) >= DUPLICATE_IOU * Math.max(k.mask.area, c.mask.area) &&
               iou(k.mask, c.mask, maskIntersection(k.mask, c.mask)) > DUPLICATE_IOU,
           )
         : undefined;
@@ -188,7 +204,7 @@ export function buildInstances(all: Candidate[], maxInstances: number): { instan
     }
   }
   const limited = kept.slice(0, maxInstances);
-  const dropped = sorted.length - limited.length;
+  const dropped = kept.length - limited.length;
 
   const withCentre = limited.map((c) => ({ c, centre: maskCentroid(c.mask) }));
   const ordered = readingOrder(withCentre, (x) => x.centre, (x) => x.c.mask.box[3] - x.c.mask.box[1]);
@@ -197,9 +213,10 @@ export function buildInstances(all: Candidate[], maxInstances: number): { instan
     const [left, top] = c.mask.box;
     const rings = outerRings(parseSvgPath(decodeMaskToSVGPath(c.record.mask)));
     const polygons = rings.map((r) =>
+      // The parser puts pixel centres on integers; outlines run along pixel edges (+0.5).
       simplifyToBudget(r, POLYGON_EPSILON, POLYGON_MAX_POINTS).flatMap(([x, y]) => [
-        Math.round(x + left),
-        Math.round(y + top),
+        Math.round(x + left + 0.5),
+        Math.round(y + top + 0.5),
       ]),
     );
     return {
@@ -227,24 +244,31 @@ export function buildInstances(all: Candidate[], maxInstances: number): { instan
   return { instances, dropped };
 }
 
-export async function segment(apiKey: string, req: SegmentRequest): Promise<SegmentResult> {
+export async function segment(apiKey: string, req: SegmentRequest, charge: (calls: number) => void): Promise<SegmentResult> {
   const imageUrl = toDataUrl(req.image);
-  const minConfidence = req.minConfidence ?? 0.3;
-  const maxInstances = Math.min(req.maxInstances ?? 40, 200);
+  const minConfidence = Number.isFinite(req.minConfidence) ? clamp(req.minConfidence!, 0, 1) : 0.3;
+  const maxInstances = Number.isFinite(req.maxInstances) ? clamp(Math.floor(req.maxInstances!), 1, 200) : 40;
 
   const jobs: { label: string | null; text: string }[] = [];
-  for (const p of req.prompts ?? []) jobs.push({ label: p.trim(), text: p.trim() });
+  for (const p of new Set((req.prompts ?? []).map((p) => p.trim()))) jobs.push({ label: p, text: p });
   if (req.objects?.length) {
-    jobs.push({ label: null, text: buildObjectText(req.objects, req.width!, req.height!) });
+    jobs.push({ label: null, text: buildObjectText(req.objects, Math.floor(req.width!), Math.floor(req.height!)) });
   }
 
-  const outputs = await Promise.all(
+  // One failed prompt does not sink the others; each call that ran is charged.
+  const settled = await Promise.allSettled(
     jobs.map(async (job) => {
       const t0 = Date.now();
       const text = await callSam(apiKey, imageUrl, job.text);
       return { job, text, ms: Date.now() - t0 };
     }),
   );
+  charge(settled.filter((r) => r.status === "fulfilled" || !(r.reason instanceof UpstreamError && r.reason.status === 400)).length);
+  const outputs = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+  if (outputs.length === 0) {
+    const first = settled[0];
+    throw first?.status === "rejected" ? first.reason : new Error("no segmentation calls");
+  }
 
   const candidates: Candidate[] = [];
   const calls: SegmentResult["calls"] = [];
@@ -255,6 +279,9 @@ export async function segment(apiKey: string, req: SegmentRequest): Promise<Segm
     calls.push({ prompt: job.label ?? "objects", found: found.length, ms });
     size ??= frameSize(text);
   }
+  settled.forEach((r, i) => {
+    if (r.status === "rejected") calls.push({ prompt: jobs[i].label ?? "objects", found: -1, ms: 0 });
+  });
   const { instances, dropped } = buildInstances(candidates, maxInstances);
   return {
     width: size?.width ?? req.width ?? null,

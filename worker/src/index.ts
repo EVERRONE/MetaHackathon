@@ -5,6 +5,7 @@ import { chat } from "./chat";
 import { asrCost, samCost } from "./cost";
 import { HttpError } from "./http";
 import { meter } from "./meter";
+import { ObjectPromptError } from "@meta-sam/parser";
 import { MAX_PROMPTS, segment, type SegmentRequest } from "./segment";
 import { speak, type SpeakRequest } from "./speak";
 import { UpstreamError } from "./upstream";
@@ -42,6 +43,11 @@ app.use("*", async (c, next) => {
 app.get("/", (c) => c.text("Pip API. See github.com/EVERRONE/MetaHackathon\n"));
 app.get("/v1/health", (c) => c.json({ ok: true, service: "pip", version: VERSION }));
 
+async function overCap(env: Env): Promise<{ over: boolean; today: number; total: number }> {
+  const spend = await meter(env).status();
+  return { ...spend, over: spend.today >= Number(env.DAILY_CAP_USD) || spend.total >= Number(env.TOTAL_CAP_USD) };
+}
+
 app.use("/v1/*", async (c: Context<AppEnv>, next: Next) => {
   const header = c.req.header("Authorization") ?? "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
@@ -50,46 +56,62 @@ app.use("/v1/*", async (c: Context<AppEnv>, next: Next) => {
   const { success } = await c.env.LIMITER.limit({ key: "app" });
   if (!success) throw new HttpError(429, "rate_limited", "Too many requests; slow down");
 
-  const spend = await meter(c.env).status();
-  if (spend.today >= Number(c.env.DAILY_CAP_USD) || spend.total >= Number(c.env.TOTAL_CAP_USD)) {
-    throw new HttpError(402, "spend_cap", `Spend cap reached (today $${spend.today.toFixed(2)}, total $${spend.total.toFixed(2)})`);
+  // The app can always read its own spend, also once the cap is reached.
+  if (c.req.path !== "/v1/usage") {
+    const spend = await overCap(c.env);
+    if (spend.over) {
+      throw new HttpError(402, "spend_cap", `Spend cap reached (today $${spend.today.toFixed(2)}, total $${spend.total.toFixed(2)})`);
+    }
   }
   await next();
 });
+
+/** Parses a JSON object body; anything else is a 400. */
+async function jsonObject<T>(c: Context<AppEnv>): Promise<T> {
+  const body = await c.req.json<unknown>().catch(() => {
+    throw new HttpError(400, "invalid_json", "Body must be JSON");
+  });
+  if (typeof body !== "object" || body === null || Array.isArray(body)) throw new HttpError(400, "invalid_json", "Body must be a JSON object");
+  return body as T;
+}
 
 app.get("/v1/usage", async (c) => c.json(await meter(c.env).status()));
 
 app.post("/v1/chat", bodyLimit({ maxSize: 24 * MB }), async (c) => {
   const raw = await c.req.text();
-  let body: Record<string, unknown>;
+  let body: unknown;
   try {
-    body = JSON.parse(raw) as Record<string, unknown>;
+    body = JSON.parse(raw);
   } catch {
     throw new HttpError(400, "invalid_json", "Body must be JSON");
   }
-  return chat(c.env.MODEL_API_KEY, body, raw.length, charger(c));
+  if (typeof body !== "object" || body === null || Array.isArray(body)) throw new HttpError(400, "invalid_json", "Body must be a JSON object");
+  // Inline images are priced per image in the fallback estimate, not as text.
+  const images = raw.match(/data:image\//g)?.length ?? 0;
+  const textBytes = raw.replace(/data:image\/[^"]+/g, "").length;
+  return chat(c.env.MODEL_API_KEY, body as Record<string, unknown>, textBytes, images, charger(c));
 });
 
 app.post("/v1/segment", bodyLimit({ maxSize: 12 * MB }), async (c) => {
-  const req = await c.req.json<SegmentRequest>().catch(() => {
-    throw new HttpError(400, "invalid_json", "Body must be JSON");
-  });
+  const req = await jsonObject<SegmentRequest>(c);
   if (typeof req.image !== "string" || req.image.length < 100) throw new HttpError(400, "invalid_request", "image is required");
+  if (req.prompts !== undefined && !Array.isArray(req.prompts)) throw new HttpError(400, "invalid_request", "prompts must be an array");
+  if (req.objects !== undefined && !Array.isArray(req.objects)) throw new HttpError(400, "invalid_request", "objects must be an array");
   const prompts = (req.prompts ?? []).filter((p) => typeof p === "string" && p.trim().length > 0);
   if (prompts.length > MAX_PROMPTS) throw new HttpError(400, "invalid_request", `At most ${MAX_PROMPTS} prompts`);
   if (prompts.some((p) => p.length > 80)) throw new HttpError(400, "invalid_request", "Prompts are short noun phrases");
   const objects = req.objects ?? [];
   if (objects.length > 16) throw new HttpError(400, "invalid_request", "At most 16 objects");
-  if (objects.length && !(Number(req.width) > 0 && Number(req.height) > 0)) {
-    throw new HttpError(400, "invalid_request", "width and height are required with objects");
+  if (objects.length && !(typeof req.width === "number" && typeof req.height === "number" && req.width > 0 && req.height > 0)) {
+    throw new HttpError(400, "invalid_request", "width and height (numbers) are required with objects");
   }
   if (!prompts.length && !objects.length) throw new HttpError(400, "invalid_request", "Give prompts or objects");
 
-  const calls = prompts.length + (objects.length ? 1 : 0);
   try {
-    return c.json(await segment(c.env.MODEL_API_KEY, { ...req, prompts, objects }));
-  } finally {
-    charger(c)(samCost(calls));
+    return c.json(await segment(c.env.MODEL_API_KEY, { ...req, prompts, objects }, (calls) => charger(c)(samCost(calls))));
+  } catch (err) {
+    if (err instanceof ObjectPromptError) throw new HttpError(400, `invalid_objects_${err.code}`, err.message);
+    throw err;
   }
 });
 
@@ -106,15 +128,15 @@ app.post("/v1/transcribe", bodyLimit({ maxSize: 32 * MB }), async (c) => {
 });
 
 app.post("/v1/speak", bodyLimit({ maxSize: 64 * 1024 }), async (c) => {
-  const req = await c.req.json<SpeakRequest>().catch(() => {
-    throw new HttpError(400, "invalid_json", "Body must be JSON");
-  });
-  return speak(c.env.ELEVENLABS_API_KEY, req, charger(c));
+  return speak(c.env.ELEVENLABS_API_KEY, await jsonObject<SpeakRequest>(c), charger(c));
 });
 
 app.get("/v1/asr", (c) => {
   if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") throw new HttpError(426, "upgrade_required", "Expected a WebSocket upgrade");
-  return relayAsr(c.env.MODEL_API_KEY, (seconds) => charger(c)(asrCost(seconds)));
+  return relayAsr(c.env.MODEL_API_KEY, {
+    charge: (seconds) => charger(c)(asrCost(seconds)),
+    overCap: async () => (await overCap(c.env)).over,
+  });
 });
 
 app.notFound(() => Response.json({ error: { code: "not_found", message: "No such route" } }, { status: 404 }));
@@ -124,8 +146,7 @@ app.onError((err) => {
     return Response.json({ error: { code: err.code, message: err.message } }, { status: err.status });
   }
   if (err instanceof UpstreamError) {
-    const status = err.status >= 500 ? 502 : err.status;
-    return Response.json({ error: { code: `upstream_${err.service}`, message: err.message, upstreamStatus: err.status } }, { status });
+    return Response.json({ error: { code: `upstream_${err.service}`, message: err.message, upstreamStatus: err.status } }, { status: err.appStatus });
   }
   console.error(JSON.stringify({ error: String(err), stack: (err as Error).stack?.slice(0, 500) }));
   return Response.json({ error: { code: "internal", message: "Internal error" } }, { status: 500 });

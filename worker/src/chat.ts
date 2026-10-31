@@ -57,7 +57,9 @@ export function usageTap(onDone: (usage: ChatUsage | null, bytes: number) => voi
 export async function chat(
   apiKey: string,
   body: Record<string, unknown>,
+  /** Request size without inline images, for the fallback cost estimate. */
   requestBytes: number,
+  imageCount: number,
   charge: (usd: number) => void,
 ): Promise<Response> {
   if (typeof body.model !== "string" || !ALLOWED_MODELS.has(body.model)) {
@@ -82,12 +84,12 @@ export async function chat(
 
   if (!stream || !upstream.body) {
     const json = (await upstream.json()) as { usage?: ChatUsage };
-    charge(json.usage ? sparkCost(json.usage) : sparkFallbackCost(requestBytes, 0));
+    charge(json.usage ? sparkCost(json.usage) : sparkFallbackCost(requestBytes, 0, imageCount));
     return Response.json(json);
   }
 
   const tapped = upstream.body.pipeThrough(
-    usageTap((usage, bytes) => charge(usage ? sparkCost(usage) : sparkFallbackCost(requestBytes, bytes))),
+    usageTap((usage, bytes) => charge(usage ? sparkCost(usage) : sparkFallbackCost(requestBytes, bytes, imageCount))),
   );
   return new Response(tapped, {
     headers: {

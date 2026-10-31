@@ -22,5 +22,5 @@
   "ratelimits": [
     { "name": "LIMITER", "namespace_id": "4801", "simple": { "limit": 300, "period": 60 } }
   ]
-  // Secrets (wrangler secret put): MODEL_API_KEY, PIP_APP_TOKEN
+  // Secrets (wrangler secret put): MODEL_API_KEY, PIP_APP_TOKEN, ELEVENLABS_API_KEY
 }

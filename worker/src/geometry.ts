@@ -126,6 +126,13 @@ export function simplifyToBudget(ring: Ring, epsilon: number, maxPoints: number)
   return out;
 }
 
+/** Overlap area of two half-open boxes. */
+export function boxIntersection(a: Box, b: Box): number {
+  const iw = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
+  const ih = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+  return iw > 0 && ih > 0 ? iw * ih : 0;
+}
+
 export function boxIoU(a: Box, b: Box): number {
   const iw = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
   const ih = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
