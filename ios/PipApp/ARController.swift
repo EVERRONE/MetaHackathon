@@ -8,18 +8,13 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
     let overlay = OverlayView()
 
-    @Published private(set) var trackingNormal = false
-    @Published private(set) var hasLiDAR = false
-
     private(set) var board = AnnotationBoard()
     private var marks: [Int: AnchoredMark] = [:]
-    private var instances: [Int: SegmentInstance] = [:]
 
     func start() {
         let config = ARWorldTrackingConfiguration()
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             config.frameSemantics.insert(.sceneDepth)
-            hasLiDAR = true
         }
         arView.renderOptions.insert(.disableMotionBlur)
         arView.session.delegate = self
@@ -30,17 +25,17 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         arView.session.currentFrame.flatMap { FrameSnapshot(frame: $0) }
     }
 
-    /// A new look: marks from the previous one no longer apply.
+    /// A new look: marks from the previous one no longer apply. Mark numbers restart each look,
+    /// so a danger from the last look must go too, or it would land on this look's mark 1.
     func beginLook() {
-        instances = [:]
         marks = [:]
         board.show(.clear, at: CACurrentMediaTime())
+        board.resolveDanger()
     }
 
     /// Lifts one grounded instance into 3D. Returns how it was anchored, for the trace.
     @discardableResult
     func addMark(_ inst: SegmentInstance, snapshot: FrameSnapshot) -> String {
-        instances[inst.id] = inst
         guard let m = AnchoredMark(inst, snapshot: snapshot) else { return "no depth" }
         marks[inst.id] = m
         return m.method
@@ -57,7 +52,6 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         renderNow()
     }
 
-    var anchoredCount: Int { marks.count }
 
     // MARK: ARSessionDelegate
 
@@ -65,9 +59,6 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         renderNow()
     }
 
-    func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
-        if case .normal = camera.trackingState { trackingNormal = true } else { trackingNormal = false }
-    }
 
     private func renderNow() {
         let now = CACurrentMediaTime()

@@ -26,13 +26,15 @@ struct AnchoredMark {
         // Depth samples inside the object, and on the surface around it.
         let inside = Self.samples(in: box, keep: { Self.contains(outer, $0) }, snapshot: snapshot, grid: 12)
         let around = Self.samples(in: box.insetBy(dx: -box.width * 1.2, dy: -box.height * 1.2), keep: { _ in true }, snapshot: snapshot, grid: 20)
-        guard let median = Self.median((inside.count >= 3 ? inside : around).map(\.depth)) else { return nil }
+        // Without usable LiDAR depth (a black or glossy surface, too far, the first frames) the
+        // outline still goes up, at an assumed arm's length, rather than not at all.
+        let median = Self.median((inside.count >= 3 ? inside : around).map(\.depth)) ?? Self.assumedDepth
 
         let rayPoint = { (p: CGPoint) in snapshot.worldPoint(sensor: snapshot.sensorPoint(p), depth: 1) }
         let flat = { (p: CGPoint) in snapshot.worldPoint(sensor: snapshot.sensorPoint(p), depth: median) }
 
         var lift = flat
-        var method = "facing camera"
+        var method = (inside.count >= 3 || around.count >= 3) ? "facing camera" : "assumed depth"
         if let plane = Self.fitPlane(around.map(\.world)) {
             // Orientation from the surroundings, position from the object itself.
             let anchor = flat(instance.centre)
@@ -75,6 +77,8 @@ struct AnchoredMark {
 
     // MARK: Depth
 
+    static let assumedDepth: Float = 0.5
+
     private struct Sample { let depth: Float; let world: simd_float3 }
 
     private static func samples(in rect: CGRect, keep: (CGPoint) -> Bool, snapshot: FrameSnapshot, grid n: Int) -> [Sample] {
@@ -114,7 +118,8 @@ struct AnchoredMark {
             let shift = cov[0][0] + cov[1][1] + cov[2][2]
             let b = simd_float3x3(diagonal: simd_float3(repeating: shift)) - cov
             var v = simd_normalize(simd_float3(0.3, 0.5, 0.8))
-            for _ in 0..<40 { v = simd_normalize(b * v) }
+            // Converges like (λ1/(λ1+λ2))^n; 200 steps is precise even for elongated patches.
+            for _ in 0..<200 { v = simd_normalize(b * v) }
             return v.x.isFinite ? (c, v) : nil
         }
         guard let (c0, n0) = fit(points) else { return nil }

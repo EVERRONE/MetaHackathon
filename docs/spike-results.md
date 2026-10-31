@@ -74,3 +74,14 @@ Test media: the breaker photo above and ["Cherry G85-23000FR"](https://commons.w
 
 **Design changes:** the look became one streamed Spark call that points by position + printed text, grounded in parallel on the device (`build-plan.md` §3); the voice became ElevenLabs (§5); cues wait for their grounding instead of guessing.
 
+### Review correction (31 October, evening)
+
+A code review found that the prompt's examples used positions from the two test photos (alt gr, breaker 10F), so full-look results on those photos were partly flattered. The examples now use made-up devices. Honest re-run with the clean prompt:
+
+| Look | Result |
+|---|---|
+| Breakers: "Which is 10F, is it on?" / "Welke is 7F, hoe zet ik die uit?" | Correct outline via the printed text in ~1.5 s; state read correctly |
+| Close-up keyboard (keys ≈ 95 px): @, %, entrée | alt gr + 0/à/@, shift + ù/%, entrée: all correct (Spark check on a numbered crop); first sentence 1.7–3.0 s, cue sentences 4.8–6.3 s |
+| Whole keyboard from afar (keys ≈ 45 px) | Spoken answer right; Spark's points up to two keys off, refused by the check, so no pointer |
+| Apple Vision accurate text recognition after a pause | ~25 s to reload its models (fast pass: 0.05 s). Both passes now run within a budget, and the app keeps the accurate one warm |
+

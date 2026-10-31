@@ -153,10 +153,6 @@ final class OverlayView: UIView {
         l.lineCap = .round
         l.lineDashPattern = dash
         l.opacity = Float(alpha)
-        l.shadowColor = UIColor.black.cgColor
-        l.shadowOpacity = stroke == nil ? 0 : 0.7
-        l.shadowRadius = 3
-        l.shadowOffset = .zero
         layer.addSublayer(l)
     }
 
@@ -184,12 +180,18 @@ final class OverlayView: UIView {
         glow.strokeColor = Self.action.withAlphaComponent(0.55).cgColor
         glow.lineWidth = 7 + 10 * pop
         glow.lineJoin = .round
-        glow.shadowColor = Self.action.cgColor
-        glow.shadowOpacity = 0.9
-        glow.shadowRadius = 8
-        glow.shadowOffset = .zero
         glow.opacity = Float(alpha)
         layer.addSublayer(glow)
+        // A wider, fainter stroke instead of a shadow: shadows are re-rendered off-screen on every
+        // frame, strokes are cheap.
+        let halo = CAShapeLayer()
+        halo.path = path.cgPath
+        halo.fillColor = UIColor.clear.cgColor
+        halo.strokeColor = Self.action.withAlphaComponent(0.18).cgColor
+        halo.lineWidth = glow.lineWidth + 10
+        halo.lineJoin = .round
+        halo.opacity = Float(alpha)
+        layer.insertSublayer(halo, below: glow)
         let core = CAShapeLayer()
         core.path = path.cgPath
         core.fillColor = UIColor.clear.cgColor
@@ -216,7 +218,7 @@ final class OverlayView: UIView {
         l.alignmentMode = .center
         l.foregroundColor = UIColor.black.cgColor
         l.backgroundColor = Self.action.cgColor
-        l.contentsScale = UIScreen.main.scale
+        l.contentsScale = traitCollection.displayScale
         let w = max(26, CGFloat(text.count) * 10 + 14)
         l.frame = CGRect(x: c.x - w / 2, y: c.y - 13, width: w, height: 26)
         l.cornerRadius = 13
@@ -277,7 +279,7 @@ final class OverlayView: UIView {
         l.alignmentMode = .center
         l.foregroundColor = UIColor.black.cgColor
         l.backgroundColor = color.cgColor
-        l.contentsScale = UIScreen.main.scale
+        l.contentsScale = traitCollection.displayScale
         let w = max(28, CGFloat(text.count) * 11 + 14)
         l.frame = CGRect(x: c.x - w / 2, y: c.y - 14, width: w, height: 28)
         l.cornerRadius = 14

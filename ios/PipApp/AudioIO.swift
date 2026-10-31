@@ -1,43 +1,78 @@
 import AVFAudio
 import Foundation
+import PipCore
 
 /// One audio engine for the microphone and Pip's voice, with Apple's voice processing on, so the
 /// microphone hears the user but not Pip (echo cancellation). That is what makes barge-in work.
+///
+/// The engine restarts itself after a route change (AirPods, a car) or an interruption (a call,
+/// Siri), so Pip does not go deaf.
 final class AudioIO {
     let engine = AVAudioEngine()
     let player = AVAudioPlayerNode()
-    /// 16 kHz mono 16-bit little-endian chunks, as the live transcription expects.
-    var onPCM: ((Data) -> Void)?
-    /// When muted, silence is sent instead of the microphone, which keeps the live session open.
-    var muted = false
+    var onRestartFailed: ((Error) -> Void)?
 
+    /// Where the 16 kHz microphone audio goes. Read on the audio thread, so behind a lock.
+    var sink: RealtimeTranscriber? {
+        get { lock.withLock { _sink } }
+        set { lock.withLock { _sink = newValue } }
+    }
+
+    /// When muted, silence is sent instead of the microphone, which keeps the live session open.
+    var muted: Bool {
+        get { lock.withLock { _muted } }
+        set { lock.withLock { _muted = newValue } }
+    }
+
+    private let lock = NSLock()
+    private var _sink: RealtimeTranscriber?
+    private var _muted = false
     private let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)!
     private var running = false
+    private var observers: [NSObjectProtocol] = []
 
     func start() throws {
         guard !running else { return }
-        let input = engine.inputNode
-        try input.setVoiceProcessingEnabled(true)
+        try engine.inputNode.setVoiceProcessingEnabled(true)
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: nil)
+        try startEngine()
+        running = true
 
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            self?.restart()
+        })
+        observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            if raw == AVAudioSession.InterruptionType.ended.rawValue { self?.restart() }
+        })
+    }
+
+    /// Installs the microphone tap for the current input format and starts the engine.
+    private func startEngine() throws {
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
         let inFormat = input.outputFormat(forBus: 0)
-        guard let converter = AVAudioConverter(from: inFormat, to: target) else { throw AudioError.format }
+        guard inFormat.sampleRate > 0, let converter = AVAudioConverter(from: inFormat, to: target) else { throw AudioError.format }
         input.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { [weak self] buffer, _ in
-            guard let self else { return }
-            guard let data = self.convert(buffer, with: converter) else { return }
-            self.onPCM?(self.muted ? Data(count: data.count) : data)
+            guard let self, let data = self.convert(buffer, with: converter) else { return }
+            let (sink, muted) = self.lock.withLock { (self._sink, self._muted) }
+            sink?.send(pcm: muted ? Data(count: data.count) : data)
         }
         engine.prepare()
         try engine.start()
-        running = true
     }
 
-    func stop() {
+    private func restart() {
         guard running else { return }
-        engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        running = false
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            try startEngine()
+        } catch {
+            onRestartFailed?(error)
+        }
     }
 
     private func convert(_ buffer: AVAudioPCMBuffer, with converter: AVAudioConverter) -> Data? {

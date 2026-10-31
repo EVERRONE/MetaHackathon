@@ -27,29 +27,23 @@ final class Speaker {
     var onIdle: (() -> Void)?
     var onLog: ((String) -> Void)?
 
-    /// The text of what is being said now, for telling the user's speech from Pip's own echo.
+    /// What was said recently and when, for telling the user's speech from Pip's own echo.
     private(set) var recentText: [String] = []
+    private(set) var lastSpokeAt = Date.distantPast
 
-    private struct Rendered {
-        var buffers: [AVAudioPCMBuffer]
-        /// Start time (s) of the text at a UTF-16 offset.
-        var time: (Int) -> Double
-        var source: String
-    }
-
-    private struct Item {
-        var sentence: SpokenSentence
-        var audio: Task<Rendered?, Never>
-    }
-
-    private let synth = AVSpeechSynthesizer()
     private let engine: AVAudioEngine
     private let player: AVAudioPlayerNode
+    private let device = DeviceVoice()
     private var playerFormat: AVAudioFormat?
     private var queue: [Item] = []
     private var busy = false
     private var generation = 0
     private var pendingCues: [DispatchWorkItem] = []
+
+    private struct Item {
+        var sentence: SpokenSentence
+        var audio: Task<RenderedSpeech?, Never>
+    }
 
     /// Plays through the shared engine, so voice processing can cancel Pip's own voice.
     init(engine: AVAudioEngine, player: AVAudioPlayerNode) {
@@ -60,8 +54,25 @@ final class Speaker {
     var isSpeaking: Bool { busy || !queue.isEmpty }
 
     func enqueue(_ sentence: SpokenSentence) {
-        let text = sentence.text
-        let audio = Task { await self.render(text) }
+        // Settings are read here, on the main thread, not inside the background render.
+        let text = sentence.text, cloud = cloud, voice = voice, rate = rate, device = device
+        let log = onLog
+        let audio = Task { () -> RenderedSpeech? in
+            if let cloud {
+                do {
+                    let spoken = try await cloud.client.speak(text: text, voice: cloud.voiceId, language: cloud.language)
+                    if let buffer = Self.buffer(fromPCM16: spoken.pcm, rate: SpokenAudio.sampleRate) {
+                        return RenderedSpeech(buffers: [buffer], time: { spoken.startTime(atUTF16: $0, in: text) ?? 0 })
+                    }
+                } catch {
+                    // Stopped by barge-in: no fallback for speech nobody will hear.
+                    if Task.isCancelled { return nil }
+                    await MainActor.run { log?("voice fallback: \(error)") }
+                }
+            }
+            if Task.isCancelled { return nil }
+            return await device.render(text, voice: voice, rate: rate)
+        }
         queue.append(Item(sentence: sentence, audio: audio))
         pump()
     }
@@ -74,12 +85,18 @@ final class Speaker {
         pendingCues.forEach { $0.cancel() }
         pendingCues.removeAll()
         player.stop()
+        if busy { lastSpokeAt = Date() }
         busy = false
     }
 
     private func pump() {
         guard !busy else { return }
-        guard !queue.isEmpty else { onIdle?(); return }
+        guard !queue.isEmpty else {
+            // Every cue of the finished sentences has fired by now.
+            pendingCues.removeAll()
+            onIdle?()
+            return
+        }
         busy = true
         let item = queue.removeFirst()
         let gen = generation
@@ -95,62 +112,8 @@ final class Speaker {
         }
     }
 
-    // MARK: Rendering
-
-    private func render(_ text: String) async -> Rendered? {
-        if let cloud {
-            do {
-                let audio = try await cloud.client.speak(text: text, voice: cloud.voiceId, language: cloud.language)
-                if let buffer = Self.buffer(fromPCM16: audio.pcm, rate: SpokenAudio.sampleRate) {
-                    return Rendered(buffers: [buffer], time: { audio.startTime(atUTF16: $0, in: text) ?? 0 }, source: "elevenlabs")
-                }
-            } catch {
-                if !Task.isCancelled { await MainActor.run { self.onLog?("voice fallback: \(error)") } }
-            }
-        }
-        return await renderOnDevice(text)
-    }
-
-    private final class Collector: @unchecked Sendable {
-        let lock = NSLock()
-        var buffers: [AVAudioPCMBuffer] = []
-        var markers: [AVSpeechSynthesisMarker] = []
-        var done = false
-    }
-
-    private func renderOnDevice(_ text: String) async -> Rendered? {
-        let u = AVSpeechUtterance(string: text)
-        u.voice = voice
-        u.rate = rate
-        let c = Collector()
-        let (buffers, markers): ([AVAudioPCMBuffer], [AVSpeechSynthesisMarker]) = await withCheckedContinuation { cont in
-            synth.write(u, toBufferCallback: { buffer in
-                guard let pcm = buffer as? AVAudioPCMBuffer else { return }
-                c.lock.lock()
-                defer { c.lock.unlock() }
-                guard !c.done else { return }
-                if pcm.frameLength == 0 {
-                    c.done = true
-                    cont.resume(returning: (c.buffers, c.markers))
-                } else {
-                    c.buffers.append(pcm)
-                }
-            }, toMarkerCallback: { m in
-                c.lock.lock()
-                c.markers += m
-                c.lock.unlock()
-            })
-        }
-        guard let format = buffers.first?.format else { return nil }
-        let bytesPerFrame = Double(format.streamDescription.pointee.mBytesPerFrame)
-        let words = markers.filter { $0.mark == .word }.map { (location: $0.textRange.location, time: Double($0.byteSampleOffset) / bytesPerFrame / format.sampleRate) }
-        return Rendered(buffers: buffers, time: { anchor in
-            words.first(where: { $0.location >= anchor })?.time ?? words.last?.time ?? 0
-        }, source: "on-device")
-    }
-
     /// 16-bit PCM → a Float32 buffer the mixer accepts.
-    private static func buffer(fromPCM16 data: Data, rate: Double) -> AVAudioPCMBuffer? {
+    static func buffer(fromPCM16 data: Data, rate: Double) -> AVAudioPCMBuffer? {
         let frames = data.count / 2
         guard frames > 0, let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false),
               let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)), let out = buf.floatChannelData?[0] else { return nil }
@@ -164,8 +127,16 @@ final class Speaker {
 
     // MARK: Playback
 
-    private func play(_ sentence: SpokenSentence, _ rendered: Rendered, generation gen: Int) {
+    private func play(_ sentence: SpokenSentence, _ rendered: RenderedSpeech, generation gen: Int) {
         guard let format = rendered.buffers.first?.format else { return }
+        if !engine.isRunning { try? engine.start() }
+        guard engine.isRunning else {
+            // No audio right now (an interruption): skip the sentence rather than crash.
+            onLog?("audio engine not running; sentence skipped")
+            busy = false
+            pump()
+            return
+        }
         connect(format)
         for (i, b) in rendered.buffers.enumerated() {
             let last = i == rendered.buffers.count - 1
@@ -173,16 +144,17 @@ final class Speaker {
                 guard last else { return }
                 DispatchQueue.main.async {
                     guard let self, gen == self.generation else { return }
+                    self.lastSpokeAt = Date()
                     self.busy = false
                     self.pump()
                 }
             }
         }
-        if !engine.isRunning { try? engine.start() }
         player.play()
         let latency = AVAudioSession.sharedInstance().outputLatency
         recentText.append(sentence.text)
         if recentText.count > 6 { recentText.removeFirst() }
+        lastSpokeAt = Date()
         onSentenceStart?(sentence)
 
         for cue in sentence.cues {
@@ -217,5 +189,71 @@ final class Speaker {
             if let best = matching.max(by: { $0.quality.rawValue < $1.quality.rawValue }) { return best }
         }
         return AVSpeechSynthesisVoice(language: prefixes.first)
+    }
+}
+
+/// Audio for one sentence and the start time of the text at a UTF-16 offset.
+struct RenderedSpeech: @unchecked Sendable {
+    var buffers: [AVAudioPCMBuffer]
+    var time: (Int) -> Double
+}
+
+/// The iPhone's own voice. Renders one sentence at a time (one synthesiser), and gives up after
+/// a while if the synthesiser never signals the end, so the speech queue cannot stall.
+actor DeviceVoice {
+    private let synth = AVSpeechSynthesizer()
+    private var tail: Task<Void, Never>?
+
+    func render(_ text: String, voice: AVSpeechSynthesisVoice?, rate: Float) async -> RenderedSpeech? {
+        let previous = tail
+        let task = Task { () -> RenderedSpeech? in
+            await previous?.value
+            return await self.renderNow(text, voice: voice, rate: rate)
+        }
+        tail = Task { _ = await task.value }
+        return await task.value
+    }
+
+    private final class Collector: @unchecked Sendable {
+        let lock = NSLock()
+        var buffers: [AVAudioPCMBuffer] = []
+        var markers: [AVSpeechSynthesisMarker] = []
+        var continuation: CheckedContinuation<([AVAudioPCMBuffer], [AVSpeechSynthesisMarker])?, Never>?
+
+        func finish(_ ok: Bool) {
+            lock.lock()
+            let c = continuation
+            continuation = nil
+            let result = ok ? (buffers, markers) : nil
+            lock.unlock()
+            c?.resume(returning: result)
+        }
+    }
+
+    private func renderNow(_ text: String, voice: AVSpeechSynthesisVoice?, rate: Float) async -> RenderedSpeech? {
+        let u = AVSpeechUtterance(string: text)
+        u.voice = voice
+        u.rate = rate
+        let c = Collector()
+        let result: ([AVAudioPCMBuffer], [AVSpeechSynthesisMarker])? = await withCheckedContinuation { cont in
+            c.continuation = cont
+            DispatchQueue.global().asyncAfter(deadline: .now() + 10) { c.finish(false) }
+            synth.write(u, toBufferCallback: { buffer in
+                guard let pcm = buffer as? AVAudioPCMBuffer else { return }
+                if pcm.frameLength == 0 {
+                    c.finish(true)
+                } else {
+                    c.lock.lock(); c.buffers.append(pcm); c.lock.unlock()
+                }
+            }, toMarkerCallback: { m in
+                c.lock.lock(); c.markers += m; c.lock.unlock()
+            })
+        }
+        guard let (buffers, markers) = result, let format = buffers.first?.format else { return nil }
+        let bytesPerFrame = Double(format.streamDescription.pointee.mBytesPerFrame)
+        let words = markers.filter { $0.mark == .word }.map { (location: $0.textRange.location, time: Double($0.byteSampleOffset) / bytesPerFrame / format.sampleRate) }
+        return RenderedSpeech(buffers: buffers, time: { anchor in
+            words.first(where: { $0.location >= anchor })?.time ?? words.last?.time ?? 0
+        })
     }
 }

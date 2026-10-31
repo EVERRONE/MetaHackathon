@@ -50,6 +50,10 @@ final class GuideModel: ObservableObject {
     private var task: Task<Void, Never>?
     private var spokenThisTurn: [String] = []
     private var lookActive = false
+    /// Speech started while Pip was busy; Pip stops once it is clearly the user (see `handle`).
+    private var bargeInPending = false
+    private var reconnectDelay: TimeInterval = 0.5
+    private var warmTimer: Timer?
 
     init() {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -67,6 +71,9 @@ final class GuideModel: ObservableObject {
             guard let self, self.phase == .speaking, !self.lookActive else { return }
             self.phase = self.muted ? .muted : .listening
         }
+        audio.onRestartFailed = { [weak self] error in
+            Task { @MainActor in self?.phase = .failed("Audio unavailable: \(error)") }
+        }
     }
 
     func start() {
@@ -74,11 +81,14 @@ final class GuideModel: ObservableObject {
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try? session.setActive(true)
         ar.start()
+        // Accurate text recognition unloads after a pause and then takes ~25 s to load: keep it warm.
         Task.detached(priority: .utility) { await Grounder.warmUp() }
+        warmTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
+            Task.detached(priority: .background) { await Grounder.warmUp() }
+        }
         AVAudioApplication.requestRecordPermission { granted in
             Task { @MainActor in
                 guard granted else { self.phase = .failed("Microphone access is off"); return }
-                self.audio.onPCM = { [weak self] pcm in self?.transcriber?.send(pcm: pcm) }
                 do { try self.audio.start() } catch { self.phase = .failed("Audio unavailable: \(error)") }
                 self.restartListening()
             }
@@ -116,37 +126,50 @@ final class GuideModel: ObservableObject {
         let asr = RealtimeTranscriber(baseURL: client.baseURL, token: client.token,
                                       languages: language == "Dutch" ? ["Dutch", "English"] : ["English", "Dutch"])
         transcriber = asr
-        phase = .connecting
+        audio.sink = asr
+        if !lookActive && !speaker.isSpeaking { phase = .connecting }
         asr.connect()
         listenTask = Task { [weak self] in
             for await event in asr.events {
                 guard let self, !Task.isCancelled else { return }
+                // Events from a session that has since been replaced are ignored.
+                guard asr === self.transcriber else { return }
                 self.handle(event)
             }
         }
     }
 
+    private var busy: Bool { speaker.isSpeaking || lookActive }
+
     private func handle(_ event: RealtimeTranscriber.Event) {
         switch event {
         case .ready:
             log("listening")
+            reconnectDelay = 0.5
             if phase == .connecting { phase = muted ? .muted : .listening }
         case .speechStart:
             guard !muted else { return }
-            // Barge-in: the user talks over Pip.
-            if speaker.isSpeaking || lookActive {
-                log("barge-in")
-                interrupt()
+            // Pip stops only once this is clearly the user (a cough or Pip's own echo is not).
+            if busy {
+                bargeInPending = true
+            } else {
+                heard = ""
+                phase = .hearing
             }
-            heard = ""
-            phase = .hearing
         case .partial(let text):
             guard !muted, !isEcho(text) else { return }
-            heard = text
+            if bargeInPending, wordCount(text) >= 2 {
+                log("barge-in")
+                bargeInPending = false
+                interrupt()
+                phase = .hearing
+            }
+            if !busy { heard = text }
         case .speechEnd:
             break
         case .final(_, let text):
-            guard !muted, text.count >= 2, !isEcho(text) else {
+            bargeInPending = false
+            guard !muted, text.count >= 2, !isEcho(text), !busy else {
                 if phase == .hearing { phase = .listening }
                 return
             }
@@ -160,21 +183,32 @@ final class GuideModel: ObservableObject {
             log("asr error: \(message)")
         case .closed(let code, let reason):
             log("asr closed \(code) \(reason)")
-            // Sessions end after a while; reconnect quietly.
+            // Sessions end after a while: reconnect, waiting longer after each failure.
+            let delay = reconnectDelay
+            reconnectDelay = min(reconnectDelay * 2, 30)
+            let closed = transcriber
             Task {
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard closed === self.transcriber else { return }
                 self.restartListening()
             }
         }
     }
 
-    /// Pip's own voice picked up despite echo cancellation: the words are mostly what Pip just said.
+    private func words(_ text: String) -> [String] {
+        text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+    }
+
+    private func wordCount(_ text: String) -> Int { words(text).count }
+
+    /// Pip's own voice picked up despite echo cancellation: while Pip speaks (or just after), the
+    /// words are mostly what it is saying. Outside that window the user may repeat Pip's words.
     private func isEcho(_ text: String) -> Bool {
-        let words = Set(text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
-        guard words.count >= 2 else { return false }
-        let spoken = Set(speaker.recentText.joined(separator: " ").lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
-        let overlap = Double(words.intersection(spoken).count) / Double(words.count)
-        return overlap > 0.8
+        guard speaker.isSpeaking || Date().timeIntervalSince(speaker.lastSpokeAt) < 2 else { return false }
+        let heardWords = Set(words(text))
+        guard heardWords.count >= 3 else { return false }
+        let spoken = Set(words(speaker.recentText.joined(separator: " ")))
+        return Double(heardWords.intersection(spoken).count) / Double(heardWords.count) > 0.8
     }
 
     private func look(_ utterance: String, snapshot: FrameSnapshot, started: Date) async {
@@ -226,7 +260,7 @@ final class GuideModel: ObservableObject {
                 }
             }
             remember(utterance)
-            if !speaker.isSpeaking, phase == .looking { phase = muted ? .muted : .listening }
+            if !speaker.isSpeaking, phase == .looking || phase == .speaking { phase = muted ? .muted : .listening }
         } catch {
             note("error: \(error)")
             if !Task.isCancelled { phase = .failed("Look failed: \(error)") }
@@ -236,8 +270,11 @@ final class GuideModel: ObservableObject {
 
     /// Keeps the last few turns as they were heard, for follow-up questions.
     private func remember(_ utterance: String) {
+        let said = spokenThisTurn.joined(separator: " ")
+        // A turn interrupted before Pip said anything leaves no trace.
+        guard !said.isEmpty else { return }
         history.append(.user(utterance))
-        history.append(.assistant(spokenThisTurn.joined(separator: " ")))
+        history.append(.assistant(said))
         if history.count > 8 { history.removeFirst(history.count - 8) }
     }
 
