@@ -1,5 +1,6 @@
 import Foundation
 import PipCore
+import simd
 
 /// Pip notices on its own when a step is done, follows objects that move, snaps outlines back
 /// when the user returns, and keeps to the person it is talking with.
@@ -10,8 +11,6 @@ extension GuideModel {
     static let watchHitsNeeded = 2
     /// At most this many checks per step (about three minutes), to bound cost.
     static let watchChecksPerStep = 60
-    /// Outlines are re-measured for this long after a look, outside a task.
-    static let refreshAfterLook: TimeInterval = 90
 
     func startWatching() {
         watchTimer = Timer.scheduledTimer(withTimeInterval: Self.watchInterval, repeats: true) { [weak self] _ in
@@ -135,36 +134,54 @@ extension GuideModel {
 
     // MARK: Following objects
 
-    /// Re-measures the objects Pip is pointing at, so outlines follow objects that moved and snap
-    /// back onto them when the user returns to the room.
+    /// Measures pointed-at objects again at the moments that matter (see `ObjectTrack`): when one
+    /// comes back into view it is found again from scratch (the full grounding, with its printed
+    /// text), and the drift that shows is applied to the other objects in the room; from a new
+    /// viewpoint it is re-measured and fused, so its position gets firmer with every view.
     private func refreshTick() async {
-        // Only while something is pointed at, and during a task or shortly after a look: an
-        // outline left on screen does not cost SAM calls forever.
-        let recent = Date().timeIntervalSince(lastLookAt) < Self.refreshAfterLook || runtime?.isActive == true
-        guard !refreshing, !lookActive, recent, ar.trackingNormal, ar.hasPointedMarks, let snapshot = ar.snapshot() else { return }
-        // Remembered places stay on their saved anchors; only this look's marks are re-measured.
-        let targets = ar.visibleMarkBoxes(in: snapshot).filter { $0.id < ARController.placeMarkBase }.prefix(3)
-        guard !targets.isEmpty else { return }
+        guard !refreshing, !lookActive, ar.trackingNormal, ar.hasPointedMarks, let snapshot = ar.snapshot() else { return }
+        let candidates = ar.remeasureCandidates(in: snapshot, taskActive: runtime?.isActive == true)
+        guard !candidates.isEmpty else { return }
         refreshing = true
         defer { refreshing = false }
-        let grounder = Grounder(client: client, frameJPEG: Data())
-        await withTaskGroup(of: (Int, CGRect, SegmentInstance?).self) { group in
-            for t in targets {
-                group.addTask { (t.id, t.box, await grounder.reground(box: t.box, id: t.id, frame: snapshot.image)) }
+        let refind = candidates.contains { $0.reason == .reentry }
+        let grounder = Grounder(client: client, frameJPEG: refind ? (SetOfMarks.jpeg(snapshot.image, quality: 0.8) ?? Data()) : Data())
+        let specs = Dictionary(uniqueKeysWithValues: candidates.compactMap { c in
+            c.reason == .reentry ? ar.spec(for: c.id, in: snapshot, box: c.box).map { (c.id, $0) } : nil
+        })
+        await withTaskGroup(of: (Int, CGRect, ObjectTrack.Reason, SegmentInstance?).self) { group in
+            for c in candidates {
+                let spec = specs[c.id]
+                group.addTask {
+                    if let spec { return (c.id, c.box, c.reason, await grounder.ground(spec, id: c.id, frame: snapshot.image).instance) }
+                    return (c.id, c.box, c.reason, await grounder.reground(box: c.box, id: c.id, frame: snapshot.image))
+                }
             }
-            for await (id, box, inst) in group {
-                guard let inst, !lookActive else { continue }
-                // Only the same object: it overlaps where the mark was and has a similar size.
-                let overlap = box.intersection(inst.boxRect)
-                let area = Double(box.width * box.height), newArea = Double(inst.boxRect.width * inst.boxRect.height)
-                guard !overlap.isNull, Double(overlap.width * overlap.height) > 0.25 * min(area, newArea),
-                      newArea > 0.4 * area, newArea < 2.5 * area else { continue }
-                let moved = hypot(inst.boxRect.midX - box.midX, inst.boxRect.midY - box.midY) > 0.08 * max(box.width, box.height)
-                let iou = Double(overlap.width * overlap.height) / (area + newArea - Double(overlap.width * overlap.height))
-                // Small differences are measurement noise: keep the outline still.
-                guard moved || iou < 0.85 else { continue }
-                if ar.updateMark(inst, snapshot: snapshot) { log("mark \(id % 1000) re-measured" + (moved ? ": the object moved" : "")) }
+            for await (id, box, reason, inst) in group {
+                guard !lookActive, !Task.isCancelled else { continue }
+                guard let inst, Self.sameObject(expected: box, found: inst.boxRect, reason: reason) else {
+                    ar.measureFailed(id)
+                    log("mark \(id % 1000) not found again (\(reason.rawValue))")
+                    continue
+                }
+                guard let update = ar.updateMark(inst, snapshot: snapshot, reason: reason) else { continue }
+                if let offset = update.offset { ar.shiftNeighbours(of: id, by: offset) }
+                trackingLog.record(id: id, reason: reason, update: update)
+                log(String(format: "mark %d %@: %.0f px off, %d view%@%@", id % 1000, reason.rawValue, update.pixelError ?? -1, update.views,
+                           update.views == 1 ? "" : "s", update.reset ? (update.offset != nil ? String(format: ", drift %.0f cm", simd_length(update.offset!) * 100) : ", moved") : ""))
             }
         }
+    }
+
+    /// Whether a fresh measurement is the same object: it overlaps where the outline was and has
+    /// a similar size. Coming back after drift, it may be further off, but not in size.
+    static func sameObject(expected box: CGRect, found: CGRect, reason: ObjectTrack.Reason) -> Bool {
+        let area = Double(box.width * box.height), newArea = Double(found.width * found.height)
+        guard area > 0, newArea > 0.4 * area, newArea < 2.5 * area else { return false }
+        if reason == .reentry {
+            return hypot(found.midX - box.midX, found.midY - box.midY) < 2.5 * max(box.width, box.height)
+        }
+        let overlap = box.intersection(found)
+        return !overlap.isNull && Double(overlap.width * overlap.height) > 0.25 * min(area, newArea)
     }
 }

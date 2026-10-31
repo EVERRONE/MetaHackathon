@@ -1,5 +1,6 @@
 import CoreGraphics
 import PipCore
+import QuartzCore
 import simd
 
 /// A SAM outline lifted onto the real surface in 3D, so it stays on the object while the phone moves.
@@ -15,8 +16,14 @@ struct AnchoredMark {
     /// ARKit's correction since the mark was placed: when it relocalises after the user comes
     /// back into the room, the mark's anchor moves and the outline moves with it.
     var correction = matrix_identity_float4x4
+    /// A short glide from where the outline was drawn before a re-measurement, decaying to zero,
+    /// so a correction moves the outline smoothly instead of making it jump.
+    var glide = simd_float3.zero
     private let rawPolygons: [[simd_float3]]
     private let rawCentroid: simd_float3
+    /// This measurement as a ray from the camera, for fusing it with later looks (nil for a
+    /// remembered place rebuilt from storage).
+    let observation: RayFusion.Observation?
 
     var polygons: [[simd_float3]] { rawPolygons.map { $0.map(apply) } }
     var centroid: simd_float3 { apply(rawCentroid) }
@@ -25,7 +32,7 @@ struct AnchoredMark {
 
     private func apply(_ p: simd_float3) -> simd_float3 {
         let q = correction * simd_float4(p, 1)
-        return simd_float3(q.x, q.y, q.z)
+        return simd_float3(q.x, q.y, q.z) + glide
     }
     private let lift: (CGPoint) -> simd_float3
     private let imageCentre: CGPoint
@@ -69,11 +76,49 @@ struct AnchoredMark {
 
         id = instance.id
         rawPolygons = instance.outlinePoints.map { $0.map(lift) }
-        rawCentroid = lift(instance.centre)
+        let centroid = lift(instance.centre)
+        rawCentroid = centroid
         imageCentre = instance.centre
         imageExtent = max(box.width, box.height)
         self.lift = lift
         self.method = method
+
+        // How far this measurement can be trusted: LiDAR on the object itself is good to ~1.5 cm,
+        // the surroundings' depth less, an assumed depth not at all. Sideways, SAM's outline centre
+        // moves by a few pixels (more for big objects) between measurements.
+        let distance = simd_distance(centroid, origin)
+        let sigma: Float? = confident.count >= 4 ? 0.015 : (inside.count >= 3 ? 0.03 : (around.count >= 3 ? 0.06 : nil))
+        let focal = snapshot.intrinsics[0][0] * Float(CGFloat(snapshot.image.height) / snapshot.sensorSize.width)
+        let lateral = distance * Float(max(3, 0.04 * imageExtent)) / max(focal, 100)
+        observation = RayFusion.Observation(origin: origin, direction: centroid - origin, distance: sigma == nil ? nil : distance,
+                                            distanceSigma: sigma ?? 1, lateralSigma: lateral, time: CACurrentMediaTime())
+    }
+
+    private init(id: Int, method: String, rawPolygons: [[simd_float3]], rawCentroid: simd_float3, observation: RayFusion.Observation?,
+                 lift: @escaping (CGPoint) -> simd_float3, imageCentre: CGPoint, imageExtent: CGFloat) {
+        self.id = id
+        self.method = method
+        self.rawPolygons = rawPolygons
+        self.rawCentroid = rawCentroid
+        self.observation = observation
+        self.lift = lift
+        self.imageCentre = imageCentre
+        self.imageExtent = imageExtent
+    }
+
+    /// The same outline moved so its centre is at `target` (a fused position): scaled about the
+    /// camera it was measured from, so it still looks the same from there, then shifted sideways.
+    /// A depth error is corrected without changing how the outline fits from that view.
+    func relocated(to target: simd_float3) -> AnchoredMark {
+        guard let o = observation?.origin else { return self }
+        let before = simd_distance(rawCentroid, o)
+        guard before > 0.01 else { return self }
+        let s = simd_distance(target, o) / before
+        let shift = target - (o + (rawCentroid - o) * s)
+        let move = { (p: simd_float3) in o + (p - o) * s + shift }
+        let oldLift = lift
+        return AnchoredMark(id: id, method: method + " + fused", rawPolygons: rawPolygons.map { $0.map(move) }, rawCentroid: move(rawCentroid),
+                            observation: observation, lift: { move(oldLift($0)) }, imageCentre: imageCentre, imageExtent: imageExtent)
     }
 
     /// A remembered place, rebuilt from its saved outline in world space.
@@ -87,6 +132,7 @@ struct AnchoredMark {
         imageCentre = .zero
         imageExtent = 0
         lift = { _ in centre }
+        observation = nil
     }
 
     /// Start and end of a straight arrow for `move`, in world space.

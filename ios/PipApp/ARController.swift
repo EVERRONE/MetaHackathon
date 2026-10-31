@@ -1,4 +1,5 @@
 import ARKit
+import Combine
 import PipCore
 import QuartzCore
 import RealityKit
@@ -12,6 +13,13 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     private var marks: [Int: AnchoredMark] = [:]
     /// Each mark's ARKit anchor and where it was when the mark was placed.
     private var anchors: [Int: (anchor: ARAnchor, origin: simd_float4x4)] = [:]
+    /// Where ARKit says each anchor is now; the drawn outline eases towards it.
+    private var targetCorrections: [Int: simd_float4x4] = [:]
+    /// What Pip knows about each pointed-at object over time (see `ObjectTrack`).
+    private(set) var tracks: [Int: ObjectTrack] = [:]
+    /// Set when tracking comes back after being lost: every object is checked again.
+    private var trackingRecovered = false
+    private var renderSubscription: Cancellable?
     /// False while ARKit has lost the room (after leaving it): cues are hidden, not drawn wrong.
     private(set) var trackingNormal = true
     private var currentOffset = 0
@@ -47,6 +55,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         arView.renderOptions.insert(.disableMotionBlur)
         arView.session.delegate = self
         arView.session.run(config)
+        // Outlines are drawn in the same step as the camera image, so they do not lag or swim.
+        renderSubscription = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in self?.renderNow() }
     }
 
     func snapshot() -> FrameSnapshot? {
@@ -60,30 +70,52 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         replacePending = true
     }
 
-    /// Lifts one grounded instance into 3D. Returns how it was anchored, for the trace.
+    /// Lifts one grounded instance into 3D. Returns how it was anchored, for the trace. `spec`
+    /// (what the model asked to point at) lets Pip find the object again after drift.
     @discardableResult
-    func addMark(_ inst: SegmentInstance, snapshot: FrameSnapshot) -> String {
+    func addMark(_ inst: SegmentInstance, snapshot: FrameSnapshot, spec: TargetSpec? = nil) -> String {
         // Clean, regular shapes: a raw mask outline looks hand-drawn once stroked on screen.
         guard let m = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return "no outline" }
         place(m)
+        if let obs = m.observation {
+            tracks[m.id] = ObjectTrack(observation: obs, spec: spec, box: inst.boxRect, imageSize: CGSize(width: snapshot.image.width, height: snapshot.image.height))
+        }
         return m.method
     }
 
-    /// Replaces a mark with a fresh measurement of the same object (it moved, or the user came back).
+    /// A fresh measurement of an object Pip is pointing at. It is fused with the earlier ones
+    /// (every view makes the position firmer), unless it shows the object has moved or Pip lost
+    /// its place (after coming back): then it starts afresh from this view. The outline glides to
+    /// its new place.
     @discardableResult
-    func updateMark(_ inst: SegmentInstance, snapshot: FrameSnapshot) -> Bool {
-        guard marks[inst.id] != nil, let m = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return false }
-        place(m)
-        return true
+    func updateMark(_ inst: SegmentInstance, snapshot: FrameSnapshot, reason: ObjectTrack.Reason) -> ObjectTrack.Update? {
+        guard let old = marks[inst.id], let fresh = AnchoredMark(inst.regularized(), snapshot: snapshot), let obs = fresh.observation else { return nil }
+        var track = tracks[inst.id] ?? ObjectTrack(observation: obs, spec: nil, box: inst.boxRect, imageSize: .zero)
+        // Earlier views were taken before ARKit's latest correction of this anchor: bring them along.
+        let correction = targetCorrections[inst.id] ?? matrix_identity_float4x4
+        let predicted = old.centroid
+        let pixelError = snapshot.project(predicted).map { hypot($0.x - inst.centre.x, $0.y - inst.centre.y) }
+        let update = track.add(obs, correction: correction, reason: reason, predicted: predicted)
+        track.box = inst.boxRect
+        tracks[inst.id] = track
+        let placed = update.position.map { fresh.relocated(to: $0) } ?? fresh
+        place(placed, glideFrom: predicted)
+        var result = update
+        result.pixelError = pixelError.map(Double.init)
+        result.method = placed.method
+        return result
     }
 
-    private func place(_ m: AnchoredMark) {
+    private func place(_ m: AnchoredMark, glideFrom previous: simd_float3? = nil) {
         if let old = anchors[m.id] { arView.session.remove(anchor: old.anchor) }
         var t = matrix_identity_float4x4
         t.columns.3 = simd_float4(m.placement, 1)
         let anchor = ARAnchor(name: "pip-mark", transform: t)
         arView.session.add(anchor: anchor)
         anchors[m.id] = (anchor, t)
+        targetCorrections[m.id] = nil
+        var m = m
+        if let previous { m.glide = previous - m.centroid }
         marks[m.id] = m
     }
 
@@ -92,7 +124,56 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             if let a = anchors[id] { arView.session.remove(anchor: a.anchor) }
             anchors[id] = nil
             marks[id] = nil
+            tracks[id] = nil
+            targetCorrections[id] = nil
         }
+    }
+
+    /// After Pip found one object again and saw it had drifted, the other objects pointed at in
+    /// the same room have drifted the same way: they move by the same offset until they are
+    /// measured themselves.
+    func shiftNeighbours(of id: Int, by offset: simd_float3) {
+        guard let centre = marks[id]?.centroid, simd_length(offset) > 0.01, simd_length(offset) < 1 else { return }
+        for (other, m) in marks where other != id && other < Self.placeMarkBase && simd_distance(m.centroid, centre) < 4 {
+            // Only objects not measured since the drift showed up.
+            guard var track = tracks[other], track.needsCheck || track.isAway else { continue }
+            let before = m.centroid
+            track.align(targetCorrections[other] ?? matrix_identity_float4x4)
+            place(m.relocated(to: m.centroid + offset), glideFrom: before)
+            track.shifted(by: offset)
+            tracks[other] = track
+        }
+    }
+
+    /// Which objects to measure again now, most urgent first: one that came back into view
+    /// (Pip may have drifted while it was away), one seen from a new enough place to triangulate,
+    /// and during a task a regular check whether it moved.
+    func remeasureCandidates(in snapshot: FrameSnapshot, taskActive: Bool) -> [(id: Int, box: CGRect, reason: ObjectTrack.Reason)] {
+        let now = CACurrentMediaTime()
+        let camera = simd_make_float3(snapshot.cameraTransform.columns.3)
+        let recovered = trackingRecovered
+        trackingRecovered = false
+        var out: [(Int, CGRect, ObjectTrack.Reason, Int)] = []
+        for (id, box) in visibleMarkBoxes(in: snapshot) where id < Self.placeMarkBase {
+            guard var track = tracks[id], let m = marks[id] else { continue }
+            if recovered { track.needsCheck = true; tracks[id] = track }
+            guard let reason = track.reason(now: now, camera: camera, centre: m.centroid, taskActive: taskActive) else { continue }
+            out.append((id, box, reason, reason.priority))
+        }
+        return out.sorted { $0.3 > $1.3 }.prefix(3).map { ($0.0, $0.1, $0.2) }
+    }
+
+    /// What the model asked to point at for a mark, placed where the mark is in this snapshot.
+    func spec(for id: Int, in snapshot: FrameSnapshot, box: CGRect) -> TargetSpec? {
+        guard var spec = tracks[id]?.spec else { return nil }
+        spec.x = Double(box.midX / CGFloat(snapshot.image.width) * 1000)
+        spec.y = Double(box.midY / CGFloat(snapshot.image.height) * 1000)
+        return spec
+    }
+
+    /// A measurement was tried but the object was not found where expected.
+    func measureFailed(_ id: Int) {
+        tracks[id]?.failed(now: CACurrentMediaTime())
     }
 
     /// Marks with a cue on screen, and their outline's box in the snapshot's pixels.
@@ -150,15 +231,15 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         onFrame?(frame)
-        // ARKit moves anchors when it corrects its map (loop closure, relocalisation).
+        // ARKit moves anchors when it corrects its map (loop closure, relocalisation); the drawn
+        // outline eases towards the new place in `renderNow`.
         if !anchors.isEmpty {
             let current = Dictionary(frame.anchors.map { ($0.identifier, $0.transform) }, uniquingKeysWith: { a, _ in a })
             for (id, entry) in anchors {
                 guard let now = current[entry.anchor.identifier] else { continue }
-                marks[id]?.correction = now * simd_inverse(entry.origin)
+                targetCorrections[id] = now * simd_inverse(entry.origin)
             }
         }
-        renderNow()
     }
 
     func session(_ session: ARSession, didAdd added: [ARAnchor]) {
@@ -169,6 +250,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         switch camera.trackingState {
         case .normal:
             relocalisingSince = nil
+            // Back after being lost (not the first start): every object is checked again.
+            if !trackingNormal, !tracks.isEmpty { trackingRecovered = true }
             trackingNormal = true
         case .limited(.relocalizing):
             // Wait a while for ARKit to recognise the room; in another room it never will.
@@ -195,8 +278,45 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func renderNow() {
         let now = CACurrentMediaTime()
+        // Corrections and re-measurements ease in over about a fifth of a second.
+        for (id, var m) in marks {
+            var changed = false
+            if let target = targetCorrections[id] {
+                m.correction = Self.ease(m.correction, towards: target, by: 0.25)
+                changed = true
+            }
+            if simd_length(m.glide) > 0.0005 {
+                m.glide *= 0.8
+                changed = true
+            } else if m.glide != .zero {
+                m.glide = .zero
+                changed = true
+            }
+            if changed { marks[id] = m }
+        }
+        trackVisibility(now: now)
         board.tick(now)
         overlay.render(board.annotations, now: now, marks: marks) { [arView] p in arView.project(p) }
+    }
+
+    /// Notes when each object leaves and re-enters the view, so it is checked when it comes back.
+    private func trackVisibility(now: TimeInterval) {
+        guard !tracks.isEmpty else { return }
+        let bounds = arView.bounds
+        for (id, var track) in tracks {
+            guard let m = marks[id] else { continue }
+            let inView = arView.project(m.centroid).map { bounds.contains($0) } ?? false
+            if track.noteVisible(inView, now: now) { tracks[id] = track }
+        }
+    }
+
+    /// A rigid transform part of the way towards another: position eased linearly, rotation along the arc.
+    static func ease(_ a: simd_float4x4, towards b: simd_float4x4, by t: Float) -> simd_float4x4 {
+        let qa = simd_quatf(a), qb = simd_quatf(b)
+        var m = simd_float4x4(simd_slerp(qa, qb, t))
+        m.columns.3 = simd_mix(a.columns.3, b.columns.3, simd_float4(repeating: t))
+        m.columns.3.w = 1
+        return m
     }
 
     // MARK: Remembered places

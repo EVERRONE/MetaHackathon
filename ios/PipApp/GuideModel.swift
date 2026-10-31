@@ -59,6 +59,8 @@ final class GuideModel: ObservableObject {
     // MARK: Visual memory and shopping list (see GuideModel+Find.swift)
 
     let keyframes = Keyframes()
+    /// How well outlines hold: every re-measurement, on this iPhone, to evaluate on the Mac.
+    let trackingLog = TrackingLog()
     var foundCount = 0
     /// When the shopping list last changed; basket checks stop after a long quiet spell.
     var listChangedAt = Date.distantPast
@@ -352,6 +354,8 @@ final class GuideModel: ObservableObject {
         if let directive { recorder?.log("directive: \(directive)") }
         var pendingFind: (what: String, phrase: String)?
         var pendingTask: (goal: String, product: String?)?
+        // What the model asked to point at, kept with each mark so Pip can find it again later.
+        var specs: [Int: TargetSpec] = [:]
         let pipeline = LookPipeline(client: client, language: language)
         var known = facts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.value) (\($0.value.source == "seen" ? "you saw it" : "the user said so"))" }
         let places = ar.placeDescriptions()
@@ -376,10 +380,11 @@ final class GuideModel: ObservableObject {
                 if Task.isCancelled { break }
                 switch event {
                 case .target(let id, let spec):
+                    specs[id] = spec
                     note("target \(id): \(spec.phrase) \(spec.text) @\(Int(spec.x)),\(Int(spec.y))")
                 case .grounded(let id, let inst, let method, let seconds):
                     if let inst {
-                        let anchoring = ar.addMark(inst.renumbered(id + offset), snapshot: snapshot)
+                        let anchoring = ar.addMark(inst.renumbered(id + offset), snapshot: snapshot, spec: specs[id])
                         recorder?.grounded(inst)
                         note(String(format: "grounded %d via %@ in %.1fs, anchored on %@", id, method, seconds, anchoring))
                     } else {
