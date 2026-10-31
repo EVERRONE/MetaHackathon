@@ -91,6 +91,8 @@ final class EdgeTAMSpike {
         totals = []
         doneTimes = []
         centres = []
+        lastDrawn = nil
+        checks = []
         Self.pruneRuns()
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let folder = Self.documents.appendingPathComponent("edgetam/\(stamp)")
@@ -190,6 +192,7 @@ final class EdgeTAMSpike {
     /// it was moving (then it is hidden until seen again).
     private func steer(_ id: Int, _ r: EdgeTAMWorker.Tracked, time: TimeInterval) {
         if r.frame.present, r.outline.count >= 3, let c = r.world {
+            check(id, r, now: c)
             centres.append((time, c))
             centres.removeAll { time - $0.t > 0.6 }
             onOutline?(id, [r.outline])
@@ -197,6 +200,41 @@ final class EdgeTAMSpike {
             let moving = centres.count >= 2 && simd_distance(centres.first!.p, centres.last!.p) > Self.movingDistance
             onLost?(id, moving)
         }
+    }
+
+    // MARK: How well the outline holds
+
+    /// The outline drawn since the last mask, against where this mask finds the object: the error
+    /// the user saw just before this update (the object's own motion since, plus the depth error
+    /// as far as the camera moved). In pixels of the camera image and in millimetres at the
+    /// object, like the image lock's check; a summary every three seconds.
+    private var lastDrawn: simd_float3?
+    private var checks: [(px: Double, mm: Double, moved: Double)] = []
+    private var lastCheckLog: TimeInterval = 0
+
+    private func check(_ id: Int, _ r: EdgeTAMWorker.Tracked, now c: simd_float3) {
+        defer { lastDrawn = c }
+        guard let drawn = lastDrawn, let d = r.depth, let centre = r.frame.centroid else { return }
+        let cam = r.camera
+        let inCamera = simd_inverse(cam.transform) * simd_float4(drawn, 1)
+        guard inCamera.z < -0.05 else { return }
+        let k = cam.intrinsics, size = cam.imageResolution
+        let z = -inCamera.z
+        let drawnPx = CGPoint(x: Double(k[2][0] + k[0][0] * inCamera.x / z), y: Double(k[2][1] - k[1][1] * inCamera.y / z))
+        // Upright (u, v) is sensor (v, 1 − u).
+        let seenPx = CGPoint(x: centre.y * size.width, y: (1 - centre.x) * size.height)
+        let px = hypot(drawnPx.x - seenPx.x, drawnPx.y - seenPx.y)
+        let mm = px / Double(k[0][0]) * Double(d) * 1000
+        let moved = Double(simd_distance(drawn, c)) * 1000
+        checks.append((px, mm, moved))
+        Self.append(String(format: "%@\tcheck\t%d\t%.1f\t%.1f\t%.1f\t%.2f\n", Self.now(), id % 1000, px, mm, moved, d))
+        let t = CACurrentMediaTime()
+        guard t - lastCheckLog >= 3, !checks.isEmpty else { return }
+        lastCheckLog = t
+        let mms = checks.map(\.mm).sorted(), moves = checks.map(\.moved).sorted()
+        log(String(format: "edgetam check mark %d: outline %.1f mm off (median of %d, max %.1f mm) at %.2f m; object moved %.0f mm per update (max %.0f)",
+                   id % 1000, mms[mms.count / 2], mms.count, mms.last!, d, moves[moves.count / 2], moves.last!))
+        checks = []
     }
 
     /// Keeps the kept frames of the last few runs only.
@@ -315,6 +353,9 @@ private final class EdgeTAMWorker: @unchecked Sendable {
         let outline: [simd_float3]
         let depthSamples: Int
         let time: TimeInterval
+        /// The camera of this frame, to measure how far the outline drawn before was off.
+        let camera: ARCamera
+        let depth: Float?
     }
 
     enum Failure: Error, CustomStringConvertible {
@@ -369,7 +410,8 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                 let outline = depth.map { Self.lift(f.outline, depth: $0, camera: r.camera) } ?? []
                 let ms = (CACurrentMediaTime() - t0) * 1000
                 if let keep = r.keep { self.keep(r.buffer, f, world: world, at: keep) }
-                return Tracked(frame: f, prepMs: prep, ms: ms, world: world, outline: outline, depthSamples: samples, time: r.time)
+                return Tracked(frame: f, prepMs: prep, ms: ms, world: world, outline: outline, depthSamples: samples, time: r.time,
+                               camera: r.camera, depth: depth)
             }
             DispatchQueue.main.async { done(result) }
         }
