@@ -22,6 +22,10 @@ extension GuideModel {
         mapKeeper.onLog = { [weak self] line in self?.log(line) }
         mapKeeper.onLink = { [weak self] piece, refined, transform in self?.linked(piece, refined: refined, transform: transform) }
         ar.onRelocaliseGaveUp = { [weak self] in self?.relocalisationGaveUp() }
+        ar.onMovedObjectSettled = { [weak self] id, box in
+            Task { @MainActor in await self?.remeasureMoved(id, screenBox: box) }
+        }
+        ar.follower.onLog = { [weak self] line in self?.log(line) }
         ar.onPlaceMoved = { [weak self] place in
             guard let self else { return }
             var p = place

@@ -145,7 +145,22 @@ struct ContentView: View {
         .accessibilityLabel("Steps")
     }
 
+    /// When this build was made (the app binary's date), to check that an update arrived.
+    static let buildStamp: String = {
+        let date = Bundle.main.executableURL.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.modificationDate] as? Date } ?? Date()
+        let f = DateFormatter()
+        f.dateFormat = "d MMM HH:mm"
+        return "Build " + f.string(from: date)
+    }()
+
     private var debugPanel: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(Self.buildStamp).font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(.white.opacity(0.85))
+            debugTrace
+        }
+    }
+
+    private var debugTrace: some View {
         HStack(alignment: .top, spacing: 8) {
             if let img = model.markedImage {
                 Image(uiImage: img).resizable().scaledToFit().frame(width: 130)

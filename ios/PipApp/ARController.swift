@@ -19,6 +19,10 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     private(set) var tracks: [Int: ObjectTrack] = [:]
     /// Set when tracking comes back after being lost: every object is checked again.
     private var trackingRecovered = false
+    /// Follows pointed-at objects in the image, so outlines stay on things that move (a remote in the hand).
+    let follower = ImageFollower()
+    /// A moved object lies still again: measure it anew (its box in screen points).
+    var onMovedObjectSettled: ((Int, CGRect) -> Void)?
     private var renderSubscription: Cancellable?
     /// False while ARKit has lost the room (after leaving it): cues are hidden, not drawn wrong.
     private(set) var trackingNormal = true
@@ -49,6 +53,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         arView.session.run(Self.configuration(initialMap: initialMap))
         // Outlines are drawn in the same step as the camera image, so they do not lag or swim.
         renderSubscription = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in self?.renderNow() }
+        follower.onSettled = { [weak self] id, box in self?.onMovedObjectSettled?(id, box) }
     }
 
     static func configuration(initialMap: ARWorldMap?) -> ARWorldTrackingConfiguration {
@@ -152,6 +157,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         place(m)
         if let obs = m.observation {
             tracks[m.id] = ObjectTrack(observation: obs, spec: spec, box: inst.boxRect, imageSize: CGSize(width: snapshot.image.width, height: snapshot.image.height))
+            // Found again in the live image when its cue shows, then followed there.
+            follower.start(m.id, image: snapshot.image, box: inst.boxRect)
         }
         return m.method
     }
@@ -173,6 +180,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         tracks[inst.id] = track
         let placed = update.position.map { fresh.relocated(to: $0) } ?? fresh
         place(placed, glideFrom: predicted)
+        follower.reanchored(inst.id)
         var result = update
         result.pixelError = pixelError.map(Double.init)
         result.correction = simd_distance(predicted, placed.centroid)
@@ -210,6 +218,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             marks[id] = nil
             tracks[id] = nil
             targetCorrections[id] = nil
+            follower.stop(id)
         }
     }
 
@@ -316,6 +325,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         onFrame?(frame)
+        followObjects(frame)
         // ARKit moves anchors when it corrects its map (loop closure, relocalisation); the drawn
         // outline eases towards the new place in `renderNow`.
         if !anchors.isEmpty {
@@ -393,7 +403,37 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         }
         trackVisibility(now: now)
         board.tick(now)
+        overlay.adjust = follower.adjust
         overlay.render(board.annotations, now: now, marks: marks) { [arView] p in arView.project(p) }
+    }
+
+    /// Pointed-at objects with a cue on screen, followed in the image (see ImageFollower).
+    private func followObjects(_ frame: ARFrame) {
+        let shownIDs = Set(board.annotations.flatMap { $0.cue.marks }).filter { $0 < Self.placeMarkBase && tracks[$0] != nil }
+        guard !shownIDs.isEmpty else { return }
+        var shown: [(id: Int, box: CGRect)] = []
+        for id in shownIDs.sorted() {
+            guard let m = marks[id] else { continue }
+            let pts = m.polygons.flatMap { $0 }.compactMap { arView.project($0 - m.glide) }
+            guard pts.count >= 3 else { continue }
+            let xs = pts.map(\.x), ys = pts.map(\.y)
+            let box = CGRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!)
+            guard box.intersects(arView.bounds) else { continue }
+            shown.append((id, box))
+        }
+        follower.update(frame: frame, shown: shown, viewSize: arView.bounds.size)
+    }
+
+    /// A box in screen points as pixels of `snapshot` (taken from the current frame).
+    func snapshotBox(screen r: CGRect, snapshot: FrameSnapshot) -> CGRect? {
+        guard let frame = arView.session.currentFrame, arView.bounds.width > 0 else { return nil }
+        let size = arView.bounds.size
+        let toImage = frame.displayTransform(for: .portrait, viewportSize: size).inverted()
+        let n = CGRect(x: r.minX / size.width, y: r.minY / size.height, width: r.width / size.width, height: r.height / size.height)
+        let img = n.applying(toImage).standardized
+        // Sensor (landscape) normalised → upright pixels: upright x = (1 − y) · width, upright y = x · height.
+        let w = CGFloat(snapshot.image.width), h = CGFloat(snapshot.image.height)
+        return CGRect(x: (1 - img.maxY) * w, y: img.minX * h, width: img.height * w, height: img.width * h)
     }
 
     /// Notes when each object leaves and re-enters the view, so it is checked when it comes back.

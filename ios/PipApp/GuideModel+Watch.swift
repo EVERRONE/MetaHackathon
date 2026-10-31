@@ -174,6 +174,24 @@ extension GuideModel {
         }
     }
 
+    /// An object Pip pointed at was moved (followed in the image) and lies still again: measure it
+    /// at its new place and anchor it there.
+    func remeasureMoved(_ id: Int, screenBox: CGRect) async {
+        guard !refreshing, !lookActive, let snapshot = ar.snapshot(), let box = ar.snapshotBox(screen: screenBox, snapshot: snapshot),
+              box.width > 4, box.height > 4 else { return }
+        refreshing = true
+        defer { refreshing = false }
+        let grounder = Grounder(client: client, frameJPEG: Data())
+        guard let inst = await grounder.reground(box: box, id: id, frame: snapshot.image),
+              Self.sameObject(expected: box, found: inst.boxRect, reason: .check),
+              let update = ar.updateMark(inst, snapshot: snapshot, reason: .check) else {
+            log("mark \(id % 1000) moved, not measured again")
+            return
+        }
+        trackingLog.record(id: id, reason: .check, update: update)
+        log(String(format: "mark %d moved and settled: anchored again (%.0f cm away)", id % 1000, update.correction * 100))
+    }
+
     /// Whether a fresh measurement is the same object: it overlaps where the outline was and has
     /// a similar size. Coming back after drift, it may be further off, but not in size.
     static func sameObject(expected box: CGRect, found: CGRect, reason: ObjectTrack.Reason) -> Bool {

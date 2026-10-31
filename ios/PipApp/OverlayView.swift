@@ -28,7 +28,17 @@ final class OverlayView: UIView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    func render(_ annotations: [AnnotationBoard.Annotation], now: TimeInterval, marks: [Int: AnchoredMark], project: (simd_float3) -> CGPoint?) {
+    /// Marks whose object moved in the image: drawn where the object is now (see ImageFollower).
+    var adjust: [Int: ImageFollower.Adjust] = [:]
+
+    func render(_ annotations: [AnnotationBoard.Annotation], now: TimeInterval, marks: [Int: AnchoredMark], project base: @escaping (simd_float3) -> CGPoint?) {
+        // Each mark's projection: from its room anchor, moved on screen when its object moved.
+        let adjust = self.adjust
+        func proj(_ mark: AnchoredMark?) -> (simd_float3) -> CGPoint? {
+            guard let mark, let a = adjust[mark.id] else { return base }
+            if a.hidden { return { _ in nil } }
+            return { w in base(w).map { CGPoint(x: a.to.x + ($0.x - a.from.x) * a.scale, y: a.to.y + ($0.y - a.from.y) * a.scale) } }
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer.sublayers?.filter { $0 !== dangerBanner.layer }.forEach { $0.removeFromSuperlayer() }
@@ -39,26 +49,26 @@ final class OverlayView: UIView {
             let alpha = opacity(a, now: now)
             // Off screen: a wedge at the edge points the way back, for every kind of cue.
             if let first = a.cue.marks.first, let mark = marks[first],
-               !a.cue.marks.contains(where: { screenPolygons(marks[$0], project) != nil }) {
+               !a.cue.marks.contains(where: { screenPolygons(marks[$0], proj(marks[$0])) != nil }) {
                 if case .danger(_, let reason) = a.cue { generalDanger = reason }
                 if hinted.insert(first).inserted {
-                    edgeHint(mark, project, color: { if case .danger = a.cue { return Self.danger } else { return Self.action } }(), force: true)
+                    edgeHint(mark, proj(mark), color: { if case .danger = a.cue { return Self.danger } else { return Self.action } }(), force: true)
                 }
                 continue
             }
             switch a.cue {
             case .outline(let m):
-                if let p = screenPolygons(marks[m], project) { highlight(p, pop: pop(a, now), alpha: alpha, fill: 0.10) }
-                else { edgeHint(marks[m], project, color: Self.action) }
+                if let p = screenPolygons(marks[m], proj(marks[m])) { highlight(p, pop: pop(a, now), alpha: alpha, fill: 0.10) }
+                else { edgeHint(marks[m], proj(marks[m]), color: Self.action) }
             case .candidates(let ms):
                 for (i, m) in ms.enumerated() {
-                    guard let p = screenPolygons(marks[m], project) else { continue }
+                    guard let p = screenPolygons(marks[m], proj(marks[m])) else { continue }
                     stroke(p, color: .white, width: 2.5, alpha: alpha, dash: [8, 6])
-                    if let c = marks[m].flatMap({ project($0.centroid) }) { badge("\(i + 1)", at: c, color: .white, alpha: alpha) }
+                    if let c = marks[m].flatMap({ proj($0)($0.centroid) }) { badge("\(i + 1)", at: c, color: .white, alpha: alpha) }
                 }
             case .ring(let m, let label):
                 guard let mark = marks[m] else { continue }
-                guard let p = screenPolygons(mark, project) else { edgeHint(mark, project, color: Self.action); continue }
+                guard let p = screenPolygons(mark, proj(mark)) else { edgeHint(mark, proj(mark), color: Self.action); continue }
                 // A small target: the contour itself, tinted, with its step number above it.
                 highlight(p, pop: pop(a, now), alpha: alpha, fill: 0.22)
                 if let label {
@@ -69,43 +79,43 @@ final class OverlayView: UIView {
                 }
             case .move(let m, let dir):
                 guard let mark = marks[m] else { continue }
-                if let p = screenPolygons(mark, project) { stroke(p, color: Self.action, width: 3, alpha: alpha * 0.8) }
+                if let p = screenPolygons(mark, proj(mark)) { stroke(p, color: Self.action, width: 3, alpha: alpha * 0.8) }
                 if dir == .in || dir == .out {
-                    if let c = project(mark.centroid) { ring(at: c, radius: 22, color: Self.action, alpha: alpha) }
+                    if let c = proj(mark)(mark.centroid) { ring(at: c, radius: 22, color: Self.action, alpha: alpha) }
                 } else {
                     let (s, e) = mark.arrow(dir)
-                    if let a0 = project(s), let a1 = project(e) { arrow(from: a0, to: a1, color: Self.action, alpha: alpha) }
+                    if let a0 = proj(mark)(s), let a1 = proj(mark)(e) { arrow(from: a0, to: a1, color: Self.action, alpha: alpha) }
                 }
             case .rotate(let m, let dir, _):
-                guard let mark = marks[m], let c = project(mark.centroid) else { continue }
-                let r = max(26, (screenPolygons(mark, project).map { bounds($0) }?.width ?? 40) * 0.55)
+                guard let mark = marks[m], let c = proj(mark)(mark.centroid) else { continue }
+                let r = max(26, (screenPolygons(mark, proj(mark)).map { bounds($0) }?.width ?? 40) * 0.55)
                 rotation(at: c, radius: r, clockwise: dir == .cw, color: Self.action, alpha: alpha)
             case .place(let m):
-                if let p = screenPolygons(marks[m], project) { stroke(p, color: Self.action, width: 3, alpha: alpha, dash: [12, 8]) }
+                if let p = screenPolygons(marks[m], proj(marks[m])) { stroke(p, color: Self.action, width: 3, alpha: alpha, dash: [12, 8]) }
             case .sequence(let ms):
                 for (i, m) in ms.enumerated() {
-                    guard let mark = marks[m], let c = project(mark.centroid) else { continue }
-                    if let p = screenPolygons(mark, project) { stroke(p, color: Self.action, width: i == 0 ? 3.5 : 2, alpha: alpha * (i == 0 ? 1 : 0.5)) }
+                    guard let mark = marks[m], let c = proj(mark)(mark.centroid) else { continue }
+                    if let p = screenPolygons(mark, proj(mark)) { stroke(p, color: Self.action, width: i == 0 ? 3.5 : 2, alpha: alpha * (i == 0 ? 1 : 0.5)) }
                     badge("\(i + 1)", at: c, color: Self.action, alpha: alpha * (i == 0 ? 1 : 0.6))
                 }
             case .danger(let m, let reason):
-                if let m, let p = screenPolygons(marks[m], project) {
+                if let m, let p = screenPolygons(marks[m], proj(marks[m])) {
                     fill(p, color: Self.danger, alpha: 0.28)
                     stroke(p, color: Self.danger, width: 4, alpha: 1)
-                    if let c = marks[m].flatMap({ project($0.centroid) }) { badge("!", at: c, color: Self.danger, alpha: 1) }
+                    if let c = marks[m].flatMap({ proj($0)($0.centroid) }) { badge("!", at: c, color: Self.danger, alpha: 1) }
                 }
                 generalDanger = reason
             case .landmark(let m, let name):
-                guard let mark = marks[m], let p = screenPolygons(mark, project) else { continue }
+                guard let mark = marks[m], let p = screenPolygons(mark, proj(mark)) else { continue }
                 highlight(p, pop: pop(a, now), alpha: alpha, fill: 0.15)
                 let b = bounds(p)
                 stepBadge(name, at: CGPoint(x: b.midX, y: b.minY - 22), alpha: alpha)
             case .offscreen(let m):
-                edgeHint(marks[m], project, color: Self.action, force: true)
+                edgeHint(marks[m], proj(marks[m]), color: Self.action, force: true)
             case .verified(let m):
                 guard let mark = marks[m] else { continue }
-                if let p = screenPolygons(mark, project) { stroke(p, color: Self.verified, width: 4, alpha: alpha) }
-                if let c = project(mark.centroid) { badge("✓", at: c, color: Self.verified, alpha: alpha) }
+                if let p = screenPolygons(mark, proj(mark)) { stroke(p, color: Self.verified, width: 4, alpha: alpha) }
+                if let c = proj(mark)(mark.centroid) { badge("✓", at: c, color: Self.verified, alpha: alpha) }
             case .clear, .state, .locate, .needView, .remember, .task, .readPages, .find, .list:
                 break
             }
