@@ -16,11 +16,18 @@ const WONDER_INPUT = 4.0 / 1e6;
 const WONDER_CACHED_INPUT = 0.2 / 1e6;
 const WONDER_OUTPUT = 20.0 / 1e6;
 
+const isWonder = (model: string) => model.startsWith("muse-wonder");
+
+/** USD per uncached input token. */
+export function inputRate(model: string): number {
+  return isWonder(model) ? WONDER_INPUT : SPARK_INPUT;
+}
+
 export function sparkCost(usage: ChatUsage, model = "muse-spark-1.3"): number {
   const prompt = usage.prompt_tokens ?? 0;
   const cached = Math.min(usage.prompt_tokens_details?.cached_tokens ?? 0, prompt);
   const output = usage.completion_tokens ?? 0;
-  if (model.startsWith("muse-wonder")) {
+  if (isWonder(model)) {
     return (prompt - cached) * WONDER_INPUT + cached * WONDER_CACHED_INPUT + output * WONDER_OUTPUT;
   }
   return (prompt - cached) * SPARK_INPUT + cached * SPARK_CACHED_INPUT + output * SPARK_OUTPUT;
@@ -44,8 +51,8 @@ const SSE_BYTES_PER_TOKEN = 150;
  * Estimate used when a response carries no usage (a stream cut short by barge-in).
  * `textBytes` excludes inline images, which are counted per image instead.
  */
-export function sparkFallbackCost(textBytes: number, responseBytes: number, images: number): number {
+export function sparkFallbackCost(textBytes: number, responseBytes: number, images: number, model = "muse-spark-1.3"): number {
   const input = textBytes / 4 + images * TOKENS_PER_IMAGE;
   const output = Math.min(responseBytes / SSE_BYTES_PER_TOKEN, 4_000);
-  return input * SPARK_INPUT + output * SPARK_OUTPUT;
+  return input * inputRate(model) + output * (isWonder(model) ? WONDER_OUTPUT : SPARK_OUTPUT);
 }

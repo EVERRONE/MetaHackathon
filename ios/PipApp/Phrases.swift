@@ -23,6 +23,11 @@ struct Phrases {
               : "The plan has \(steps) steps\(verified ? ", from the official manual" : ""). Shall we start?"
     }
     func mismatch(_ note: String) -> String { dutch ? "Let op: \(note)" : "Note: \(note)" }
+    var manualUnreadable: String {
+        dutch ? "De handleiding kan ik niet lezen. Ik maak een plan uit algemene kennis, niet uit een gecontroleerde bron."
+              : "I can't read the manual. I'll make a plan from general knowledge, not from a verified source."
+    }
+    var welcome: String { dutch ? "Graag gedaan." : "You're welcome." }
     var prepareFailed: String { dutch ? "Het stappenplan lukte niet. Probeer het nog eens." : "I couldn't make the plan. Please try again." }
     var cancelled: String { dutch ? "Oké, dan niet." : "Okay, we won't." }
     func gate(_ condition: String) -> String { dutch ? "Eerst dit: \(condition). Is dat zo?" : "First this: \(condition). Is that so?" }
@@ -48,9 +53,6 @@ struct Phrases {
     func gotItem(_ item: String) -> String { dutch ? "\(item), afgevinkt." : "\(item), got it." }
     func wrongItem(_ item: String, seen: String) -> String { dutch ? "Let op: ik zie \(seen). Op je lijst staat \(item)." : "Careful: I see \(seen). Your list says \(item)." }
     var listComplete: String { dutch ? "Alles van je lijst ligt in je mand." : "Everything on your list is in your basket." }
-    func listMissing(_ items: [String]) -> String {
-        dutch ? "Je hebt nog niet: \(items.joined(separator: ", "))." : "You still need: \(items.joined(separator: ", "))."
-    }
     var askMemory: String {
         dutch ? "Zal ik dit ook onthouden voor de volgende keer? Alleen op je iPhone." : "Shall I remember this for next time too? Only on your iPhone."
     }
@@ -67,7 +69,8 @@ struct Phrases {
         Give step \(step) of \(count) now: "\(s.instruction)".\(s.why.map { " Why: \($0)." } ?? "") \
         \(s.targets.isEmpty ? "" : "Point at \(s.targets) if you can see it.") \
         \(s.cautions.isEmpty ? "" : "Warn about: \(s.cautions).") \
-        Say it in your own words in at most three short sentences; mention the step number once at most.
+        Say it in your own words in at most three short sentences; mention the step number once at most. \
+        If the result of this step is already clearly visible, say so in one short sentence instead and set step=done in the state tag.
         """
     }
 

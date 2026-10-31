@@ -30,10 +30,11 @@ final class PageReader {
         guard pages.count < Self.maxPages, t - lastCapture > 1.2, t - lastCheck > 0.3,
               let first = poses.first, t - first.time >= Self.steadyWindow, isSteady(from: first.transform, to: frame.camera.transform) else { return }
         lastCheck = t
-        guard let snapshot = FrameSnapshot(frame: frame) else { return }
-        let hash = Self.fingerprint(snapshot.image)
+        // A tiny image is enough to tell pages apart; the full one is made only for a new page.
+        guard let thumb = FrameSnapshot(frame: frame, maxSide: 64) else { return }
+        let hash = Self.fingerprint(thumb.image)
         if let last = hashes.last, (hash ^ last).nonzeroBitCount < Self.samePageBits { return }
-        guard let jpeg = SetOfMarks.jpeg(snapshot.image, quality: 0.85) else { return }
+        guard let snapshot = FrameSnapshot(frame: frame), let jpeg = SetOfMarks.jpeg(snapshot.image, quality: 0.85) else { return }
         pages.append(jpeg)
         hashes.append(hash)
         lastCapture = t

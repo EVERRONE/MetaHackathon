@@ -57,7 +57,9 @@ struct DepthCopy {
 }
 
 /// Everything needed to turn a pixel in the photo sent to the models back into a 3D point.
-struct FrameSnapshot {
+/// Immutable copies only (the image, the depth copy, the camera at capture time), so it can be
+/// read off the main thread.
+struct FrameSnapshot: @unchecked Sendable {
     /// Upright portrait image, long side ≤ 1280, as sent to SAM and Spark.
     let image: CGImage
     /// `camera.imageResolution`: the captured image in sensor (landscape) orientation.

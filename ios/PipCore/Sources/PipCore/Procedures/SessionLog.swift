@@ -22,7 +22,8 @@ public struct SessionLog: Codable, Sendable {
     }
 
     /// A plain-text report for a professional: what was done and how each step was checked.
-    public func report(for procedure: Procedure, runtime: ProcedureRuntime) -> String {
+    public func report(for runtime: ProcedureRuntime) -> String {
+        let procedure = runtime.procedure
         var lines = ["Task: \(procedure.title)", "Goal: \(procedure.goal)",
                      "Source: " + (procedure.source.verified ? (procedure.source.reference ?? procedure.source.kind.rawValue) : "none (drafted by Pip, not from a verified source)"), ""]
         for (i, step) in procedure.steps.enumerated() {
@@ -39,7 +40,7 @@ public struct SessionLog: Codable, Sendable {
         let hazards = entries.filter { $0.kind == .hazard || $0.kind == .stopped }
         if !hazards.isEmpty {
             lines.append("")
-            lines += hazards.map { "Stopped: \($0.text)" }
+            lines += hazards.map { ($0.kind == .hazard ? "Hazard: " : "Stopped: ") + $0.text }
         }
         return lines.joined(separator: "\n")
     }

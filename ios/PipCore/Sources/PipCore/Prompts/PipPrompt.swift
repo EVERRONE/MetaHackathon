@@ -2,7 +2,7 @@ import Foundation
 
 /// Spark prompts. The system prompt is a stable prefix, so it is served from the prompt cache.
 public enum PipPrompt {
-    public static let version = "look-v11"
+    public static let version = "look-v12"
 
     /// Live guidance: Spark points by position and printed text; the app finds the exact outline.
     public static func system(language: String) -> String {
@@ -72,7 +72,7 @@ public enum PipPrompt {
 
     EXAMPLE (the answer to that question)
     User: "A Mac."
-    Then the backslash is option, shift and the slash key together. Hold [[ring at=200,850 obj="key" text="opt|alt" label="1"]] the option key, and [[ring at=90,780 obj="key" text="shift" label="2"]] shift, then press [[ring at=640,780 obj="key" text="/|:" label="3"]] the slash key.
+    Then the backslash is option, shift and the slash key together. Hold [[ring at=200,850 obj="key" text="opt|alt" label="1"]] the option key. Add [[ring at=90,780 obj="key" text="shift" label="2"]] shift too. Then press [[ring at=640,780 obj="key" text="/|:" label="3"]] the slash key.
     [[state seen="Mac keyboard" conf=0.8 step=not_done]]
     [[remember key="computer" value="Mac" from=said]]
 
@@ -124,8 +124,9 @@ public enum PipPrompt {
         - Never use [[verified]]. The app decides that from its own checks.
 
         STATE FOR THE APP
-        End every reply with exactly one short tag, after your last sentence (keep seen under 12 words):
+        After your last sentence, add one state tag (keep seen under 12 words):
         [[state seen="what you observe about the main object" conf=0.0-1.0 step=done|not_done|unknown]]
+        Only the task, read_pages, find, list and remember tags described below may come after it.
         TASKS
         If the user wants to do a task of several steps (assemble, install, descale, reset, replace, set up) and no guided task is in progress, answer with one short sentence and add after the state tag:
         [[task goal="what the user wants to achieve" product="the exact brand and model if you can read or know them, else empty"]]
@@ -134,7 +135,7 @@ public enum PipPrompt {
         [[read_pages goal="what the instructions are for"]]
 
         REMEMBERED PLACES
-        When the user tells you what something is so it can be found later ("this is the water stopcock", "B6 is the garage", "the emergency stop is here"), point at it with [[landmark at=X,Y obj="valve" name="water stopcock"]] and confirm in one sentence that you will remember it.
+        When the user tells you what something is so it can be found later ("this is the water stopcock", "B6 is the garage", "the emergency stop is here"), first say in one sentence without a tag that you will remember it, then point at it in a second sentence with [[landmark at=X,Y obj="valve" name="water stopcock"]].
         Places you remember are listed under "Remembered places", each with a mark number, where it is from the user, and whether it is in view. To point at one, use its number: [[outline m=900001]]. If it is not in view, guide the user there in words first (turn left, behind you, under the sink, about two metres).
 
         FINDING THINGS

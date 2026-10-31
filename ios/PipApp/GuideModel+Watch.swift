@@ -10,6 +10,8 @@ extension GuideModel {
     static let watchHitsNeeded = 2
     /// At most this many checks per step (about three minutes), to bound cost.
     static let watchChecksPerStep = 60
+    /// Outlines are re-measured for this long after a look, outside a task.
+    static let refreshAfterLook: TimeInterval = 90
 
     func startWatching() {
         watchTimer = Timer.scheduledTimer(withTimeInterval: Self.watchInterval, repeats: true) { [weak self] _ in
@@ -31,7 +33,7 @@ extension GuideModel {
             return true
         }
         if speaker == primary { return true }
-        if text.lowercased().contains("pip") {
+        if Utterance.words(text).contains("pip") {
             log("speaker \(speaker) addressed Pip")
             return true
         }
@@ -70,14 +72,14 @@ extension GuideModel {
         let next = rt.procedure.steps.indices.contains(index + 1) ? rt.procedure.steps[index + 1].instruction : nil
         let context = StepChecker.StepContext(instruction: step.instruction, expected: step.check.expected,
                                               cautions: step.cautions + rt.procedure.cautions, nextInstruction: next)
-        guard let result = try? await StepChecker(client: client).check(snapshot.image, step: context, focus: focus) else { return }
+        guard let result = try? await StepChecker(client: client).check(snapshot.image, step: context, focus: focus), !Task.isCancelled else { return }
         log(String(format: "watch step %d: %@ %.2f %@ · problem %@ %.2f %@", index + 1, result.done ? "done" : "not yet", result.confidence, result.seen,
                    result.problem.rawValue, result.problemConfidence, result.problemText))
         guard let now = runtime, now.index == index, now.statuses[index] == .awaitingAction, !lookActive, !speaker.isSpeaking else { return }
 
         // A mistake seen twice in a row is checked by Wonder, which corrects the user and points at
         // the right object, or stays silent when it was a false alarm.
-        if result.problem != .none, result.problemConfidence >= 0.75, !result.done {
+        if result.problem != .none, result.problemConfidence >= 0.75, !result.done, Date() > problemQuietUntil {
             problemHits = result.problem == lastProblem ? problemHits + 1 : 1
             lastProblem = result.problem
         } else {
@@ -121,6 +123,9 @@ extension GuideModel {
         await look("(watching step \(index + 1))", snapshot: snapshot, started: Date(), directive: directive)
         let spoke = !spokenThisTurn.isEmpty
         log(spoke ? "corrected: \(problem.problemText)" : "false alarm: \(problem.problemText)")
+        // After a false alarm (or a correction) the quick checks stay quiet for a while, so one
+        // recurring misreading does not cost a Wonder look every few seconds.
+        problemQuietUntil = Date().addingTimeInterval(spoke ? 15 : 45)
         if spoke, problem.problem == .hazard, var rt = runtime, rt.isActive {
             let actions = rt.handle(.hazard(problem.problemText))
             runtime = rt
@@ -133,7 +138,10 @@ extension GuideModel {
     /// Re-measures the objects Pip is pointing at, so outlines follow objects that moved and snap
     /// back onto them when the user returns to the room.
     private func refreshTick() async {
-        guard !refreshing, !lookActive, ar.trackingNormal, let snapshot = ar.snapshot() else { return }
+        // Only while something is pointed at, and during a task or shortly after a look: an
+        // outline left on screen does not cost SAM calls forever.
+        let recent = Date().timeIntervalSince(lastLookAt) < Self.refreshAfterLook || runtime?.isActive == true
+        guard !refreshing, !lookActive, recent, ar.trackingNormal, ar.hasPointedMarks, let snapshot = ar.snapshot() else { return }
         // Remembered places stay on their saved anchors; only this look's marks are re-measured.
         let targets = ar.visibleMarkBoxes(in: snapshot).filter { $0.id < ARController.placeMarkBase }.prefix(3)
         guard !targets.isEmpty else { return }

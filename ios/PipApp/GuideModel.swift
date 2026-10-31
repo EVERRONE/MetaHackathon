@@ -33,8 +33,17 @@ final class GuideModel: ObservableObject {
     @Published var language = "English" {
         didSet {
             configureVoice()
-            restartListening()
+            // Speech recognition already hears both languages: it restarts only for the switch on screen.
+            if !languageFromSpeech { restartListening() }
         }
+    }
+    private var languageFromSpeech = false
+
+    /// Follows the language the user speaks, without reconnecting speech recognition.
+    func adoptLanguage(_ spoken: String) {
+        languageFromSpeech = true
+        language = spoken
+        languageFromSpeech = false
     }
 
     /// ElevenLabs voices: Sharon (Flemish, multilingual) and Alice (British English).
@@ -50,8 +59,9 @@ final class GuideModel: ObservableObject {
     // MARK: Visual memory and shopping list (see GuideModel+Find.swift)
 
     let keyframes = Keyframes()
-    var pendingFind: (what: String, phrase: String)?
     var foundCount = 0
+    /// When the shopping list last changed; basket checks stop after a long quiet spell.
+    var listChangedAt = Date.distantPast
     struct ShoppingItem: Identifiable, Equatable {
         var id: String { name }
         var name: String
@@ -69,8 +79,13 @@ final class GuideModel: ObservableObject {
     private var listenTask: Task<Void, Never>?
     var history: [ChatMessage] = []
     var task: Task<Void, Never>?
+    /// What Pip said in the current look, as the model gave it (playback may still be going).
     var spokenThisTurn: [String] = []
-    var lookActive = false
+    /// The look in progress, by number: an older look ending never clears a newer one's flag.
+    private var activeLook: Int?
+    var lookActive: Bool { activeLook != nil }
+    /// When the last look ended: re-measuring outlines stops a while after.
+    var lastLookAt = Date.distantPast
     /// Mark numbers restart in every look; an offset per look keeps earlier marks apart, so their
     /// cues can stay on screen.
     private var lookCount = 0
@@ -104,7 +119,11 @@ final class GuideModel: ObservableObject {
     var runtime: ProcedureRuntime?
     var sessionLog = SessionLog()
     var offering = false
-    var pendingTask: (goal: String, product: String?)?
+    /// A yes/no question from the runtime was just asked, with no other talk since.
+    var questionFresh = false
+    /// The plan being prepared in the background (search, read, compile), and its goal.
+    var prepTask: Task<Void, Never>?
+    var preparingGoal: String?
     /// Reading mode: the user shows paper instructions page by page.
     var pageReader: PageReader?
     var readingGoal = ""
@@ -124,10 +143,13 @@ final class GuideModel: ObservableObject {
     var watchChecks = 0
     var checking = false
     var refreshing = false
+    /// After a false alarm, mistake checks stay quiet for a while.
+    var problemQuietUntil = Date.distantPast
     /// Speech started while Pip was busy; Pip stops once it is clearly the user (see `handle`).
     private var bargeInPending = false
     private var reconnectDelay: TimeInterval = 0.5
     private var warmTimer: Timer?
+    private var started = false
 
     init() {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -138,7 +160,6 @@ final class GuideModel: ObservableObject {
         speaker.onLog = { [weak self] line in self?.log(line) }
         speaker.onSentenceStart = { [weak self] s in
             self?.caption = s.text
-            self?.spokenThisTurn.append(s.text)
         }
         speaker.onCue = { [weak self] c in
             self?.ar.show(c.cue)
@@ -154,14 +175,22 @@ final class GuideModel: ObservableObject {
     }
 
     func start() {
+        // SwiftUI may call onAppear more than once.
+        guard !started else { return }
+        started = true
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try? session.setActive(true)
         ar.start(initialMap: memory.loadMap())
         // Every camera frame: the visual memory, and reading mode when it is on.
         ar.onFrame = { [weak self] frame in
-            self?.keyframes.consider(frame)
-            self?.pageReader?.feed(frame)
+            guard let self else { return }
+            self.keyframes.consider(frame, trusted: self.ar.trackingNormal)
+            self.pageReader?.feed(frame)
+        }
+        // The room map is saved when the app goes to the background, so new places survive.
+        NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.saveRoomNow() }
         }
         startBasketWatch()
         ar.restore(memory.places)
@@ -202,7 +231,7 @@ final class GuideModel: ObservableObject {
     private func interrupt() {
         speaker.stop()
         task?.cancel()
-        lookActive = false
+        activeLook = nil
         phase = muted ? .muted : .listening
     }
 
@@ -257,11 +286,12 @@ final class GuideModel: ObservableObject {
             break
         case .final(_, let text, let speaker):
             bargeInPending = false
-            guard acceptSpeaker(speaker, text: text) else { return }
             guard !muted, text.count >= 2, !isEcho(text), !busy else {
                 if phase == .hearing { phase = .listening }
                 return
             }
+            // Only real user speech chooses who Pip talks with, never its own echo.
+            guard acceptSpeaker(speaker, text: text) else { return }
             heard = text
             // The frame the user was looking at when they finished speaking.
             guard let snapshot = ar.snapshot() else { return }
@@ -301,24 +331,36 @@ final class GuideModel: ObservableObject {
     /// One look: Pip answers `utterance`, or carries out `directive` (give a step, check a step).
     /// `onState` receives the model's state tag, which a check uses as its evidence.
     func look(_ utterance: String, snapshot: FrameSnapshot, started: Date, directive: String? = nil, onState: (([String: String]) -> Void)? = nil) async {
-        lookActive = true
-        defer { lookActive = false }
+        lookCount += 1
+        let me = lookCount
+        activeLook = me
+        defer {
+            if activeLook == me { activeLook = nil }
+            lastLookAt = Date()
+        }
         phase = .looking
         spokenThisTurn = []
-        lookCount += 1
-        let offset = lookCount * 1000
+        // A question from the user: any open yes/no question of the runtime is stale now.
+        if directive == nil { questionFresh = false }
+        let offset = ARController.markOffset(look: lookCount)
         ar.beginLook(markOffset: offset)
         let recorder = LookRecorder(utterance: utterance, language: language, frame: snapshot.image)
         func note(_ line: String) {
             log(line)
             recorder?.log(line)
         }
+        if let directive { recorder?.log("directive: \(directive)") }
+        var pendingFind: (what: String, phrase: String)?
+        var pendingTask: (goal: String, product: String?)?
         let pipeline = LookPipeline(client: client, language: language)
         var known = facts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.value) (\($0.value.source == "seen" ? "you saw it" : "the user said so"))" }
         let places = ar.placeDescriptions()
         if !places.isEmpty { known.append("Remembered places (point with m=number): " + places.joined(separator: " | ")) }
         if !shopping.isEmpty {
             known.append("Shopping list: " + shopping.map { "\($0.name) (\($0.inBasket ? "in the basket" : "still to get"))" }.joined(separator: ", "))
+        }
+        if let goal = preparingGoal {
+            known.append("Pip is preparing a step plan for \"\(goal)\" and will offer it in about a minute; do not add another task tag for it.")
         }
         var request = LookRequest(frame: snapshot.image, facts: known, history: history, utterance: utterance, directive: directive)
         request.knownMarks = ar.placeMarks
@@ -352,6 +394,7 @@ final class GuideModel: ObservableObject {
                     // Remembered places keep their own numbers; this look's marks get the look's offset.
                     s.cues = s.cues.map { TimedCue(cue: $0.cue.mappingMarks { $0 >= ARController.placeMarkBase ? $0 : $0 + offset }, anchor: $0.anchor, raw: $0.raw) }
                     speaker.enqueue(s)
+                    spokenThisTurn.append(s.text)
                     note("say: \(s.text)")
                     for t in traces { note("  cue \(t.raw): \(t.decision)") }
                 case .sideChannel(.state(let state)):
@@ -368,7 +411,7 @@ final class GuideModel: ObservableObject {
                     startReading(goal: goal)
                 case .sideChannel(.task(let goal, let product)):
                     note("task: \(goal) · \(product ?? "no product")")
-                    if runtime?.isActive != true { pendingTask = (goal, product) }
+                    if runtime?.isActive != true, preparingGoal == nil, pageReader == nil { pendingTask = (goal, product) }
                 case .sideChannel(.remember(let key, let value, let source)):
                     facts[key] = Fact(value: value, source: source)
                     rememberLongTerm(key, value, source: source)
@@ -383,7 +426,8 @@ final class GuideModel: ObservableObject {
                     if let u = summary.usage { note("tokens \(u.promptTokens) in (\(u.promptTokensDetails?.cachedTokens ?? 0) cached), \(u.completionTokens) out") }
                 }
             }
-            remember(directive == nil ? utterance : "(Pip's own turn)")
+            // Pip's own silent turns (a false alarm while watching) are not kept.
+            if directive == nil || !spokenThisTurn.isEmpty { remember(directive == nil ? utterance : "(Pip's own turn)") }
             if !speaker.isSpeaking, phase == .looking || phase == .speaking { phase = muted ? .muted : .listening }
         } catch {
             note("error: \(error)")
@@ -391,14 +435,10 @@ final class GuideModel: ObservableObject {
             if !Task.isCancelled { phase = .failed("Look failed: \(error)") }
         }
         recorder?.finish(rawText: raw)
-        if let find = pendingFind, !Task.isCancelled {
-            pendingFind = nil
-            await findInMemory(find.what, phrase: find.phrase)
-        }
-        if let pending = pendingTask, !Task.isCancelled {
-            pendingTask = nil
-            await prepareTask(goal: pending.goal, product: pending.product)
-        }
+        guard !Task.isCancelled else { return }
+        // A plan is prepared in the background; the conversation goes on meanwhile.
+        if let pending = pendingTask { startPreparing(goal: pending.goal, product: pending.product) }
+        if let find = pendingFind { await findInMemory(find.what, phrase: find.phrase) }
     }
 
     /// Keeps the recent turns as they were heard, for follow-up questions. The user's words are
@@ -412,6 +452,11 @@ final class GuideModel: ObservableObject {
 
     func resetConversation() {
         interrupt()
+        prepTask?.cancel()
+        prepTask = nil
+        preparingGoal = nil
+        cancelReading()
+        awaitingConsent = false
         shopping = []
         history = []
         facts = [:]

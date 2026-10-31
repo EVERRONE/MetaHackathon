@@ -3,6 +3,9 @@
   "name": "pip",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
+  // Outgoing fetches (the manual link check) always go over the public internet, never
+  // straight to an origin behind this zone.
+  "compatibility_flags": ["global_fetch_strictly_public"],
   "routes": [
     { "pattern": "pip.unveil.be", "custom_domain": true },
     // The zone also has a *.unveil.be/* route for other demos; this more specific one wins.
@@ -11,7 +14,7 @@
   "workers_dev": false,
   "observability": { "enabled": true },
   "vars": {
-    // Spend caps in USD, enforced before every model call.
+    // Spend caps in USD, checked before every model call; calls are charged an estimate up front.
     "DAILY_CAP_USD": "25",
     "TOTAL_CAP_USD": "100"
   },

@@ -32,33 +32,48 @@ extension GuideModel {
     private func askConsentOnce() {
         guard !awaitingConsent else { return }
         awaitingConsent = true
-        // After Pip has finished its sentence about what it will remember.
+        // After Pip has finished its sentence about what it will remember, and not over the user.
         Task {
-            while speaker.isSpeaking || lookActive { try? await Task.sleep(nanoseconds: 200_000_000) }
+            while speaker.isSpeaking || lookActive || phase == .hearing { try? await Task.sleep(nanoseconds: 200_000_000) }
+            guard awaitingConsent, memory.consent == nil else { return }
             say(phrases.askMemory)
         }
     }
 
-    func answerConsent(_ yes: Bool, heard: String) {
+    /// The switch in the memory sheet: the same as answering the question.
+    func setConsent(_ yes: Bool) {
         awaitingConsent = false
         memory.setConsent(yes)
-        if yes {
-            for p in pendingPlaces { memory.add(p) }
-            for f in pendingFacts { memory.remember(f.key, f.value, source: f.source) }
-            for (key, fact) in facts where memory.facts[key] == nil { memory.remember(key, fact.value, source: fact.source) }
-            saveRoomSoon()
-        }
+        if yes { keepPending() } else { pendingPlaces = []; pendingFacts = [] }
+    }
+
+    private func keepPending() {
+        for p in pendingPlaces { memory.add(p) }
+        for f in pendingFacts { memory.remember(f.key, f.value, source: f.source) }
+        for (key, fact) in facts where memory.facts[key] == nil { memory.remember(key, fact.value, source: fact.source) }
         pendingPlaces = []
         pendingFacts = []
+        saveRoomSoon()
+    }
+
+    func answerConsent(_ yes: Bool, heard: String) {
+        setConsent(yes)
         say(yes ? phrases.memoryYes : phrases.memoryNo, heard: heard)
     }
 
     /// Saves the room map a moment later, when ARKit has taken in the new anchor.
     func saveRoomSoon() {
-        Task {
+        guard memory.consent == true else { return }
+        Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            ar.saveMap { [weak self] map in self?.memory.saveMap(map) }
+            self?.saveRoomNow()
         }
+    }
+
+    func saveRoomNow() {
+        guard memory.consent == true, !memory.places.isEmpty else { return }
+        let memory = memory
+        ar.saveMap { map in memory.saveMap(map) }
     }
 
     func forget(place id: UUID) {
@@ -72,9 +87,13 @@ extension GuideModel {
         memory.forget(fact: key)
     }
 
+    /// Places (also this session's), facts, the room map and the visual memory.
     func forgetEverything() {
-        for place in memory.places { ar.forgetPlace(place.id) }
+        ar.forgetAllPlaces()
+        keyframes.forgetAll()
         facts = [:]
+        pendingPlaces = []
+        pendingFacts = []
         memory.forgetAll()
     }
 }

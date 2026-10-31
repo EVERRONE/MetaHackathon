@@ -20,6 +20,8 @@ public struct ProcedureRuntime: Sendable {
     }
 
     public enum Mode: Equatable, Sendable {
+        /// Offered but not started: only `.start` leaves this.
+        case ready
         case running, paused, finished
         case stopped(reason: String)
     }
@@ -35,6 +37,8 @@ public struct ProcedureRuntime: Sendable {
         /// The answer to a yes/no question: the step's result, or its safety condition.
         case answer(Bool)
         case back, repeatStep, skip, pause, resume
+        /// A check look was cut off (the user spoke): the step waits for the user again.
+        case interrupted
         case hazard(String)
     }
 
@@ -64,7 +68,7 @@ public struct ProcedureRuntime: Sendable {
     public private(set) var procedure: Procedure
     public private(set) var statuses: [Status]
     public private(set) var index = 0
-    public private(set) var mode: Mode = .paused
+    public private(set) var mode: Mode = .ready
     private var gatesConfirmed = Set<Int>()
     private var failedLooks = 0
     /// What the last yes/no question was about.
@@ -78,9 +82,20 @@ public struct ProcedureRuntime: Sendable {
     }
 
     public var current: Procedure.Step? { procedure.steps.indices.contains(index) ? procedure.steps[index] : nil }
+    /// Started and not yet finished or stopped.
     public var isActive: Bool { mode == .running || mode == .paused }
     public var doneCount: Int { statuses.filter { if case .done = $0 { return true } else { return false } }.count }
     public var expectsAnswer: Bool { pendingQuestion != nil }
+
+    /// The open yes/no question, to ask again when other talk came in between.
+    public var pendingQuestionAction: Action? {
+        guard mode == .running, let step = current else { return nil }
+        switch pendingQuestion {
+        case .gate: return step.gate.map { .askGate(step: index, condition: $0) }
+        case .result: return .askResult(step: index, expected: step.check.expected)
+        case nil: return nil
+        }
+    }
 
     public mutating func handle(_ input: Input) -> [Action] {
         if case .stopped = mode { return [] }
@@ -91,6 +106,7 @@ public struct ProcedureRuntime: Sendable {
             pendingQuestion = nil
             return [.stopped(reason: reason)]
         case .start:
+            guard mode == .ready else { return [] }
             mode = .running
             return enter(0)
         case .pause:
@@ -110,6 +126,9 @@ public struct ProcedureRuntime: Sendable {
         case .instructed:
             if statuses[index] != .gated { statuses[index] = .awaitingAction }
             return []
+        case .interrupted:
+            if statuses[index] == .verifying, pendingQuestion == nil { statuses[index] = .awaitingAction }
+            return []
         case .userDone:
             guard statuses[index] == .awaitingAction || statuses[index] == .verifying else { return [] }
             return check()
@@ -128,7 +147,11 @@ public struct ProcedureRuntime: Sendable {
             pendingQuestion = nil
             switch question {
             case .gate:
-                guard yes else { return [] } // wait until the condition holds; the user says so
+                guard yes else {
+                    // Wait until the condition holds; the user says yes then.
+                    pendingQuestion = .gate
+                    return []
+                }
                 gatesConfirmed.insert(index)
                 statuses[index] = .pending
                 return enter(index)
@@ -141,18 +164,32 @@ public struct ProcedureRuntime: Sendable {
                 return []
             }
         case .back:
-            guard index > 0 else { return [.instruct(step: index)] }
+            guard index > 0 else { return repeatCurrent() }
             statuses[index] = .pending
             index -= 1
             statuses[index] = .pending
+            // Going back means doing that step again: its safety condition is asked again too.
+            gatesConfirmed = gatesConfirmed.filter { $0 < index }
             return enter(index)
         case .repeatStep:
-            return [.instruct(step: index)]
+            return repeatCurrent()
         case .skip:
             return complete(.skipped)
         default:
             return []
         }
+    }
+
+    /// The current step again: its safety question while it is gated, otherwise its instruction.
+    private mutating func repeatCurrent() -> [Action] {
+        if statuses[index] == .gated, let gate = current?.gate {
+            pendingQuestion = .gate
+            return [.askGate(step: index, condition: gate)]
+        }
+        pendingQuestion = nil
+        failedLooks = 0
+        statuses[index] = .awaitingAction
+        return [.instruct(step: index)]
     }
 
     private mutating func enter(_ i: Int) -> [Action] {

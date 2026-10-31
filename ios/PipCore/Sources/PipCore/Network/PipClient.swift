@@ -120,14 +120,21 @@ public struct PipClient: Sendable {
             .compactMap(\.text).joined(separator: "\n")
     }
 
-    /// Whether a link really answers with a PDF or a web page.
-    public func sourceCheck(_ url: String) async throws -> Bool {
-        struct Result: Decodable { var ok: Bool }
+    /// What a link really answers with, after redirects.
+    public struct SourceCheck: Decodable, Sendable {
+        public var ok: Bool
+        public var pdf: Bool?
+        public var finalUrl: String?
+        public var host: String?
+    }
+
+    /// Whether a link really answers with a PDF or a web page, and where it ends up.
+    public func sourceCheck(_ url: String) async throws -> SourceCheck {
         var r = request("v1/source-check")
         r.httpBody = try JSONEncoder().encode(["url": url])
         let (data, response) = try await session.data(for: r)
         try Self.check(response, body: data)
-        return try JSONDecoder().decode(Result.self, from: data).ok
+        return try JSONDecoder().decode(SourceCheck.self, from: data)
     }
 
     /// Streams a chat completion as text deltas, a finish reason and the usage.

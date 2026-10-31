@@ -24,10 +24,21 @@ public struct MemorySearch: Sendable {
         public var confidence: Double
     }
 
+    /// Which snapshots to show when there are more than fit: all of the most recent ones, and an
+    /// even spread over the older ones, so the whole window is searched. Indices, oldest first.
+    static func sample(count: Int, max limit: Int) -> [Int] {
+        guard count > limit else { return Array(0..<count) }
+        let recent = limit / 2
+        let older = limit - recent
+        let olderCount = count - recent
+        let spread = (0..<older).map { $0 * olderCount / older }
+        return spread + Array((count - recent)..<count)
+    }
+
     /// `snapshots` are JPEGs, oldest first. Returns the most recent sightings first.
     public func find(_ what: String, in snapshots: [Data]) async throws -> [Sighting] {
-        let recent = Array(snapshots.suffix(Self.tilesPerSheet * Self.maxSheets))
-        let offset = snapshots.count - recent.count
+        let picked = Self.sample(count: snapshots.count, max: Self.tilesPerSheet * Self.maxSheets)
+        let recent = picked.map { snapshots[$0] }
         guard !recent.isEmpty else { return [] }
         var sheets: [Data] = []
         for start in stride(from: 0, to: recent.count, by: Self.tilesPerSheet) {
@@ -72,7 +83,7 @@ public struct MemorySearch: Sendable {
         guard out.found else { return [] }
         return out.sightings
             .filter { (1...recent.count).contains($0.tile) && (0...1000).contains($0.x) && (0...1000).contains($0.y) }
-            .map { Sighting(index: offset + $0.tile - 1, x: $0.x, y: $0.y, confidence: $0.confidence) }
+            .map { Sighting(index: picked[$0.tile - 1], x: $0.x, y: $0.y, confidence: $0.confidence) }
             .sorted { $0.index > $1.index }
     }
 

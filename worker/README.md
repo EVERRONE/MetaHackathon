@@ -4,18 +4,18 @@ A small Cloudflare Worker at `https://pip.unveil.be`, between the Pip app and th
 
 ## Routes
 
-Every route except `/v1/health` needs `Authorization: Bearer <PIP_APP_TOKEN>`.
+Every `/v1/` route except `/v1/health` needs `Authorization: Bearer <PIP_APP_TOKEN>`.
 
 | Route | What it does |
 |---|---|
 | `GET /v1/health` | Liveness check. |
-| `POST /v1/chat` | OpenAI-style chat completion for `muse-spark-1.3`. Streams pass through byte for byte. The Worker forces `store: false` and records usage. |
+| `POST /v1/chat` | OpenAI-style chat completion for `muse-spark-1.3` and `muse-wonder-1.0`. Streams pass through byte for byte. The Worker forces `store: false` and records usage at each model's price. |
 | `POST /v1/segment` | SAM 3.1. Concept prompts run in parallel; box/point prompts run as one request. Returns merged instances with outlines, numbered in reading order. |
 | `POST /v1/transcribe` | Body: a mono 16-bit WAV (16 or 24 kHz). Query: `mode` (`PUSH_TO_TALK` or `ENDPOINTING`), `languages` (e.g. `English,Dutch`), `keywords`. |
 | `GET /v1/asr` | WebSocket relay to realtime transcription. The first frame is the handshake without a key (`audioEncoding`, `mode`, `partialMode`, `languageBias`, `keywords`). Then send binary PCM and `{"type":"endStream"}` to finish. |
 | `POST /v1/speak` | `{ text, voice, language }` → ElevenLabs Flash v2.5 speech as newline-delimited JSON: base64 PCM (24 kHz, 16-bit mono) plus each character's start time, used to time the cues. ElevenLabs is the only non-Meta model: Meta has no text-to-speech. |
-| `POST /v1/responses` | Responses API for `muse-spark-1.3` / `muse-wonder-1.0`, non-streaming: web search (the only tool allowed) and PDFs by `file_url` (https only). Used to find a product's official manual and to read it. Searches are charged at $2.50 per 1,000. |
-| `POST /v1/source-check` | `{ url }` → whether the link really answers with a PDF or web page (models can produce links that do not exist). |
+| `POST /v1/responses` | Responses API for `muse-spark-1.3` / `muse-wonder-1.0`, non-streaming, used to find a product's official manual and to read it. Only known fields pass; web search is the only tool; parts are text, inline images and PDFs by https `file_url` (no stored file ids, no image links); `max_output_tokens` is capped at 16,000. Searches are charged at $2.50 per 1,000. |
+| `POST /v1/source-check` | `{ url }` → `{ ok, pdf, finalUrl, host, … }`: whether the link really answers with a PDF or web page (models can produce links that do not exist). Public https names only: no IP literals, credentials, other ports, local names or this zone; redirects are followed by hand and every hop is checked again. |
 | `GET /v1/usage` | Estimated spend: today and total, in USD. |
 
 ### `/v1/segment`
@@ -54,16 +54,16 @@ Duplicate instances across prompts (mask IoU > 0.75) are merged. `contains` flag
 ## Safeguards
 
 - App token, checked in constant time.
-- A rate limit of 300 requests per minute.
-- Daily and total spend caps (`DAILY_CAP_USD`, `TOTAL_CAP_USD`). Spend is estimated from token usage, images and audio seconds, and stored in a Durable Object.
+- A rate limit of 300 requests per minute (counted per Cloudflare location).
+- Daily and total spend caps (`DAILY_CAP_USD`, `TOTAL_CAP_USD`), checked before every call. Spend is estimated from token usage (Spark or Wonder prices), images, audio seconds, web searches and ElevenLabs characters, and stored in a Durable Object. Non-streamed calls are charged an estimate before they start and corrected when the usage arrives, so a request the client drops still counts.
 - Logs hold metadata only (route, status, time), never images, audio or text.
-- Requests to Meta set `store: false` and use Standard mode, so content is not used for training.
+- Requests to Meta set `store: false`, and the Meta account uses Standard mode, so content is not used for training.
 
 ## Develop
 
 ```sh
 npm install
-npm test            # unit tests (geometry, costs, WAV parsing, stream tap)
+npm test            # unit tests (geometry, costs, WAV parsing, stream tap, request checks)
 npm run typecheck
 ```
 

@@ -73,7 +73,7 @@ struct ContentView: View {
             }
         }
         .onAppear { model.start() }
-        .sheet(isPresented: $showMemory) { MemorySheet(model: model, memory: model.memory) }
+        .sheet(isPresented: $showMemory) { MemorySheet(model: model, memory: model.memory, ar: model.ar) }
         .sheet(isPresented: $showSteps) {
             if let task = model.taskView { StepsSheet(task: task) }
         }
@@ -230,18 +230,19 @@ struct StepsSheet: View {
 struct MemorySheet: View {
     @ObservedObject var model: GuideModel
     @ObservedObject var memory: SpaceMemory
+    @ObservedObject var ar: ARController
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    Toggle("Remember across sessions", isOn: Binding(get: { memory.consent == true }, set: { memory.setConsent($0) }))
+                    Toggle("Remember across sessions", isOn: Binding(get: { memory.consent == true }, set: { model.setConsent($0) }))
                 } footer: {
                     Text("Stored only on this iPhone: the room map, the places you showed Pip, and facts about your devices.")
                 }
                 Section("Places") {
-                    if model.ar.places.isEmpty { Text("Show Pip something and say what it is.").foregroundStyle(.secondary) }
-                    ForEach(model.ar.places.values.sorted { $0.created < $1.created }) { place in
+                    if ar.places.isEmpty { Text("Show Pip something and say what it is.").foregroundStyle(.secondary) }
+                    ForEach(ar.places.values.sorted { $0.created < $1.created }) { place in
                         Label(place.name, systemImage: "mappin.circle")
                             .swipeActions { Button("Forget", role: .destructive) { model.forget(place: place.id) } }
                     }

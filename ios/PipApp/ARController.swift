@@ -13,16 +13,23 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// Each mark's ARKit anchor and where it was when the mark was placed.
     private var anchors: [Int: (anchor: ARAnchor, origin: simd_float4x4)] = [:]
     /// False while ARKit has lost the room (after leaving it): cues are hidden, not drawn wrong.
-    @Published private(set) var trackingNormal = true
+    private(set) var trackingNormal = true
     private var currentOffset = 0
     private var replacePending = false
 
     // MARK: Remembered places
 
+    // Mark numbers: each look gets its own block of 1000 below `foundMarkBase` (700 blocks,
+    // reused in turn), objects found in the visual memory come next, remembered places last.
+    static let lookBlocks = 700
+    static let foundMarkBase = 800_001
     /// Mark numbers from here on are remembered places; they are never replaced by a new look.
     static let placeMarkBase = 900_001
+
+    static func markOffset(look: Int) -> Int { ((look - 1) % lookBlocks + 1) * 1000 }
+
     private var nextPlaceMark = ARController.placeMarkBase
-    private(set) var places: [Int: SpaceMemory.Place] = [:]
+    @Published private(set) var places: [Int: SpaceMemory.Place] = [:]
     /// Places from the saved map waiting for ARKit to restore their anchors.
     private var pendingPlaces: [UUID: SpaceMemory.Place] = [:]
 
@@ -104,12 +111,12 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     func show(_ cue: Cue) {
         if replacePending, cue.isDrawn {
-            // The new answer points somewhere: earlier cues and their marks give way.
+            // The new answer points somewhere: earlier looks' and found objects' cues and marks give way.
             replacePending = false
             board.show(.clear, at: CACurrentMediaTime())
             board.resolveDanger()
-            let keepFrom = currentOffset
-            removeMarks { $0 < keepFrom }
+            let current = currentOffset..<(currentOffset + 1000)
+            removeMarks { $0 < Self.placeMarkBase && !current.contains($0) }
         }
         board.show(cue, at: CACurrentMediaTime())
         renderNow()
@@ -126,7 +133,13 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     func clearCues() {
         board.show(.clear, at: CACurrentMediaTime())
         board.resolveDanger()
+        removeMarks { $0 < Self.placeMarkBase }
         renderNow()
+    }
+
+    /// Whether any look's or found object's mark has a cue on screen (re-measuring has work to do).
+    var hasPointedMarks: Bool {
+        board.annotations.contains { $0.cue.marks.contains { $0 < Self.placeMarkBase && marks[$0] != nil } }
     }
 
 
@@ -191,6 +204,11 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// Turns a pointed-at object into a remembered place with its own ARKit anchor.
     func rememberPlace(name: String, mark: Int) -> SpaceMemory.Place? {
         guard let m = marks[mark] else { return nil }
+        // Naming a place again moves it.
+        for (id, old) in places where old.name.lowercased() == name.lowercased() {
+            removeMarks { $0 == id }
+            places[id] = nil
+        }
         let world = m.polygons
         var t = matrix_identity_float4x4
         t.columns.3 = simd_float4(m.centroid, 1)
@@ -225,9 +243,17 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func forgetPlace(_ placeID: UUID) {
+        pendingPlaces = pendingPlaces.filter { $0.value.id != placeID }
         guard let (id, _) = places.first(where: { $0.value.id == placeID }) else { return }
         removeMarks { $0 == id }
         places[id] = nil
+    }
+
+    /// Every place, also the ones only known this session.
+    func forgetAllPlaces() {
+        pendingPlaces = [:]
+        removeMarks { $0 >= Self.placeMarkBase }
+        places = [:]
     }
 
     /// Remembered places as marks the model may point at.
@@ -266,17 +292,31 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         return "\(distance), \(side)\(height); " + (inView ? (dutch ? "in beeld" : "in view") : (dutch ? "niet in beeld" : "not in view"))
     }
 
-    /// A found object from the visual memory, outlined in the room (not remembered across sessions).
+    /// A found object from the visual memory, outlined in the room (not remembered across
+    /// sessions). The previous found object gives way.
     func addFound(world polygons: [[simd_float3]], id: Int) {
+        removeMarks { $0 >= Self.foundMarkBase && $0 < Self.placeMarkBase }
         let m = AnchoredMark(id: id, world: polygons)
         place(m)
     }
 
-    /// Saves the room map with its anchors, once ARKit has mapped enough of the room.
-    func saveMap(_ store: @escaping (ARWorldMap) -> Void) {
-        arView.session.getCurrentWorldMap { map, _ in
-            guard let map else { return }
-            DispatchQueue.main.async { store(map) }
+    /// Saves the room map with the places' anchors only (outline anchors are for this session).
+    /// ARKit needs to have mapped enough of the room first: Pip waits and tries again.
+    func saveMap(attempt: Int = 0, _ store: @escaping (ARWorldMap) -> Void) {
+        let status = arView.session.currentFrame?.worldMappingStatus
+        guard status == .mapped || status == .extending || attempt >= 5 else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.saveMap(attempt: attempt + 1, store) }
+            return
+        }
+        arView.session.getCurrentWorldMap { [weak self] map, _ in
+            DispatchQueue.main.async {
+                guard let map else {
+                    if attempt < 5 { self?.saveMap(attempt: attempt + 1, store) }
+                    return
+                }
+                map.anchors = map.anchors.filter { $0.name == "pip-place" }
+                store(map)
+            }
         }
     }
 }

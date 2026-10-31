@@ -1,5 +1,6 @@
 import { Hono, type Context, type Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { HTTPException } from "hono/http-exception";
 import { relayAsr, transcribe } from "./asr";
 import { chat } from "./chat";
 import { asrCost, samCost } from "./cost";
@@ -31,7 +32,7 @@ async function validToken(given: string, expected: string): Promise<boolean> {
 }
 
 function charger(c: Context<AppEnv>) {
-  return (usd: number) => c.executionCtx.waitUntil(meter(c.env).add(usd));
+  return (usd: number, calls = 1) => c.executionCtx.waitUntil(meter(c.env).add(usd, calls));
 }
 
 app.use("*", async (c, next) => {
@@ -154,6 +155,10 @@ app.notFound(() => Response.json({ error: { code: "not_found", message: "No such
 app.onError((err) => {
   if (err instanceof HttpError) {
     return Response.json({ error: { code: err.code, message: err.message } }, { status: err.status });
+  }
+  if (err instanceof HTTPException) {
+    // Hono's own errors, e.g. a body over the route's limit (413).
+    return Response.json({ error: { code: err.status === 413 ? "too_large" : "invalid_request", message: err.message || "Request rejected" } }, { status: err.status });
   }
   if (err instanceof UpstreamError) {
     return Response.json({ error: { code: `upstream_${err.service}`, message: err.message, upstreamStatus: err.status } }, { status: err.appStatus });

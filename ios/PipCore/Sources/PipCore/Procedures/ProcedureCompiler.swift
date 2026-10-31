@@ -42,6 +42,8 @@ public struct ProcedureCompiler: Sendable {
     /// Mirror sites copy manuals without guarantee that they are complete or current.
     static let unofficialHosts = ["manuals.plus", "device.report", "manualslib", "manualzz", "usermanual.wiki", "scribd", "pdfcoffee", "issuu"]
 
+    static func unofficial(_ host: String) -> Bool { unofficialHosts.contains { host.contains($0) } }
+
     public func findManual(for product: String) async throws -> ManualReference? {
         let prompt = """
         Find the official assembly instructions, installation guide or user manual for: \(product).
@@ -58,10 +60,13 @@ public struct ProcedureCompiler: Sendable {
         struct Found: Decodable { var found: Bool?; var title: String?; var publisher: String?; var pdf_url: String?; var page_url: String? }
         guard let json = Self.firstJSONObject(in: text), let found = try? JSONDecoder().decode(Found.self, from: Data(json.utf8)),
               found.found == true, let url = found.pdf_url, !url.isEmpty else { return nil }
-        guard let host = URL(string: url)?.host?.lowercased(), !Self.unofficialHosts.contains(where: { host.contains($0) }) else { return nil }
-        // Models can produce a link that looks right but does not exist.
-        guard try await client.sourceCheck(url) else { return nil }
-        return ManualReference(title: found.title ?? product, publisher: found.publisher ?? host, url: url, pageURL: found.page_url)
+        guard let host = URL(string: url)?.host?.lowercased(), !Self.unofficial(host) else { return nil }
+        // Models can produce a link that looks right but does not exist, or that redirects to a
+        // web page or a mirror site: only a real PDF on an official site counts.
+        let check = try await client.sourceCheck(url)
+        let finalHost = (check.host ?? host).lowercased()
+        guard check.ok, check.pdf == true, !Self.unofficial(finalHost) else { return nil }
+        return ManualReference(title: found.title ?? product, publisher: found.publisher ?? host, url: check.finalUrl ?? url, pageURL: found.page_url)
     }
 
     // MARK: Compiling
@@ -94,7 +99,7 @@ public struct ProcedureCompiler: Sendable {
         let text = try await client.responsesText(body)
         guard let json = Self.firstJSONObject(in: text) else { throw CompilerError.unreadable(String(text.prefix(200))) }
         let raw = try JSONDecoder().decode(RawProcedure.self, from: Data(json.utf8))
-        return try raw.compiled(goal: goal, source: source, seconds: Date().timeIntervalSince(t0))
+        return try raw.compiled(goal: goal, source: source, seconds: Date().timeIntervalSince(t0), language: language)
     }
 
     func instructions(goal: String, source: SourceInput, facts: [String]) -> String {
@@ -136,7 +141,7 @@ public struct ProcedureCompiler: Sendable {
         var cautions: [String]
         var mismatch: String
 
-        func compiled(goal: String, source: SourceInput, seconds: Double) throws -> Compiled {
+        func compiled(goal: String, source: SourceInput, seconds: Double, language: String = "English") throws -> Compiled {
             let src: Procedure.Source
             switch source {
             case .manual(let m): src = .init(kind: .pdf, reference: "\(m.publisher): \(m.title) (\(m.url))")
@@ -144,7 +149,7 @@ public struct ProcedureCompiler: Sendable {
             case .text: src = .init(kind: .text, reference: "the user's text")
             case .none: src = .init(kind: .none)
             }
-            let procedure = Procedure(
+            var procedure = Procedure(
                 title: title, goal: goal, source: src,
                 objects: objects.map { .init(id: $0.id, name: $0.name, phrase: $0.phrase, text: $0.text) },
                 steps: steps.enumerated().map { i, s in
@@ -155,7 +160,7 @@ public struct ProcedureCompiler: Sendable {
                 cautions: cautions)
             let modelClass: SafetyPolicy.Classification
             switch classification {
-            case "refused": modelClass = .refused(reason: refusal_reason.isEmpty ? "professional" : refusal_reason)
+            case "refused": modelClass = .refused(reason: SafetyPolicy.refusalReasons.contains(refusal_reason) ? refusal_reason : "other")
             case "allowed_with_gates": modelClass = .allowedWithGates
             default: modelClass = .allowed
             }
@@ -169,6 +174,12 @@ public struct ProcedureCompiler: Sendable {
             default: final = .allowed
             }
             if case .refused = final {} else {
+                // Gated work always has a safety question before it starts, also when the model gave none.
+                if final == .allowedWithGates, !procedure.steps.contains(where: { $0.gate != nil }), !procedure.steps.isEmpty {
+                    procedure.steps[0].gate = language.lowercased() == "dutch"
+                        ? "je handen zijn droog, er is niets nat in de buurt en je ziet geen schade of brandsporen"
+                        : "your hands are dry, nothing near it is wet, and you see no damage or burn marks"
+                }
                 let problems = procedure.problems()
                 if !problems.isEmpty { throw CompilerError.invalid(problems) }
             }
@@ -186,7 +197,7 @@ public struct ProcedureCompiler: Sendable {
         return obj([
             "title": str(),
             "classification": .object(["type": .string("string"), "enum": .array([.string("allowed"), .string("allowed_with_gates"), .string("refused")])]),
-            "refusal_reason": str(),
+            "refusal_reason": .object(["type": .string("string"), "enum": .array(([""] + SafetyPolicy.refusalReasons).map { .string($0) })]),
             "objects": arr(obj(["id": str(), "name": str(), "phrase": str(), "text": arr(str())])),
             "steps": arr(obj([
                 "instruction": str(), "why": str(), "targets": arr(str()),

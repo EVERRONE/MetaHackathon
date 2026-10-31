@@ -27,6 +27,7 @@ public final class RealtimeTranscriber: NSObject, @unchecked Sendable, URLSessio
     private var currentTurn = 0
     /// The label of the most recent `speaker` event; it comes just before the turn completes.
     private var lastSpeaker: String?
+    private var turnSpeakers: [Int: String] = [:]
     /// Audio captured before the service acknowledged the handshake (at most 10 s).
     private var backlog: [Data] = []
     private var backlogBytes = 0
@@ -138,10 +139,17 @@ public final class RealtimeTranscriber: NSObject, @unchecked Sendable, URLSessio
         case "speechEnd":
             continuation.yield(.speechEnd(turn: json["turnId"] as? Int ?? currentTurn))
         case "speaker":
-            lastSpeaker = json["label"] as? String
+            // A label belongs to one turn: kept by turn id when the event carries one.
+            let label = json["label"] as? String
+            if let turn = json["turnId"] as? Int, let label { turnSpeakers[turn] = label } else { lastSpeaker = label }
         case "speechComplete":
             let t = (json["transcript"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            continuation.yield(.final(turn: json["turnId"] as? Int ?? currentTurn, text: t, speaker: lastSpeaker))
+            let turn = json["turnId"] as? Int ?? currentTurn
+            // Never the previous turn's label: a turn without one has no speaker.
+            let speaker = turnSpeakers.removeValue(forKey: turn) ?? lastSpeaker
+            lastSpeaker = nil
+            if turnSpeakers.count > 32 { turnSpeakers = turnSpeakers.filter { $0.key > turn - 8 } }
+            continuation.yield(.final(turn: turn, text: t, speaker: speaker))
         case "error":
             continuation.yield(.error(json["message"] as? String ?? text))
         default:

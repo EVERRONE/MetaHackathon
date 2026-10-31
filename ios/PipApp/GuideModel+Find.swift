@@ -18,6 +18,8 @@ extension GuideModel {
         defer { preparing = nil }
         let t0 = Date()
         let sightings = (try? await MemorySearch(client: client).find(what, in: frames.map(\.jpeg))) ?? []
+        // Cut off by the user: say nothing.
+        if Task.isCancelled { return }
         log(String(format: "memory search %.1fs over %d snapshots: %d sightings", Date().timeIntervalSince(t0), frames.count, sightings.count))
         let grounder = Grounder(client: client, frameJPEG: Data())
         for s in sightings where frames.indices.contains(s.index) {
@@ -25,14 +27,15 @@ extension GuideModel {
             guard let image = UIImage(data: frame.jpeg)?.cgImage else { continue }
             let point = CGPoint(x: s.x / 1000 * Double(frame.width), y: s.y / 1000 * Double(frame.height))
             // Confirmation: SAM has to find an object there, with depth to place it in the room.
-            guard let inst = await grounder.object(at: point, in: image, id: 1),
-                  let depth = frame.depth(atPixel: inst.centre) ?? frame.depth(atPixel: point) else {
+            let confirmed = await grounder.object(at: point, in: image, id: 1)
+            if Task.isCancelled { return }
+            guard let inst = confirmed, let depth = frame.depth(atPixel: inst.centre) ?? frame.depth(atPixel: point) else {
                 log("sighting in snapshot \(frame.id) not confirmed")
                 continue
             }
             let world = inst.regularized().outlinePoints.map { ring in ring.map { frame.worldPoint(atPixel: $0, depth: depth) } }
             foundCount += 1
-            let id = 800_000 + foundCount
+            let id = ARController.foundMarkBase + foundCount % 90_000
             ar.addFound(world: world, id: id)
             ar.show(.outline(mark: id))
             let ago = Int(Date().timeIntervalSince(frame.time) / 60)
@@ -46,6 +49,7 @@ extension GuideModel {
     // MARK: Shopping list
 
     func updateList(add: [String], got: [String], remove: [String]) {
+        listChangedAt = Date()
         for item in add where !shopping.contains(where: { $0.name.lowercased() == item.lowercased() }) {
             shopping.append(ShoppingItem(name: item))
         }
@@ -54,6 +58,9 @@ extension GuideModel {
         }
         shopping.removeAll { item in remove.contains { $0.lowercased() == item.name.lowercased() } }
     }
+
+    /// Basket checks stop this long after the list last changed.
+    static let basketQuietAfter: TimeInterval = 15 * 60
 
     func startBasketWatch() {
         basketTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
@@ -65,11 +72,15 @@ extension GuideModel {
     /// seen twice in a row.
     private func basketTick() async {
         let needed = shopping.filter { !$0.inBasket }.map(\.name)
-        guard !needed.isEmpty, !basketChecking, !lookActive, !speaker.isSpeaking, phase != .hearing, !muted,
+        // Checks stop after a quiet spell (the user stopped shopping); any list change restarts them.
+        guard !needed.isEmpty, Date().timeIntervalSince(listChangedAt) < Self.basketQuietAfter,
+              !basketChecking, !lookActive, !speaker.isSpeaking, phase != .hearing, !muted,
               ar.trackingNormal, let snapshot = ar.snapshot() else { return }
         basketChecking = true
         defer { basketChecking = false }
         guard let result = try? await BasketChecker(client: client).check(snapshot.image, needed: needed) else { return }
+        // The user or Pip started talking meanwhile: this check is not spoken over them.
+        guard !lookActive, !speaker.isSpeaking, phase != .hearing else { return }
         log("basket: \(result.inBasket) wrong: \(result.wrong.map { "\($0.item)≠\($0.seen)" })")
         var spoken: [String] = []
         for i in shopping.indices where !shopping[i].inBasket {
@@ -78,6 +89,7 @@ extension GuideModel {
                 shopping[i].hits += 1
                 if shopping[i].hits >= 2 {
                     shopping[i].inBasket = true
+                    listChangedAt = Date()
                     spoken.append(phrases.gotItem(name))
                 }
             } else {

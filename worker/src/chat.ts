@@ -60,7 +60,7 @@ export async function chat(
   /** Request size without inline images, for the fallback cost estimate. */
   requestBytes: number,
   imageCount: number,
-  charge: (usd: number) => void,
+  charge: (usd: number, calls?: number) => void,
 ): Promise<Response> {
   if (typeof body.model !== "string" || !ALLOWED_MODELS.has(body.model)) {
     throw new HttpError(400, "model_not_allowed", `Allowed models: ${[...ALLOWED_MODELS].join(", ")}`);
@@ -70,12 +70,17 @@ export async function chat(
   }
   const model = body.model;
   body.store = false;
+  if (body.stream !== undefined && typeof body.stream !== "boolean") throw new HttpError(400, "invalid_request", "stream must be true or false");
   const stream = body.stream === true;
   if (stream) {
     const opts = typeof body.stream_options === "object" && body.stream_options !== null ? body.stream_options : {};
     body.stream_options = { ...opts, include_usage: true };
   }
 
+  // A non-streamed answer is charged before the call and corrected after, so a request the
+  // client drops still counts. Streams are charged by the tap, also when cancelled.
+  const estimate = stream ? 0 : sparkFallbackCost(requestBytes, 0, imageCount, model);
+  if (estimate > 0) charge(estimate);
   const upstream = await fetch(`${META_API}/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -85,12 +90,12 @@ export async function chat(
 
   if (!stream || !upstream.body) {
     const json = (await upstream.json()) as { usage?: ChatUsage };
-    charge(json.usage ? sparkCost(json.usage, model) : sparkFallbackCost(requestBytes, 0, imageCount));
+    if (json.usage) charge(sparkCost(json.usage, model) - estimate, 0);
     return Response.json(json);
   }
 
   const tapped = upstream.body.pipeThrough(
-    usageTap((usage, bytes) => charge(usage ? sparkCost(usage, model) : sparkFallbackCost(requestBytes, bytes, imageCount))),
+    usageTap((usage, bytes) => charge(usage ? sparkCost(usage, model) : sparkFallbackCost(requestBytes, bytes, imageCount, model))),
   );
   return new Response(tapped, {
     headers: {

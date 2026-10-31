@@ -6,11 +6,40 @@ public struct CueTag: Equatable, Sendable {
     public var attributes: [String: String]
     public var raw: String
 
+    /// "m=3, 4" → "m=3,4", outside quoted values only ("shelf 2, 3rd row" stays as written).
+    static func joiningSpacedLists(_ body: String) -> String {
+        var out = ""
+        var quote: Character?
+        let chars = Array(body)
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if let q = quote {
+                if c == q { quote = nil }
+            } else if c == "\"" || c == "'" {
+                quote = c
+            } else if c == "“" {
+                quote = "”"
+            } else if c == "," {
+                var j = i + 1
+                while j < chars.count, chars[j] == " " { j += 1 }
+                if j > i + 1, j < chars.count, chars[j].isNumber {
+                    out.append(",")
+                    i = j
+                    continue
+                }
+            }
+            out.append(c)
+            i += 1
+        }
+        return out
+    }
+
     /// Parses the inside of a tag (without the brackets). Values may be quoted: `reason="hot surface"`.
     public static func parse(_ body: String) -> CueTag? {
         let raw = "[[\(body)]]"
         // Models sometimes write lists as "m=3, 4": join them before splitting attributes.
-        let normalized = body.replacingOccurrences(of: #",\s+(?=\d)"#, with: ",", options: .regularExpression)
+        let normalized = joiningSpacedLists(body)
         var scanner = Substring(normalized.trimmingCharacters(in: .whitespacesAndNewlines))
         let nameEnd = scanner.firstIndex(where: { $0 == " " || $0 == ":" }) ?? scanner.endIndex
         let name = scanner[..<nameEnd].lowercased()
