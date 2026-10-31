@@ -693,11 +693,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         guard let frame = arView.session.currentFrame, let m = marks[id] else { return nil }
         let cam = frame.camera.transform
         let pos = simd_float3(cam.columns.3.x, cam.columns.3.y, cam.columns.3.z)
-        let forward = -simd_float3(cam.columns.2.x, 0, cam.columns.2.z)
-        let right = simd_float3(cam.columns.0.x, 0, cam.columns.0.z)
         let v = m.centroid - pos
-        let flat = simd_float3(v.x, 0, v.z)
-        let angle = atan2(simd_dot(flat, simd_normalize(right)), simd_dot(flat, simd_normalize(forward))) * 180 / .pi
+        // Left and right from where the camera looks and gravity: however the phone is held.
+        let angle = Wayfinding.bearing(to: m.centroid, camera: cam)
         let side: String
         switch abs(angle) {
         case ..<25: side = dutch ? "voor je" : "ahead"
