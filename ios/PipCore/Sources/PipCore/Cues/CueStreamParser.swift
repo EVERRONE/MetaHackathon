@@ -104,6 +104,10 @@ public struct CueStreamParser: Sendable {
         // Removing a tag must not leave a double space.
         if text.isEmpty || text.last?.isWhitespace == true {
             chunk = chunk.drop(while: { $0 == " " || $0 == "\t" })
+            // "switch [[outline m=2]]." must not become "switch ."
+            if let first = chunk.first, ".,!?;:…)".contains(first) {
+                while text.last == " " || text.last == "\t" { text.removeLast() }
+            }
         }
         text += chunk
         while let end = sentenceEnd(in: text) {

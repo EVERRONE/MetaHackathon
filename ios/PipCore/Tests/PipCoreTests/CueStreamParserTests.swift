@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import PipCore
 
@@ -82,10 +83,10 @@ private func word(at anchor: Int, in text: String) -> String {
 }
 
 @Suite struct CueTagTests {
-    @Test func parsesQuotedValuesAndLists() {
+    @Test func parsesQuotedValuesAndLists() throws {
         let tag = CueTag.parse("danger m=11 reason=\"hot surface\"")
         #expect(tag?.attributes == ["m": "11", "reason": "hot surface"])
-        #expect(try Cue.from(CueTag.parse("candidates m=3, 4")!).get() == .candidates(marks: [3]))
+        #expect(try Cue.from(CueTag.parse("candidates m=3, 4")!).get() == .candidates(marks: [3, 4]))
         #expect(try Cue.from(CueTag.parse("candidates m=3,4")!).get() == .candidates(marks: [3, 4]))
         #expect(try Cue.from(CueTag.parse("rotate m=5 dir=ccw amount=half")!).get() == .rotate(mark: 5, direction: .ccw, amount: .half))
     }

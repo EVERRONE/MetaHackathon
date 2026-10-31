@@ -9,7 +9,9 @@ public struct CueTag: Equatable, Sendable {
     /// Parses the inside of a tag (without the brackets). Values may be quoted: `reason="hot surface"`.
     public static func parse(_ body: String) -> CueTag? {
         let raw = "[[\(body)]]"
-        var scanner = Substring(body.trimmingCharacters(in: .whitespacesAndNewlines))
+        // Models sometimes write lists as "m=3, 4": join them before splitting attributes.
+        let normalized = body.replacingOccurrences(of: #",\s+(?=\d)"#, with: ",", options: .regularExpression)
+        var scanner = Substring(normalized.trimmingCharacters(in: .whitespacesAndNewlines))
         let nameEnd = scanner.firstIndex(where: { $0 == " " || $0 == ":" }) ?? scanner.endIndex
         let name = scanner[..<nameEnd].lowercased()
         guard !name.isEmpty, name.allSatisfy({ $0.isLetter || $0 == "_" }) else { return nil }
