@@ -121,7 +121,11 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     // MARK: ARSessionDelegate
 
+    /// Called for every camera frame (reading mode uses it to take pages).
+    var onFrame: ((ARFrame) -> Void)?
+
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        onFrame?(frame)
         // ARKit moves anchors when it corrects its map (loop closure, relocalisation).
         if !anchors.isEmpty {
             let current = Dictionary(frame.anchors.map { ($0.identifier, $0.transform) }, uniquingKeysWith: { a, _ in a })

@@ -59,7 +59,7 @@ final class GuideModel: ObservableObject {
         var value: String
         var source: String
     }
-    @Published private(set) var facts: [String: Fact] = [:]
+    @Published var facts: [String: Fact] = [:]
 
     // MARK: Guided task (see GuideModel+Task.swift)
 
@@ -84,6 +84,9 @@ final class GuideModel: ObservableObject {
     var sessionLog = SessionLog()
     var offering = false
     var pendingTask: (goal: String, product: String?)?
+    /// Reading mode: the user shows paper instructions page by page.
+    var pageReader: PageReader?
+    var readingGoal = ""
 
     // MARK: Watching, following objects, speakers (see GuideModel+Watch.swift)
 
@@ -315,6 +318,9 @@ final class GuideModel: ObservableObject {
                 case .sideChannel(.state(let state)):
                     note("side: state \(state)")
                     onState?(state)
+                case .sideChannel(.readPages(let goal)):
+                    note("reading pages: \(goal)")
+                    startReading(goal: goal)
                 case .sideChannel(.task(let goal, let product)):
                     note("task: \(goal) · \(product ?? "no product")")
                     if runtime?.isActive != true { pendingTask = (goal, product) }

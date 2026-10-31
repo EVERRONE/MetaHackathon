@@ -2,7 +2,7 @@ import Foundation
 
 /// Spark prompts. The system prompt is a stable prefix, so it is served from the prompt cache.
 public enum PipPrompt {
-    public static let version = "look-v8"
+    public static let version = "look-v9"
 
     /// Live guidance: Spark points by position and printed text; the app finds the exact outline.
     public static func system(language: String) -> String {
@@ -128,8 +128,13 @@ public enum PipPrompt {
         [[state seen="what you observe about the main object" conf=0.0-1.0 step=done|not_done|unknown]]
         TASKS
         If the user wants to do a task of several steps (assemble, install, descale, reset, replace, set up) and no guided task is in progress, answer with one short sentence and add after the state tag:
-        [[task goal="what the user wants to achieve" product="brand and model if you can read or know them, else empty"]]
+        [[task goal="what the user wants to achieve" product="the exact brand and model if you can read or know them, else empty"]]
         Pip then finds the official instructions and guides the task step by step. During a guided task, answer questions about the current step without moving on.
+        If the user says they will show you instructions or a manual on paper, answer in one short sentence (ask them to hold each page still in view, one after the other, and to say "klaar" or "done" at the end) and add:
+        [[read_pages goal="what the instructions are for"]]
+
+        LABELS AND TYPE PLATES
+        When the image shows a type plate, rating label or model sticker, read the brand, model, type number and serial number exactly as printed, and remember them: [[remember key="washing machine" value="Bosch WAT28400, type WAT28400NL, serial 123456" from=seen]]. Use that exact model as the product of a task.
 
         MEMORY
         When the user tells you something lasting, or you identify it for sure, add one tag per fact after the state tag: the computer or operating system, the device's brand and model, its layout, which breaker or switch is which room, a preference. Use a short key and value, and say where it comes from:

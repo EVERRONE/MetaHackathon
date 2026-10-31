@@ -22,6 +22,13 @@ extension GuideModel {
             return
         }
         let command = Command.parse(text)
+        if pageReader != nil {
+            let lower = text.lowercased()
+            if command == .done || command == .stop || command == .skip || ["dat was het", "dat was alles", "that's all", "that was all"].contains(where: { lower.contains($0) }) {
+                task = Task { await finishReading(heard: text) }
+                return
+            }
+        }
         if offering {
             switch command {
             case .yes, .done, .resume:
@@ -149,14 +156,43 @@ extension GuideModel {
 
     // MARK: Preparing and ending
 
-    func prepareTask(goal: String, product: String?) async {
+    func startReading(goal: String) {
+        let reader = PageReader()
+        reader.onPage = { [weak self] n in
+            guard let self else { return }
+            self.speaker.enqueue(SpokenSentence(text: self.phrases.page(n)))
+            self.preparing = self.phrases.readingStatus(n)
+        }
+        pageReader = reader
+        readingGoal = goal
+        preparing = phrases.readingStatus(0)
+        ar.onFrame = { [weak reader] frame in reader?.feed(frame) }
+    }
+
+    func finishReading(heard: String) async {
+        ar.onFrame = nil
+        let pages = pageReader?.pages ?? []
+        pageReader = nil
+        preparing = nil
+        guard !pages.isEmpty else {
+            say(phrases.noPages, heard: heard)
+            return
+        }
+        say(phrases.readPages(pages.count), heard: heard)
+        facts["instructions"] = Fact(value: "\(pages.count) pages shown for: \(readingGoal)", source: "seen")
+        await prepareTask(goal: readingGoal.isEmpty ? "the task in these instructions" : readingGoal, product: nil, source: .images(pages))
+    }
+
+    func prepareTask(goal: String, product: String?, source given: ProcedureCompiler.SourceInput? = nil) async {
         if case .refused(let reason) = SafetyPolicy.classify(goal) {
             say(SafetyPolicy.refusal(reason, language: language))
             return
         }
         let compiler = ProcedureCompiler(client: client, language: language)
-        var source = ProcedureCompiler.SourceInput.none
-        if let product {
+        var source = given ?? .none
+        if given != nil {
+            preparing = phrases.drafting
+        } else if let product {
             preparing = phrases.searching(product)
             say(phrases.searching(product))
             if let manual = try? await compiler.findManual(for: product) {

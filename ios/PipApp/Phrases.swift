@@ -35,6 +35,10 @@ struct Phrases {
     var paused: String { dutch ? "Ik wacht. Zeg 'ga verder' als je klaar bent." : "I'll wait. Say 'continue' when you're ready." }
     var resumed: String { dutch ? "We gaan verder." : "Let's continue." }
     var stopped: String { dutch ? "De taak is gestopt." : "The task is stopped." }
+    func page(_ n: Int) -> String { dutch ? "Pagina \(n)." : "Page \(n)." }
+    func readingStatus(_ n: Int) -> String { dutch ? "Ik lees mee: \(n) pagina's. Zeg 'klaar' als je alles getoond hebt." : "Reading along: \(n) pages. Say 'done' when you've shown them all." }
+    var noPages: String { dutch ? "Ik heb nog geen pagina gezien. Houd een pagina even stil in beeld." : "I haven't seen a page yet. Hold a page still in view for a moment." }
+    func readPages(_ n: Int) -> String { dutch ? "Ik heb \(n) pagina's gelezen. Ik maak er een stappenplan van." : "I read \(n) pages. I'm making a step plan from them." }
 
     /// Pip's job when it gives a step: spoken in its own words, pointing at the targets.
     func instruct(step: Int, of count: Int, _ s: ProcedureStepText) -> String {

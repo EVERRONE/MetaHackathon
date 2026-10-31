@@ -77,10 +77,12 @@ public enum Cue: Equatable, Sendable {
     case remember(key: String, value: String, source: String)
     /// The user wants to do a task of several steps: Pip prepares a guided procedure.
     case task(goal: String, product: String?)
+    /// The user will show instructions page by page: Pip reads along and builds the plan from them.
+    case readPages(goal: String)
 
     public var isDrawn: Bool {
         switch self {
-        case .state, .locate, .needView, .remember, .task: return false
+        case .state, .locate, .needView, .remember, .task, .readPages: return false
         default: return true
         }
     }
@@ -94,7 +96,7 @@ public enum Cue: Equatable, Sendable {
             return ms
         case .danger(let m, _):
             return m.map { [$0] } ?? []
-        case .clear, .state, .locate, .needView, .remember, .task:
+        case .clear, .state, .locate, .needView, .remember, .task, .readPages:
             return []
         }
     }
@@ -112,7 +114,7 @@ public enum Cue: Equatable, Sendable {
         case .danger(let m, let r): return .danger(mark: m.map(f), reason: r)
         case .offscreen(let m): return .offscreen(mark: f(m))
         case .verified(let m): return .verified(mark: f(m))
-        case .clear, .state, .locate, .needView, .remember, .task: return self
+        case .clear, .state, .locate, .needView, .remember, .task, .readPages: return self
         }
     }
 }
@@ -178,6 +180,8 @@ extension Cue {
             return .success(.locate(x: x, y: y, label: a["label"]))
         case "need_view", "needview":
             return .success(.needView(reason: a["reason"] ?? "unclear", hint: a["hint"]))
+        case "read_pages", "readpages":
+            return .success(.readPages(goal: a["goal"]?.trimmingCharacters(in: .whitespaces) ?? ""))
         case "task":
             guard let goal = a["goal"]?.trimmingCharacters(in: .whitespaces), !goal.isEmpty else { return fail("needs goal") }
             let product = a["product"]?.trimmingCharacters(in: .whitespaces)
