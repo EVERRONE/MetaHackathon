@@ -123,6 +123,11 @@ private func word(at anchor: Int, in text: String) -> String {
         #expect(events.contains(.sideChannel(.remember(key: "computer", value: "Mac", source: "said"), raw: "[[remember key=\"computer\" value=\"Mac\" from=said]]")))
     }
 
+    @Test func taskIntentIsASideChannel() {
+        let events = run(["I'll help you build it. [[task goal=\"assemble the wardrobe\" product=\"IKEA PAX\"]]"])
+        #expect(events.contains(.sideChannel(.task(goal: "assemble the wardrobe", product: "IKEA PAX"), raw: "[[task goal=\"assemble the wardrobe\" product=\"IKEA PAX\"]]")))
+    }
+
     @Test func singleObjectCuesUseTheFirstPoint() {
         let events = run(["Press [[outline at=100,100;900,900 obj=\"button\"]] this."])
         let targets = events.filter { if case .target = $0 { return true } else { return false } }

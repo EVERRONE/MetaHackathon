@@ -37,7 +37,7 @@ public struct CueValidator: Sendable {
 
     public func validate(_ cue: Cue, marks: [Int: MarkInfo], hasEvidence: (Int) -> Bool) -> Decision {
         switch cue {
-        case .clear, .state, .locate, .needView, .remember:
+        case .clear, .state, .locate, .needView, .remember, .task:
             return .accept(cue)
 
         case .danger(let m, let reason):
@@ -102,7 +102,7 @@ public struct AnnotationBoard: Sendable {
         case .clear:
             annotations.removeAll { $0.lifetime != .untilResolved }
             return
-        case .state, .locate, .needView, .remember:
+        case .state, .locate, .needView, .remember, .task:
             return
         case .verified(let m):
             // A verified mark ends the action cues on it.

@@ -99,6 +99,37 @@ public struct PipClient: Sendable {
         return out
     }
 
+    /// A non-streaming Responses API call (web search, PDFs by URL); returns the output text.
+    public func responsesText(_ body: JSONValue) async throws -> String {
+        struct Response: Decodable {
+            struct Item: Decodable {
+                struct Content: Decodable { var type: String?; var text: String? }
+                var type: String?
+                var content: [Content]?
+            }
+            var output: [Item]?
+        }
+        var r = request("v1/responses")
+        r.httpBody = try Self.encoder.encode(body)
+        r.timeoutInterval = 180
+        let (data, response) = try await session.data(for: r)
+        try Self.check(response, body: data)
+        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        return (decoded.output ?? []).filter { $0.type == "message" }
+            .flatMap { $0.content ?? [] }.filter { $0.type == "output_text" }
+            .compactMap(\.text).joined(separator: "\n")
+    }
+
+    /// Whether a link really answers with a PDF or a web page.
+    public func sourceCheck(_ url: String) async throws -> Bool {
+        struct Result: Decodable { var ok: Bool }
+        var r = request("v1/source-check")
+        r.httpBody = try JSONEncoder().encode(["url": url])
+        let (data, response) = try await session.data(for: r)
+        try Self.check(response, body: data)
+        return try JSONDecoder().decode(Result.self, from: data).ok
+    }
+
     /// Streams a chat completion as text deltas, a finish reason and the usage.
     public func chatStream(_ body: ChatRequest) -> AsyncThrowingStream<ChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in

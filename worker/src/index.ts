@@ -7,6 +7,7 @@ import { HttpError } from "./http";
 import { meter } from "./meter";
 import { ObjectPromptError } from "@meta-sam/parser";
 import { MAX_PROMPTS, segment, type SegmentRequest } from "./segment";
+import { checkSource, responses } from "./responses";
 import { speak, type SpeakRequest } from "./speak";
 import { UpstreamError } from "./upstream";
 
@@ -113,6 +114,15 @@ app.post("/v1/segment", bodyLimit({ maxSize: 12 * MB }), async (c) => {
     if (err instanceof ObjectPromptError) throw new HttpError(400, `invalid_objects_${err.code}`, err.message);
     throw err;
   }
+});
+
+app.post("/v1/responses", bodyLimit({ maxSize: 24 * MB }), async (c) => {
+  return responses(c.env.MODEL_API_KEY, await jsonObject<Record<string, unknown>>(c), charger(c));
+});
+
+app.post("/v1/source-check", bodyLimit({ maxSize: 4096 }), async (c) => {
+  const body = await jsonObject<{ url?: unknown }>(c);
+  return checkSource(body.url);
 });
 
 app.post("/v1/transcribe", bodyLimit({ maxSize: 32 * MB }), async (c) => {

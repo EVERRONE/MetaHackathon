@@ -59,6 +59,14 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         renderNow()
     }
 
+    /// A step was seen done: its pointing turns into a short green check.
+    func markVerified() {
+        let now = CACurrentMediaTime()
+        let shown = board.annotations.filter { $0.lifetime == .untilVerified }.flatMap { $0.cue.marks }
+        for m in Set(shown) where marks[m] != nil { board.show(.verified(mark: m), at: now) }
+        renderNow()
+    }
+
     func clearCues() {
         board.show(.clear, at: CACurrentMediaTime())
         board.resolveDanger()

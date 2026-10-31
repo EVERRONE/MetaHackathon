@@ -42,14 +42,14 @@ final class GuideModel: ObservableObject {
 
     let ar = ARController()
     private let audio = AudioIO()
-    private let speaker: Speaker
-    private let client: PipClient
+    let speaker: Speaker
+    let client: PipClient
     private var transcriber: RealtimeTranscriber?
     private var listenTask: Task<Void, Never>?
-    private var history: [ChatMessage] = []
-    private var task: Task<Void, Never>?
+    var history: [ChatMessage] = []
+    var task: Task<Void, Never>?
     private var spokenThisTurn: [String] = []
-    private var lookActive = false
+    var lookActive = false
     /// Mark numbers restart in every look; an offset per look keeps earlier marks apart, so their
     /// cues can stay on screen.
     private var lookCount = 0
@@ -60,6 +60,30 @@ final class GuideModel: ObservableObject {
         var source: String
     }
     @Published private(set) var facts: [String: Fact] = [:]
+
+    // MARK: Guided task (see GuideModel+Task.swift)
+
+    struct StepView: Equatable, Identifiable {
+        let id: Int
+        var text: String
+        var state: String
+        var sourceRef: String?
+    }
+    struct TaskView: Equatable {
+        var title: String
+        var source: String
+        var steps: [StepView]
+        var index: Int
+        var finished: Bool
+        var report: String?
+    }
+    @Published var taskView: TaskView?
+    /// What Pip is doing while it prepares a task ("Reading the manual…").
+    @Published var preparing: String?
+    var runtime: ProcedureRuntime?
+    var sessionLog = SessionLog()
+    var offering = false
+    var pendingTask: (goal: String, product: String?)?
     /// Speech started while Pip was busy; Pip stops once it is clearly the user (see `handle`).
     private var bargeInPending = false
     private var reconnectDelay: TimeInterval = 0.5
@@ -186,9 +210,7 @@ final class GuideModel: ObservableObject {
             heard = text
             // The frame the user was looking at when they finished speaking.
             guard let snapshot = ar.snapshot() else { return }
-            let t0 = Date()
-            task?.cancel()
-            task = Task { await self.look(text, snapshot: snapshot, started: t0) }
+            route(text, snapshot: snapshot)
         case .error(let message):
             log("asr error: \(message)")
         case .closed(let code, let reason):
@@ -221,7 +243,9 @@ final class GuideModel: ObservableObject {
         return Double(heardWords.intersection(spoken).count) / Double(heardWords.count) > 0.8
     }
 
-    private func look(_ utterance: String, snapshot: FrameSnapshot, started: Date) async {
+    /// One look: Pip answers `utterance`, or carries out `directive` (give a step, check a step).
+    /// `onState` receives the model's state tag, which a check uses as its evidence.
+    func look(_ utterance: String, snapshot: FrameSnapshot, started: Date, directive: String? = nil, onState: (([String: String]) -> Void)? = nil) async {
         lookActive = true
         defer { lookActive = false }
         phase = .looking
@@ -236,7 +260,12 @@ final class GuideModel: ObservableObject {
         }
         let pipeline = LookPipeline(client: client, language: language)
         let known = facts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.value) (\($0.value.source == "seen" ? "you saw it" : "the user said so"))" }
-        let request = LookRequest(frame: snapshot.image, facts: known, history: history, utterance: utterance)
+        var request = LookRequest(frame: snapshot.image, facts: known, history: history, utterance: utterance, directive: directive)
+        if let rt = runtime, rt.isActive, let step = rt.current {
+            request.goal = rt.procedure.title
+            request.step = PipPrompt.Step(index: rt.index + 1, count: rt.procedure.steps.count, instruction: step.instruction,
+                                          expected: step.check.kind == .camera ? step.check.expected : nil)
+        }
         var firstWord: Double?
         var raw: String?
         do {
@@ -263,6 +292,12 @@ final class GuideModel: ObservableObject {
                     speaker.enqueue(s)
                     note("say: \(s.text)")
                     for t in traces { note("  cue \(t.raw): \(t.decision)") }
+                case .sideChannel(.state(let state)):
+                    note("side: state \(state)")
+                    onState?(state)
+                case .sideChannel(.task(let goal, let product)):
+                    note("task: \(goal) · \(product ?? "no product")")
+                    if runtime?.isActive != true { pendingTask = (goal, product) }
                 case .sideChannel(.remember(let key, let value, let source)):
                     facts[key] = Fact(value: value, source: source)
                     note("remember \(key) = \(value) (\(source))")
@@ -276,7 +311,7 @@ final class GuideModel: ObservableObject {
                     if let u = summary.usage { note("tokens \(u.promptTokens) in (\(u.promptTokensDetails?.cachedTokens ?? 0) cached), \(u.completionTokens) out") }
                 }
             }
-            remember(utterance)
+            remember(directive == nil ? utterance : "(Pip's own turn)")
             if !speaker.isSpeaking, phase == .looking || phase == .speaking { phase = muted ? .muted : .listening }
         } catch {
             note("error: \(error)")
@@ -284,6 +319,10 @@ final class GuideModel: ObservableObject {
             if !Task.isCancelled { phase = .failed("Look failed: \(error)") }
         }
         recorder?.finish(rawText: raw)
+        if let pending = pendingTask, !Task.isCancelled {
+            pendingTask = nil
+            await prepareTask(goal: pending.goal, product: pending.product)
+        }
     }
 
     /// Keeps the recent turns as they were heard, for follow-up questions. The user's words are
@@ -299,12 +338,13 @@ final class GuideModel: ObservableObject {
         interrupt()
         history = []
         facts = [:]
+        endTask(silently: true)
         caption = ""
         heard = ""
         ar.clearCues()
     }
 
-    private func log(_ line: String) {
+    func log(_ line: String) {
         trace.append(line)
         if trace.count > 60 { trace.removeFirst(trace.count - 60) }
     }

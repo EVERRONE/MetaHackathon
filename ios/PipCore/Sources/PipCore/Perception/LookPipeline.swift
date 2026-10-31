@@ -39,8 +39,10 @@ public struct LookRequest: Sendable {
     public var facts: [String]
     public var history: [ChatMessage]
     public var utterance: String
+    /// What Pip must do now instead of answering the user: give a step, or check one.
+    public var directive: String?
 
-    public init(frame: CGImage, prompts: [String]? = nil, goal: String? = nil, step: PipPrompt.Step? = nil, facts: [String] = [], history: [ChatMessage] = [], utterance: String) {
+    public init(frame: CGImage, prompts: [String]? = nil, goal: String? = nil, step: PipPrompt.Step? = nil, facts: [String] = [], history: [ChatMessage] = [], utterance: String, directive: String? = nil) {
         self.frame = frame
         self.prompts = prompts
         self.goal = goal
@@ -48,6 +50,7 @@ public struct LookRequest: Sendable {
         self.facts = facts
         self.history = history
         self.utterance = utterance
+        self.directive = directive
     }
 }
 
@@ -118,10 +121,10 @@ public struct LookPipeline: Sendable {
                 resolved.insert(inst.id)
             }
             system = PipPrompt.systemMarks(language: language)
-            message = PipPrompt.lookMessage(goal: request.goal, step: request.step, facts: request.facts, marks: seg.instances, utterance: request.utterance, frameJPEG: context, markedJPEG: marked)
+            message = PipPrompt.lookMessage(goal: request.goal, step: request.step, facts: request.facts, marks: seg.instances, utterance: request.utterance, directive: request.directive, frameJPEG: context, markedJPEG: marked)
         } else {
             system = PipPrompt.system(language: language)
-            message = PipPrompt.lookMessage(goal: request.goal, step: request.step, facts: request.facts, utterance: request.utterance, frameJPEG: context)
+            message = PipPrompt.lookMessage(goal: request.goal, step: request.step, facts: request.facts, utterance: request.utterance, directive: request.directive, frameJPEG: context)
         }
 
         var chat = ChatRequest(messages: [.system(system)] + request.history + [message], stream: true, reasoningEffort: effort,

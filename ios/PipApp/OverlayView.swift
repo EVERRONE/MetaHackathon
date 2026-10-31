@@ -101,7 +101,7 @@ final class OverlayView: UIView {
                 guard let mark = marks[m] else { continue }
                 if let p = screenPolygons(mark, project) { stroke(p, color: Self.verified, width: 4, alpha: alpha) }
                 if let c = project(mark.centroid) { badge("✓", at: c, color: Self.verified, alpha: alpha) }
-            case .clear, .state, .locate, .needView, .remember:
+            case .clear, .state, .locate, .needView, .remember, .task:
                 break
             }
         }

@@ -79,6 +79,41 @@ if args.first == "outline", args.count >= 4 {
     exit(0)
 }
 
+// pipeval plan "<goal>" [--product "…"] [--frame img] [--lang Dutch]: finds the manual and compiles a procedure.
+if args.first == "plan", args.count >= 2 {
+    let env = ProcessInfo.processInfo.environment
+    let goal = args[1]
+    var opts: [String: String] = [:]
+    var rest = Array(args.dropFirst(2))
+    while rest.count >= 2, rest[0].hasPrefix("--") { opts[String(rest[0].dropFirst(2))] = rest[1]; rest.removeFirst(2) }
+    let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
+    let compiler = ProcedureCompiler(client: client, language: opts["lang"] ?? "English")
+    let t0 = Date()
+    var source = ProcedureCompiler.SourceInput.none
+    if let product = opts["product"] {
+        do {
+            if let m = try await compiler.findManual(for: product) {
+                print(String(format: "%.1fs  manual: %@ — %@ (%@)", Date().timeIntervalSince(t0), m.publisher, m.title, m.url))
+                source = .manual(m)
+            } else {
+                print(String(format: "%.1fs  no official manual found", Date().timeIntervalSince(t0)))
+            }
+        } catch { print("finder failed: \(error)") }
+    }
+    let frame = opts["frame"].flatMap { FileManager.default.contents(atPath: $0) }.flatMap { SetOfMarks.load($0) }.flatMap { SetOfMarks.jpeg($0) }
+    do {
+        let c = try await compiler.compile(goal: goal, source: source, frameJPEG: frame, facts: [])
+        print(String(format: "%.1fs  compiled in %.1fs · %@ · %@", Date().timeIntervalSince(t0), c.seconds, String(describing: c.classification), c.mismatch ?? "no mismatch"))
+        let p = c.procedure
+        print("title: \(p.title)\nsource: \(p.source.reference ?? "none (unverified)")\nobjects: " + p.objects.map { "\($0.id)=\($0.name) [\($0.phrase)]" }.joined(separator: ", "))
+        for (i, s) in p.steps.enumerated() {
+            print("\(i + 1). \(s.instruction)" + (s.gate.map { "  ⛔ gate: \($0)" } ?? "") + "  ✓ \(s.check.kind.rawValue): \(s.check.expected)" + (s.sourceRef.map { "  [\($0)]" } ?? ""))
+        }
+        if !p.cautions.isEmpty { print("cautions: " + p.cautions.joined(separator: " | ")) }
+    } catch { fail("compile failed: \(error)") }
+    exit(0)
+}
+
 guard args.first == "look", args.count >= 3 else {
     fail("usage: pipeval look <image> \"<utterance>\" [--prompts a,b] [--lang English|Dutch] [--goal \"…\"] [--out dir]")
 }

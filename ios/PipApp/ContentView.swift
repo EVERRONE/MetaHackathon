@@ -10,6 +10,7 @@ struct PipApp: App {
 struct ContentView: View {
     @StateObject private var model = GuideModel()
     @State private var showDebug = false
+    @State private var showSteps = false
 
     var body: some View {
         ZStack {
@@ -34,6 +35,15 @@ struct ContentView: View {
                 }
                 .padding(.horizontal)
 
+                if let preparing = model.preparing {
+                    Label(preparing, systemImage: "doc.text.magnifyingglass")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(10)
+                        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal)
+                }
+                if let task = model.taskView { taskCard(task) }
                 if showDebug { debugPanel }
 
                 Spacer()
@@ -58,6 +68,12 @@ struct ContentView: View {
             }
         }
         .onAppear { model.start() }
+        .sheet(isPresented: $showSteps) {
+            if let task = model.taskView { StepsSheet(task: task) }
+        }
+        .onChange(of: model.taskView?.finished ?? false) { _, finished in
+            if finished { showSteps = true }
+        }
     }
 
     /// Mute and unmute while listening; stop Pip while it looks or talks.
@@ -77,6 +93,30 @@ struct ContentView: View {
             .shadow(radius: 8)
         }
         .accessibilityLabel(busy ? "Stop Pip" : (model.muted ? "Unmute" : "Mute"))
+    }
+
+    /// The current step at a glance; tap for every step and its status.
+    private func taskCard(_ task: GuideModel.TaskView) -> some View {
+        Button { showSteps = true } label: {
+            HStack(spacing: 10) {
+                Text(task.finished ? "✓" : "\(min(task.index + 1, task.steps.count))/\(task.steps.count)")
+                    .font(.headline.monospacedDigit())
+                    .foregroundStyle(.black)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .background(Color(red: 0.55, green: 1, blue: 1), in: Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(task.title).font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
+                    Text(task.finished ? "Done" : (task.steps.indices.contains(task.index) ? task.steps[task.index].text : ""))
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(.white).lineLimit(2)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "list.bullet").foregroundStyle(.white.opacity(0.8))
+            }
+            .padding(10)
+            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 16))
+        }
+        .padding(.horizontal)
+        .accessibilityLabel("Steps")
     }
 
     private var debugPanel: some View {
@@ -122,4 +162,40 @@ struct ARContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {}
+}
+
+/// Every step with how it was checked, the source, and at the end the report to share.
+struct StepsSheet: View {
+    let task: GuideModel.TaskView
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(task.steps) { step in
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: step.state)
+                                .foregroundStyle(step.state.hasPrefix("checkmark") ? .green : (step.id == task.index && !task.finished ? .cyan : .secondary))
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(step.id + 1). \(step.text)")
+                                if let ref = step.sourceRef { Text(ref).font(.caption).foregroundStyle(.secondary) }
+                            }
+                        }
+                    }
+                } header: {
+                    Text(task.source)
+                }
+                if let report = task.report {
+                    Section("Summary") {
+                        Text(report).font(.footnote.monospaced()).textSelection(.enabled)
+                        ShareLink(item: report) { Label("Share the summary", systemImage: "square.and.arrow.up") }
+                    }
+                }
+            }
+            .navigationTitle(task.title)
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .presentationDetents([.medium, .large])
+    }
 }

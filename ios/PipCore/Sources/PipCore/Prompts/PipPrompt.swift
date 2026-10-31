@@ -2,7 +2,7 @@ import Foundation
 
 /// Spark prompts. The system prompt is a stable prefix, so it is served from the prompt cache.
 public enum PipPrompt {
-    public static let version = "look-v7"
+    public static let version = "look-v8"
 
     /// Live guidance: Spark points by position and printed text; the app finds the exact outline.
     public static func system(language: String) -> String {
@@ -126,6 +126,11 @@ public enum PipPrompt {
         STATE FOR THE APP
         End every reply with exactly one short tag, after your last sentence (keep seen under 12 words):
         [[state seen="what you observe about the main object" conf=0.0-1.0 step=done|not_done|unknown]]
+        TASKS
+        If the user wants to do a task of several steps (assemble, install, descale, reset, replace, set up) and no guided task is in progress, answer with one short sentence and add after the state tag:
+        [[task goal="what the user wants to achieve" product="brand and model if you can read or know them, else empty"]]
+        Pip then finds the official instructions and guides the task step by step. During a guided task, answer questions about the current step without moving on.
+
         MEMORY
         When the user tells you something lasting, or you identify it for sure, add one tag per fact after the state tag: the computer or operating system, the device's brand and model, its layout, which breaker or switch is which room, a preference. Use a short key and value, and say where it comes from:
         [[remember key="computer" value="Mac" from=said]]   [[remember key="keyboard" value="Logitech MX Keys, French AZERTY" from=seen]]
@@ -160,9 +165,9 @@ public enum PipPrompt {
     }
 
     /// The variable tail of a look turn: context, the utterance and the image(s).
-    public static func lookMessage(goal: String?, step: Step?, facts: [String], marks: [SegmentInstance] = [], utterance: String, frameJPEG: Data, markedJPEG: Data? = nil) -> ChatMessage {
+    public static func lookMessage(goal: String?, step: Step?, facts: [String], marks: [SegmentInstance] = [], utterance: String, directive: String? = nil, frameJPEG: Data, markedJPEG: Data? = nil) -> ChatMessage {
         var lines: [String] = []
-        if let goal { lines.append("Task: \(goal)") }
+        if let goal { lines.append("Guided task in progress: \(goal)") }
         if let step {
             var s = "Current step \(step.index)/\(step.count): \(step.instruction)"
             if let e = step.expected { s += " Expected result: \(e)" }
@@ -176,7 +181,11 @@ public enum PipPrompt {
             lines.append("Marks in Image 2 (number: what the segmenter searched for, its confidence):")
             for m in marks { lines.append("\(m.id): \(m.prompts.joined(separator: "/")) \(String(format: "%.2f", m.confidence))") }
         }
-        lines.append("User: \"\(utterance)\"")
+        if let directive {
+            lines.append("Pip's job now: \(directive)")
+        } else {
+            lines.append("User: \"\(utterance)\"")
+        }
         let images: [ChatMessage.Part] = markedJPEG.map { [.imageJPEG(frameJPEG), .imageJPEG($0)] } ?? [.imageJPEG(frameJPEG)]
         return ChatMessage(role: .user, parts: [.text(lines.joined(separator: "\n"))] + images)
     }

@@ -14,6 +14,8 @@ Every route except `/v1/health` needs `Authorization: Bearer <PIP_APP_TOKEN>`.
 | `POST /v1/transcribe` | Body: a mono 16-bit WAV (16 or 24 kHz). Query: `mode` (`PUSH_TO_TALK` or `ENDPOINTING`), `languages` (e.g. `English,Dutch`), `keywords`. |
 | `GET /v1/asr` | WebSocket relay to realtime transcription. The first frame is the handshake without a key (`audioEncoding`, `mode`, `partialMode`, `languageBias`, `keywords`). Then send binary PCM and `{"type":"endStream"}` to finish. |
 | `POST /v1/speak` | `{ text, voice, language }` → ElevenLabs Flash v2.5 speech as newline-delimited JSON: base64 PCM (24 kHz, 16-bit mono) plus each character's start time, used to time the cues. ElevenLabs is the only non-Meta model: Meta has no text-to-speech. |
+| `POST /v1/responses` | Responses API for `muse-spark-1.3` / `muse-wonder-1.0`, non-streaming: web search (the only tool allowed) and PDFs by `file_url` (https only). Used to find a product's official manual and to read it. Searches are charged at $2.50 per 1,000. |
+| `POST /v1/source-check` | `{ url }` → whether the link really answers with a PDF or web page (models can produce links that do not exist). |
 | `GET /v1/usage` | Estimated spend: today and total, in USD. |
 
 ### `/v1/segment`

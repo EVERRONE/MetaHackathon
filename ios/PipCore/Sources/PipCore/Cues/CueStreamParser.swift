@@ -18,6 +18,11 @@ public struct TimedCue: Equatable, Sendable {
 public struct SpokenSentence: Equatable, Sendable {
     public var text: String
     public var cues: [TimedCue]
+
+    public init(text: String, cues: [TimedCue] = []) {
+        self.text = text
+        self.cues = cues
+    }
 }
 
 public enum CueStreamEvent: Equatable, Sendable {

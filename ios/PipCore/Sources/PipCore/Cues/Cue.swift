@@ -75,10 +75,12 @@ public enum Cue: Equatable, Sendable {
     case needView(reason: String, hint: String?)
     /// A durable fact to remember for the rest of the session, e.g. computer = Mac.
     case remember(key: String, value: String, source: String)
+    /// The user wants to do a task of several steps: Pip prepares a guided procedure.
+    case task(goal: String, product: String?)
 
     public var isDrawn: Bool {
         switch self {
-        case .state, .locate, .needView, .remember: return false
+        case .state, .locate, .needView, .remember, .task: return false
         default: return true
         }
     }
@@ -92,7 +94,7 @@ public enum Cue: Equatable, Sendable {
             return ms
         case .danger(let m, _):
             return m.map { [$0] } ?? []
-        case .clear, .state, .locate, .needView, .remember:
+        case .clear, .state, .locate, .needView, .remember, .task:
             return []
         }
     }
@@ -110,7 +112,7 @@ public enum Cue: Equatable, Sendable {
         case .danger(let m, let r): return .danger(mark: m.map(f), reason: r)
         case .offscreen(let m): return .offscreen(mark: f(m))
         case .verified(let m): return .verified(mark: f(m))
-        case .clear, .state, .locate, .needView, .remember: return self
+        case .clear, .state, .locate, .needView, .remember, .task: return self
         }
     }
 }
@@ -176,6 +178,10 @@ extension Cue {
             return .success(.locate(x: x, y: y, label: a["label"]))
         case "need_view", "needview":
             return .success(.needView(reason: a["reason"] ?? "unclear", hint: a["hint"]))
+        case "task":
+            guard let goal = a["goal"]?.trimmingCharacters(in: .whitespaces), !goal.isEmpty else { return fail("needs goal") }
+            let product = a["product"]?.trimmingCharacters(in: .whitespaces)
+            return .success(.task(goal: goal, product: product?.isEmpty == false ? product : nil))
         case "remember":
             guard let key = a["key"]?.trimmingCharacters(in: .whitespaces), !key.isEmpty,
                   let value = a["value"]?.trimmingCharacters(in: .whitespaces), !value.isEmpty else { return fail("needs key and value") }
