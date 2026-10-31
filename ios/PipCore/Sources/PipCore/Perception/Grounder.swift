@@ -11,12 +11,16 @@ public struct TargetSpec: Equatable, Sendable {
     public var phrase: String
     /// Text printed on the object, alternatives allowed ("0", "à", "@").
     public var text: [String]
+    /// The object a small target is part of ("remote control" for a key on it): Pip locks the
+    /// outline to that object in 3D, so it stays on the key when the remote moves.
+    public var on: String?
 
-    public init(x: Double, y: Double, phrase: String, text: [String] = []) {
+    public init(x: Double, y: Double, phrase: String, text: [String] = [], on: String? = nil) {
         self.x = x
         self.y = y
         self.phrase = phrase
         self.text = text
+        self.on = on
     }
 
     public func point(in size: CGSize) -> CGPoint {

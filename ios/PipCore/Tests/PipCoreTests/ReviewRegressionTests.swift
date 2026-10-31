@@ -181,3 +181,27 @@ private func gated() -> Procedure {
         #expect(CueTag.parse(#"remember key="spot" value="shelf 2, 3rd row" from=said"#)?.attributes["value"] == "shelf 2, 3rd row")
     }
 }
+
+@Suite struct PrintedTextTests {
+    @Test func barsArePrintedTextNotSeparators() {
+        #expect(CueTag.alternatives("0|à|@") == ["0", "à", "@"])
+        #expect(CueTag.alternatives("||") == ["||"])
+        #expect(CueTag.alternatives("II") == ["II"])
+        #expect(CueTag.alternatives("pause||") == ["pause", "pause||"])
+        #expect(CueTag.alternatives("") == [])
+    }
+
+    @Test func aPauseKeyKeepsItsSymbolAsTarget() {
+        var p = CueStreamParser()
+        let events = p.feed(#"Press [[ring at=498,534 obj="button" text="||"]] the pause key."#) + p.finish()
+        let targets = events.compactMap { e -> TargetSpec? in if case .target(_, let spec) = e { return spec } else { return nil } }
+        #expect(targets.first?.text == ["||"])
+    }
+
+    @Test func theObjectATargetIsOnTravelsWithIt() {
+        var p = CueStreamParser()
+        let events = p.feed(#"Press [[ring at=498,534 obj="button" text="II" on="Remote Control"]] the pause key."#) + p.finish()
+        let targets = events.compactMap { e -> TargetSpec? in if case .target(_, let spec) = e { return spec } else { return nil } }
+        #expect(targets.first?.on == "remote control")
+    }
+}

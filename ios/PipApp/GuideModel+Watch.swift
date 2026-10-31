@@ -174,6 +174,36 @@ extension GuideModel {
         }
     }
 
+    /// Makes a reference image of the object a mark is on and hands it to ARKit, which then
+    /// follows the object in 3D with the outline on it. `on`: what the model said the target is
+    /// part of ("remote control"); SAM finds that object around the key and its mask is the
+    /// image. Without it, a tight patch around the key (on a device, mostly the device).
+    func lockToObject(_ id: Int, key: SegmentInstance, on: String?, snapshot: FrameSnapshot) {
+        Task { [weak self] in
+            guard let self else { return }
+            let k = key.boxRect
+            let centre = CGPoint(x: k.midX, y: k.midY)
+            let bounds = CGRect(x: 0, y: 0, width: snapshot.image.width, height: snapshot.image.height)
+            var parent: SegmentInstance?
+            if let on {
+                let object = await Grounder(client: self.client, frameJPEG: Data()).object(named: on, at: centre, in: snapshot.image, id: 0)
+                // The object the key is on: it contains the key, is clearly bigger, and is not the whole view.
+                parent = object.flatMap { o -> SegmentInstance? in
+                    let area = Double(o.area), keyArea = Double(k.width * k.height)
+                    return Grounding.contains(o, centre) && area >= 3 * keyArea && area < 0.7 * Double(bounds.width * bounds.height) ? o : nil
+                }
+            }
+            let distance = snapshot.depth(atSensor: snapshot.sensorPoint(CGPoint(x: k.midX, y: k.midY)), minConfidence: 1) ?? 0.4
+            guard let made = ImageLock.make(markID: id, key: key, object: parent, snapshot: snapshot, distance: distance) else {
+                self.log("lock: mark \(id % 1000): no region to lock to")
+                return
+            }
+            self.log(String(format: "lock: mark %d: reference %@ (%.0f mm), key at %.2f m", id % 1000, parent == nil ? "around the key" : "of its object",
+                            made.physicalWidth * 1000, distance))
+            self.ar.lock(markID: id, image: made.image, physicalWidth: made.physicalWidth, local: made.local)
+        }
+    }
+
     /// An object Pip pointed at was moved (followed in the image) and lies still again: measure it
     /// at its new place and anchor it there.
     func remeasureMoved(_ id: Int, screenBox: CGRect) async {

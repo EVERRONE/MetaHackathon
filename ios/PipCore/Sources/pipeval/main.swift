@@ -1,4 +1,5 @@
 import CoreGraphics
+import ImageIO
 import Foundation
 import PipCore
 
@@ -18,7 +19,7 @@ if args.first == "ground", args.count >= 5 {
     let env = ProcessInfo.processInfo.environment
     guard let data = FileManager.default.contents(atPath: args[1]), let frame = SetOfMarks.load(data) else { fail("cannot read \(args[1])") }
     let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
-    let spec = TargetSpec(x: Double(args[2])!, y: Double(args[3])!, phrase: args[4], text: args.count > 5 ? args[5].split(separator: "|").map(String.init) : [])
+    let spec = TargetSpec(x: Double(args[2])!, y: Double(args[3])!, phrase: args[4], text: args.count > 5 ? CueTag.alternatives(args[5]) : [])
     let t0 = Date()
     let r = await Grounder(client: client, frameJPEG: SetOfMarks.jpeg(frame)!).ground(spec, id: 1, frame: frame)
     print(String(format: "%.2fs", Date().timeIntervalSince(t0)), r.method, r.instance.map { "box \($0.box) conf \($0.confidence)" } ?? "nil")
@@ -35,6 +36,43 @@ if args.first == "confirm", args.count >= 5 {
     let t0 = Date()
     let inst = await Grounder(client: client, frameJPEG: Data()).object(named: args[2], at: p, in: image, id: 1)
     print(String(format: "%.1fs  %@", Date().timeIntervalSince(t0), inst.map { "found \(args[2]): box \($0.box), confidence \(String(format: "%.2f", $0.confidence))" } ?? "no \(args[2]) there"))
+    exit(0)
+}
+
+// pipeval face <image.jpg> <x1> <y1> <x2> <y2> <out.png>: the reference image Pip would lock a
+// key (box in the image's pixels) to, with the key's outline drawn on it for checking.
+if args.first == "face", args.count >= 7 {
+    let env = ProcessInfo.processInfo.environment
+    let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
+    guard let data = FileManager.default.contents(atPath: args[1]), let image = SetOfMarks.load(data) else { fail("cannot read \(args[1])") }
+    let box = CGRect(x: Double(args[2])!, y: Double(args[3])!, width: Double(args[4])! - Double(args[2])!, height: Double(args[5])! - Double(args[3])!)
+    let grounder = Grounder(client: client, frameJPEG: Data())
+    guard let key = await grounder.reground(box: box, id: 1, frame: image) else { fail("SAM found no key there") }
+    let side = max(key.boxRect.width, key.boxRect.height)
+    let around = key.boxRect.insetBy(dx: -4 * side, dy: -4 * side).intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    // With a phrase (what the key is on), SAM looks for that object; it must contain the key.
+    let centre = CGPoint(x: key.boxRect.midX, y: key.boxRect.midY)
+    let object = args.count > 7 ? await grounder.object(named: args[7], at: centre, in: image, id: 2).flatMap { Grounding.contains($0, centre) ? $0 : nil } : nil
+    _ = around
+    print("key \(key.box), object \(object.map { "\($0.box)" } ?? "none")")
+    guard let made = ObjectFace.make(key: key, object: object, image: image, focal: 1000, distance: 0.4) else { fail("no face") }
+    // Draw the key's outline back onto the face, from its local coordinates, to check the mapping.
+    let w = made.image.width, h = made.image.height
+    let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.draw(made.image, in: CGRect(x: 0, y: 0, width: w, height: h))
+    let pw = made.physicalWidth, ph = pw * CGFloat(h) / CGFloat(w)
+    ctx.setStrokeColor(CGColor(red: 0, green: 1, blue: 1, alpha: 1))
+    ctx.setLineWidth(3)
+    for ring in made.local {
+        let pts = ring.map { CGPoint(x: (CGFloat($0.x) / pw + 0.5) * CGFloat(w), y: CGFloat(h) - (CGFloat($0.z) / ph + 0.5) * CGFloat(h)) }
+        ctx.addLines(between: pts); ctx.closePath()
+    }
+    ctx.strokePath()
+    let url = URL(fileURLWithPath: args[6]) as CFURL
+    let dest = CGImageDestinationCreateWithURL(url, "public.png" as CFString, 1, nil)!
+    CGImageDestinationAddImage(dest, ctx.makeImage()!, nil)
+    CGImageDestinationFinalize(dest)
+    print(String(format: "face %dx%d px, %.0f mm wide at 0.4 m with f=1000", w, h, made.physicalWidth * 1000))
     exit(0)
 }
 

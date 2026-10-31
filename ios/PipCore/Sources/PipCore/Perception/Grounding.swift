@@ -2,9 +2,9 @@ import CoreGraphics
 import Foundation
 
 /// Geometry helpers for matching points to SAM instances.
-enum Grounding {
+public enum Grounding {
     /// Whether the point lies inside one of the instance's outlines.
-    static func contains(_ inst: SegmentInstance, _ p: CGPoint) -> Bool {
+    public static func contains(_ inst: SegmentInstance, _ p: CGPoint) -> Bool {
         guard inst.boxRect.insetBy(dx: -1, dy: -1).contains(p) else { return false }
         return inst.outlinePoints.contains { ring in
             var inside = false

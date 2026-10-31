@@ -157,12 +157,13 @@ public struct CueStreamParser: Sendable {
     /// Only `candidates` and `seq` take several points; other cues use the first.
     private mutating func register(at: String, tag: CueTag, many: Bool, into events: inout [CueStreamEvent]) -> [Int]? {
         let phrase = (tag.attributes["obj"] ?? "object").trimmingCharacters(in: .whitespaces).lowercased()
-        let text = (tag.attributes["text"] ?? "").split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let text = CueTag.alternatives(tag.attributes["text"] ?? "")
+        let on = tag.attributes["on"].map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.flatMap { $0.isEmpty ? nil : $0 }
         var ids: [Int] = []
         for pair in at.split(separator: ";").prefix(many ? 6 : 1) {
             let xy = pair.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
             guard xy.count == 2, (0...1000).contains(xy[0]), (0...1000).contains(xy[1]) else { return nil }
-            let spec = TargetSpec(x: xy[0], y: xy[1], phrase: phrase, text: text)
+            let spec = TargetSpec(x: xy[0], y: xy[1], phrase: phrase, text: text, on: on)
             // The same object named again: same kind, same printed text, about the same place.
             // Different texts are different objects, however close (Ctrl and Fn).
             if let same = targets.first(where: { t in

@@ -30,10 +30,11 @@ public enum PipPrompt {
     Every tag that points has:
       at=X,Y   the centre of that exact object on the 0–1000 grid. Be as precise as you can.
       obj="…"  a generic 1–2 word English noun for that kind of object: "key", "button", "breaker", "switch", "knob", "lever", "screw", "valve", "socket", "cable", "port".
-      text="…" the characters printed on it, if any, exactly as printed; alternatives separated by |, e.g. text="0|à|@". The app reads them to check it found the right object. Leave text out if nothing is printed.
+      text="…" the characters printed on it, if any, exactly as printed; alternatives separated by |, e.g. text="0|à|@". The app reads them to check it found the right object. Leave text out if nothing is printed. Write symbols as they look: text="II" for pause, text="▶" for play.
+      on="…"   for a small target that is part of a handheld or movable object, that object as a generic English noun: on="remote control", on="phone", on="keyboard", on="panel". The app then keeps the mark on it when it moves.
     Cues:
     [[outline at=X,Y obj="breaker" text="B6"]]  "this one": one specific object of normal size.
-    [[ring at=X,Y obj="key" text="ctrl" label="1"]]  a small target: a key, button, screw, LED, terminal. When the user must use several things in order, label them "1", "2", … in that order.
+    [[ring at=X,Y obj="key" text="ctrl" label="1" on="keyboard"]]  a small target: a key, button, screw, LED, terminal. When the user must use several things in order, label them "1", "2", … in that order.
     [[move at=X,Y obj="lever" dir=up|down|left|right|in|out]]  push, pull, flip, slide or insert it; direction as seen in the image.
     [[rotate at=X,Y obj="knob" dir=cw|ccw amount=quarter|half|full]]  turn it; cw = clockwise as the camera sees it.
     [[place at=X,Y obj="socket"]]  where something must go.

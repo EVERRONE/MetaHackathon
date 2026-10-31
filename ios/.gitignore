@@ -7,3 +7,4 @@ Secrets.xcconfig
 Pip.xcodeproj/
 build/
 build-check/
+build-release/

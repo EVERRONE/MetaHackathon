@@ -26,6 +26,7 @@ extension GuideModel {
             Task { @MainActor in await self?.remeasureMoved(id, screenBox: box) }
         }
         ar.follower.onLog = { [weak self] line in self?.log(line) }
+        ar.onLockLog = { [weak self] line in self?.log(line) }
         ar.onPlaceMoved = { [weak self] place in
             guard let self else { return }
             var p = place

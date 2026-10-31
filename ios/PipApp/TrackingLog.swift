@@ -37,7 +37,13 @@ final class TrackingLog {
     nonisolated static func append(_ line: String, to name: String) {
         guard let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.appendingPathComponent(name) else { return }
         let text = ISO8601DateFormatter().string(from: Date()) + "\t" + line + "\n"
-        Task.detached(priority: .utility) {
+        appendQueue.async {
+            // Kept to about 2 MB: the older half moves aside.
+            if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int, size > 2_000_000 {
+                let old = url.deletingPathExtension().appendingPathExtension("old.log")
+                try? FileManager.default.removeItem(at: old)
+                try? FileManager.default.moveItem(at: url, to: old)
+            }
             if let handle = try? FileHandle(forWritingTo: url) {
                 handle.seekToEndOfFile()
                 handle.write(Data(text.utf8))
@@ -47,6 +53,9 @@ final class TrackingLog {
             }
         }
     }
+
+    /// One queue for all appends, so lines keep their order.
+    nonisolated private static let appendQueue = DispatchQueue(label: "pip.log")
 
     /// Median distance between outline and object over this session's re-measurements.
     var medianError: Double? {

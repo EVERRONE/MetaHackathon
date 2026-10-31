@@ -23,6 +23,10 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     let follower = ImageFollower()
     /// A moved object lies still again: measure it anew (its box in screen points).
     var onMovedObjectSettled: ((Int, CGRect) -> Void)?
+    /// Outlines locked to their object in 3D through ARKit image tracking, by reference image name.
+    private var imageLocks: [String: ImageLock] = [:]
+    static let maxImageLocks = 4
+    var onLockLog: ((String) -> Void)?
     private var renderSubscription: Cancellable?
     /// False while ARKit has lost the room (after leaving it): cues are hidden, not drawn wrong.
     private(set) var trackingNormal = true
@@ -220,6 +224,77 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             targetCorrections[id] = nil
             follower.stop(id)
         }
+        let gone = imageLocks.filter { marks[$0.value.markID] == nil }.map(\.key)
+        if !gone.isEmpty {
+            for name in gone { imageLocks[name] = nil }
+            reconfigureImages()
+        }
+    }
+
+    // MARK: Locking outlines to their object (ARKit image tracking)
+
+    /// Hands ARKit a reference image of the object a mark is on; once ARKit has checked it has
+    /// enough texture, it follows the object and the mark goes with it.
+    func lock(markID: Int, image: CGImage, physicalWidth: CGFloat, local: [[simd_float3]]) {
+        guard marks[markID] != nil, physicalWidth > 0.01 else { return }
+        let reference = ARReferenceImage(image, orientation: .up, physicalWidth: physicalWidth)
+        reference.name = "pip-lock-\(markID)"
+        reference.validate { [weak self] error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let error {
+                    self.onLockLog?("lock: mark \(markID % 1000) not trackable as an image (\(error.localizedDescription)); following in the image instead")
+                    return
+                }
+                guard self.marks[markID] != nil else { return }
+                // At most a few at once: the oldest lock gives way.
+                if self.imageLocks.count >= Self.maxImageLocks, let oldest = self.imageLocks.values.min(by: { $0.markID < $1.markID }) {
+                    self.imageLocks[oldest.name] = nil
+                }
+                self.imageLocks[reference.name!] = ImageLock(markID: markID, reference: reference, local: local)
+                self.onLockLog?(String(format: "lock: mark %d locked to its object (%.0f mm wide reference)", markID % 1000, physicalWidth * 1000))
+                self.reconfigureImages()
+            }
+        }
+    }
+
+    private var lastImageSet: Set<String> = []
+
+    /// Runs the session again with the current reference images (no reset: tracking, anchors and
+    /// the room map go on). Skipped while ARKit is still recognising a saved room.
+    private func reconfigureImages() {
+        let names = Set(imageLocks.keys)
+        guard names != lastImageSet, !awaitingFirstRelocalisation else { return }
+        lastImageSet = names
+        let config = Self.configuration(initialMap: nil)
+        config.detectionImages = Set(imageLocks.values.map(\.reference))
+        config.maximumNumberOfTrackedImages = min(Self.maxImageLocks, imageLocks.count)
+        config.automaticImageScaleEstimationEnabled = true
+        arView.session.run(config)
+    }
+
+    /// ARKit moved a locked object's image: its mark follows, in 3D.
+    private func updateLocks(_ changed: [ARAnchor]) {
+        for case let anchor as ARImageAnchor in changed {
+            guard let name = anchor.referenceImage.name, var lock = imageLocks[name], marks[lock.markID] != nil else { continue }
+            let id = lock.markID
+            if !lock.seen {
+                // From now on ARKit's image pose holds the mark, not the room anchor.
+                lock.seen = true
+                if let a = anchors[id] { arView.session.remove(anchor: a.anchor) }
+                anchors[id] = nil
+                targetCorrections[id] = nil
+                follower.stop(id)
+                onLockLog?("lock: mark \(id % 1000) found on its object; following it in 3D")
+            }
+            lock.tracked = anchor.isTracked
+            imageLocks[name] = lock
+            guard anchor.isTracked else { continue }
+            let s = Float(anchor.estimatedScaleFactor)
+            let t = anchor.transform
+            let world = lock.local.map { ring in ring.map { (t * simd_float4($0 * s, 1)).xyz } }
+            marks[id] = AnchoredMark(id: id, world: world)
+        }
     }
 
     /// After Pip found one object again and saw it had drifted, the other objects pointed at in
@@ -248,7 +323,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         trackingRecovered = false
         var out: [(Int, CGRect, ObjectTrack.Reason, Int)] = []
         // Remembered places too: one brought back from storage is found again when Pip points at it.
-        for (id, box) in visibleMarkBoxes(in: snapshot) {
+        let locked = Set(imageLocks.values.filter(\.tracked).map(\.markID))
+        for (id, box) in visibleMarkBoxes(in: snapshot) where !locked.contains(id) {
             guard var track = tracks[id], let m = marks[id] else { continue }
             if recovered { track.needsCheck = true; tracks[id] = track }
             guard let reason = track.reason(now: now, camera: camera, centre: m.centroid, taskActive: taskActive) else { continue }
@@ -339,6 +415,11 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     func session(_ session: ARSession, didAdd added: [ARAnchor]) {
         for anchor in added { restorePlace(anchor) }
+        updateLocks(added)
+    }
+
+    func session(_ session: ARSession, didUpdate updated: [ARAnchor]) {
+        updateLocks(updated)
     }
 
     func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
@@ -409,7 +490,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     /// Pointed-at objects with a cue on screen, followed in the image (see ImageFollower).
     private func followObjects(_ frame: ARFrame) {
-        let shownIDs = Set(board.annotations.flatMap { $0.cue.marks }).filter { $0 < Self.placeMarkBase && tracks[$0] != nil }
+        let locked = Set(imageLocks.values.filter(\.tracked).map(\.markID))
+        let shownIDs = Set(board.annotations.flatMap { $0.cue.marks }).filter { $0 < Self.placeMarkBase && tracks[$0] != nil && !locked.contains($0) }
         guard !shownIDs.isEmpty else { return }
         var shown: [(id: Int, box: CGRect)] = []
         for id in shownIDs.sorted() {

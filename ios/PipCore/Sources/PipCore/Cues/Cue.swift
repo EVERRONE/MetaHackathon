@@ -6,6 +6,20 @@ public struct CueTag: Equatable, Sendable {
     public var attributes: [String: String]
     public var raw: String
 
+    /// Printed-text alternatives: "0|à|@" → ["0", "à", "@"]. A value that is itself made of bars
+    /// (the pause symbol "||", or "|||") is one literal, not an empty list.
+    public static func alternatives(_ value: String) -> [String] {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return [] }
+        let parts = trimmed.split(separator: "|", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+        if parts.contains(where: \.isEmpty) {
+            // "||", "a||b" or "|x": keep the bars as printed text rather than losing them.
+            let nonEmpty = parts.filter { !$0.isEmpty }
+            return nonEmpty.isEmpty ? [trimmed] : nonEmpty + [trimmed]
+        }
+        return parts
+    }
+
     /// "m=3, 4" → "m=3,4", outside quoted values only ("shelf 2, 3rd row" stays as written).
     static func joiningSpacedLists(_ body: String) -> String {
         var out = ""
@@ -225,7 +239,7 @@ extension Cue {
             return .success(.find(what: what, phrase: (a["obj"] ?? what).trimmingCharacters(in: .whitespaces)))
         case "list":
             func items(_ key: String) -> [String] {
-                (a[key] ?? "").split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                CueTag.alternatives(a[key] ?? "")
             }
             return .success(.list(add: items("add"), got: items("got"), remove: items("remove")))
         case "read_pages", "readpages":

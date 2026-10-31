@@ -397,6 +397,8 @@ final class GuideModel: ObservableObject {
                 case .grounded(let id, let inst, let method, let seconds):
                     if let inst {
                         let anchoring = ar.addMark(inst.renumbered(id + offset), snapshot: snapshot, spec: specs[id])
+                        // Lock the outline to the object itself, so it stays on it when it moves.
+                        if anchoring != "assumed depth" { lockToObject(id + offset, key: inst.renumbered(id + offset), on: specs[id]?.on, snapshot: snapshot) }
                         recorder?.grounded(inst)
                         note(String(format: "grounded %d via %@ in %.1fs, anchored on %@", id, method, seconds, anchoring))
                     } else {
@@ -487,7 +489,9 @@ final class GuideModel: ObservableObject {
     func log(_ line: String) {
         trace.append(line)
         if trace.count > 60 { trace.removeFirst(trace.count - 60) }
-        // The map's decisions are kept on the iPhone too (Documents/map.log), to check linking later.
+        // Everything Pip decides is kept on the iPhone too (Documents/session.log; the map's
+        // decisions also in map.log), so a test can be read back afterwards.
+        TrackingLog.append(line, to: "session.log")
         if line.hasPrefix("map:") { TrackingLog.append(line, to: "map.log") }
     }
 }
