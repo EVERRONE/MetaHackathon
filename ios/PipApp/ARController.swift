@@ -80,18 +80,22 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         arView.session.run(Self.configuration(initialMap: nil), options: [.resetTracking, .removeExistingAnchors])
     }
 
-    /// The room's surfaces ARKit has meshed so far, as points 4 cm apart (world space).
-    func meshPoints() -> [simd_float3] {
+    /// The room's surfaces ARKit has meshed so far, as points 4 cm apart (world space); only
+    /// those within `radius` of `centre` when given.
+    func meshPoints(near centre: simd_float3? = nil, radius: Float = 0) -> [simd_float3] {
         let meshes = (arView.session.currentFrame?.anchors ?? []).compactMap { $0 as? ARMeshAnchor }
         var points: [simd_float3] = []
         for mesh in meshes {
+            // Mesh anchors cover about a metre each: skip those clearly out of reach.
+            if let centre, simd_distance(mesh.transform.columns.3.xyz, centre) > radius + 1.5 { continue }
             let vertices = mesh.geometry.vertices
             let base = vertices.buffer.contents().advanced(by: vertices.offset)
             let t = mesh.transform
             for i in 0..<vertices.count {
                 let v = base.advanced(by: i * vertices.stride).assumingMemoryBound(to: Float.self)
-                let p = t * simd_float4(v[0], v[1], v[2], 1)
-                points.append(simd_float3(p.x, p.y, p.z))
+                let p = (t * simd_float4(v[0], v[1], v[2], 1)).xyz
+                if let centre, simd_distance(p, centre) > radius { continue }
+                points.append(p)
             }
         }
         return VoxelIndex.downsample(points, size: 0.04)
@@ -140,6 +144,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         place(placed, glideFrom: predicted)
         var result = update
         result.pixelError = pixelError.map(Double.init)
+        result.correction = simd_distance(predicted, placed.centroid)
         result.method = placed.method
         return result
     }
@@ -148,13 +153,23 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         if let old = anchors[m.id] { arView.session.remove(anchor: old.anchor) }
         var t = matrix_identity_float4x4
         t.columns.3 = simd_float4(m.placement, 1)
-        let anchor = ARAnchor(name: "pip-mark", transform: t)
+        let isPlace = places[m.id] != nil
+        let anchor = ARAnchor(name: isPlace ? "pip-place" : "pip-mark", transform: t)
         arView.session.add(anchor: anchor)
         anchors[m.id] = (anchor, t)
         targetCorrections[m.id] = nil
         var m = m
         if let previous { m.glide = previous - m.centroid }
         marks[m.id] = m
+        // A remembered place keeps its new, measured position: on its new anchor, in storage.
+        if isPlace, var p = places[m.id] {
+            let inverse = simd_inverse(t)
+            p.anchorID = anchor.identifier
+            p.pose = Self.values(t)
+            p.outline = m.polygons.map { ring in ring.map { (inverse * simd_float4($0 - m.glide, 1)).xyz } }
+            places[m.id] = p
+            onPlaceMoved?(p)
+        }
     }
 
     private func removeMarks(where shouldRemove: (Int) -> Bool) {
@@ -192,7 +207,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         let recovered = trackingRecovered
         trackingRecovered = false
         var out: [(Int, CGRect, ObjectTrack.Reason, Int)] = []
-        for (id, box) in visibleMarkBoxes(in: snapshot) where id < Self.placeMarkBase {
+        // Remembered places too: one brought back from storage is found again when Pip points at it.
+        for (id, box) in visibleMarkBoxes(in: snapshot) {
             guard var track = tracks[id], let m = marks[id] else { continue }
             if recovered { track.needsCheck = true; tracks[id] = track }
             guard let reason = track.reason(now: now, camera: camera, centre: m.centroid, taskActive: taskActive) else { continue }
@@ -256,9 +272,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         renderNow()
     }
 
-    /// Whether any look's or found object's mark has a cue on screen (re-measuring has work to do).
+    /// Whether a measured object has a cue on screen (re-measuring has work to do).
     var hasPointedMarks: Bool {
-        board.annotations.contains { $0.cue.marks.contains { $0 < Self.placeMarkBase && marks[$0] != nil } }
+        board.annotations.contains { $0.cue.marks.contains { tracks[$0] != nil && marks[$0] != nil } }
     }
 
 
@@ -386,8 +402,10 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         arView.session.add(anchor: anchor)
         let inverse = simd_inverse(t)
         let local = world.map { ring in ring.map { p -> SIMD3<Float> in let q = inverse * simd_float4(p, 1); return SIMD3(q.x, q.y, q.z) } }
-        let place = SpaceMemory.Place(id: UUID(), name: name, anchorID: anchor.identifier, outline: local, created: Date(), pose: Self.values(t))
-        install(place, anchor: anchor)
+        let spec = tracks[mark]?.spec
+        let place = SpaceMemory.Place(id: UUID(), name: name, anchorID: anchor.identifier, outline: local, created: Date(), pose: Self.values(t),
+                                      phrase: spec?.phrase, text: spec?.text)
+        install(place, anchor: anchor, measured: true)
         return place
     }
 
@@ -432,7 +450,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// Places ARKit restored from the saved map, with their pose now known (to store once).
     var restoredPlaces: [SpaceMemory.Place] = []
 
-    private func install(_ place: SpaceMemory.Place, anchor: ARAnchor) {
+    /// `measured`: just pointed at in this session. Otherwise (from storage or a linked piece)
+    /// Pip finds it again the first time it points at it, and corrects its position.
+    private func install(_ place: SpaceMemory.Place, anchor: ARAnchor, measured: Bool = false) {
         let id = nextPlaceMark
         nextPlaceMark += 1
         let t = anchor.transform
@@ -440,7 +460,13 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         marks[id] = AnchoredMark(id: id, world: world)
         anchors[id] = (anchor, t)
         places[id] = place
+        if !measured, let phrase = place.phrase {
+            tracks[id] = ObjectTrack(place: TargetSpec(x: 500, y: 500, phrase: phrase, text: place.text ?? []), now: CACurrentMediaTime())
+        }
     }
+
+    /// A remembered place was measured again: its new pose and outline, to store.
+    var onPlaceMoved: ((SpaceMemory.Place) -> Void)?
 
     func forgetPlace(_ placeID: UUID) {
         pendingPlaces = pendingPlaces.filter { $0.value.id != placeID }

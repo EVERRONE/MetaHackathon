@@ -36,6 +36,8 @@ struct ObjectTrack {
         var offset: simd_float3?
         /// How far the outline was from the object in this snapshot, before the correction.
         var pixelError: Double?
+        /// How far the outline moved in the room with this correction, in metres.
+        var correction: Float = 0
         var method = ""
     }
 
@@ -73,6 +75,17 @@ struct ObjectTrack {
         self.box = box
         created = observation.time
         lastMeasured = observation.time
+    }
+
+    /// A remembered place brought back from storage or a linked map piece: not measured in this
+    /// session yet, so it is found again the first time Pip points at it.
+    init(place spec: TargetSpec?, now: TimeInterval) {
+        observations = []
+        self.spec = spec
+        box = .zero
+        created = now
+        lastMeasured = 0
+        needsCheck = true
     }
 
     /// Notes whether the object is on screen. Returns true when something changed.

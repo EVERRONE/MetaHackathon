@@ -167,8 +167,9 @@ extension GuideModel {
                 guard let update = ar.updateMark(inst, snapshot: snapshot, reason: reason) else { continue }
                 if let offset = update.offset { ar.shiftNeighbours(of: id, by: offset) }
                 trackingLog.record(id: id, reason: reason, update: update)
-                log(String(format: "mark %d %@: %.0f px off, %d view%@%@", id % 1000, reason.rawValue, update.pixelError ?? -1, update.views,
-                           update.views == 1 ? "" : "s", update.reset ? (update.offset != nil ? String(format: ", drift %.0f cm", simd_length(update.offset!) * 100) : ", moved") : ""))
+                log(String(format: "mark %d %@: corrected %.1f cm (%.0f px), %d view%@%@", id % 1000, reason.rawValue, update.correction * 100,
+                           update.pixelError ?? -1, update.views, update.views == 1 ? "" : "s",
+                           update.reset ? (update.offset != nil ? String(format: ", drift %.0f cm", simd_length(update.offset!) * 100) : ", moved") : ""))
             }
         }
     }

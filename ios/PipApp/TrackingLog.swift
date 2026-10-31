@@ -18,8 +18,8 @@ final class TrackingLog {
 
     func record(id: Int, reason: ObjectTrack.Reason, update: ObjectTrack.Update) {
         if let e = update.pixelError { errors.append(e) }
-        let line = String(format: "%@\t%d\t%@\t%.1f\t%d\t%@\t%.1f\t%@\n", ISO8601DateFormatter().string(from: Date()), id, reason.rawValue,
-                          update.pixelError ?? -1, update.views, update.reset ? "reset" : "fused",
+        let line = String(format: "%@\t%d\t%@\t%.1f\t%.2f\t%d\t%@\t%.1f\t%@\n", ISO8601DateFormatter().string(from: Date()), id, reason.rawValue,
+                          update.pixelError ?? -1, update.correction * 100, update.views, update.reset ? "reset" : "fused",
                           (update.offset.map { simd_length($0) } ?? 0) * 100, update.method)
         guard let url else { return }
         Task.detached(priority: .utility) {
@@ -28,7 +28,7 @@ final class TrackingLog {
                 handle.write(Data(line.utf8))
                 try? handle.close()
             } else {
-                try? Data(("time\tmark\treason\tpx_off\tviews\tkind\tdrift_cm\tmethod\n" + line).utf8).write(to: url)
+                try? Data(("time\tmark\treason\tpx_off\tcorrected_cm\tviews\tkind\tdrift_cm\tmethod\n" + line).utf8).write(to: url)
             }
         }
     }

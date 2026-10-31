@@ -31,9 +31,13 @@ final class MapKeeper {
     /// Only with the user's consent: without it nothing is kept beyond the session anyway.
     var enabled = false
 
-    /// A piece was linked: the piece, and the transform from its frame into this session's.
-    var onLink: ((MapPiece, simd_float4x4) -> Void)?
+    /// A piece was linked: the piece, the fine fit (stored frame ← live frame) with its
+    /// uncertainty, and the transform from the piece's frame into this session's.
+    var onLink: ((MapPiece, MapLinker.Refined, simd_float4x4) -> Void)?
     var onLog: ((String) -> Void)?
+    /// The live LiDAR mesh around a point (this session's frame): fused over many frames, so far
+    /// better for fitting than one depth frame.
+    var meshNear: ((simd_float3, Float) -> [simd_float3])?
 
     /// A keyframe when the phone moved this far, turned this much, or after this long.
     static let keyDistance: Float = 0.75
@@ -78,31 +82,43 @@ final class MapKeeper {
         lastKeyTime = t
         working = true
         let candidates = others
+        // The live mesh around the user when ARKit has built enough of it, else this depth frame.
+        let mesh = candidates.isEmpty ? [] : (meshNear?(pose.columns.3.xyz, 3.5) ?? [])
         Task.detached(priority: .utility) { [weak self] in
             let print = Self.featurePrint(snap.image)
-            let live = VoxelIndex.downsample(snap.depthPoints(), size: 0.08)
+            let live = mesh.count >= 2000 ? mesh : snap.depthPoints()
             await self?.process(print: print, live: live, pose: pose, candidates: candidates)
         }
     }
 
-    private func process(print: [Float]?, live: [simd_float3], pose: simd_float4x4, candidates: [MapPiece]) async {
+    private func process(print: [Float]?, live dense: [simd_float3], pose: simd_float4x4, candidates: [MapPiece]) async {
         defer { working = false }
         guard let print else { return }
         current.keyframes.append(MapKeyframe(pose: pose, print: print))
         thinKeyframes()
         dirty = true
+        let live = VoxelIndex.downsample(dense, size: 0.08)
         guard !candidates.isEmpty, live.count >= 150 else { return }
         for c in FeaturePrint.candidates(for: print, in: candidates, limit: 2, maxDistance: Self.maxPrintDistance) {
             guard others.contains(where: { $0.id == c.piece }), let piece = candidates.first(where: { $0.id == c.piece }),
                   piece.points.count >= 900, piece.keyframes.indices.contains(c.keyframe) else { continue }
             let target = await target(for: piece)
-            let seed = Self.seed(live: pose, stored: piece.keyframes[c.keyframe].pose)
+            let seed = MapLinker.seed(live: pose, stored: piece.keyframes[c.keyframe].pose)
             let fit = await Task.detached(priority: .utility) { PointRegistration.align(source: live, target: target, initial: seed) }.value
             guard let fit else { continue }
             onLog?(String(format: "map: view like piece %@ (%.2f): %.1f mm, %.0f%% matched, constraint %.2f%@", String(piece.id.uuidString.prefix(4)),
                           c.distance, fit.rms * 1000, fit.inlierRatio * 100, fit.constraint, fit.isMatch ? " ✓" : ""))
             if let link = consensus.add(piece: piece.id, fit: fit, camera: pose, time: CACurrentMediaTime()) {
-                merge(piece, liveToPiece: link)
+                // The same place, unambiguously: now the fine fit over all the live mesh around the user.
+                let around = meshNear?(pose.columns.3.xyz, 5) ?? dense
+                let source = VoxelIndex.downsample(around.count >= 2000 ? around : dense, size: 0.04)
+                let refined = await Task.detached(priority: .utility) { MapLinker.refine(source: source, target: target, initial: link) }.value
+                guard let refined, refined.inlierRatio > 0.5 else {
+                    onLog?("map: fine fit failed; waiting for more of the room")
+                    consensus.forget(piece.id)
+                    continue
+                }
+                merge(piece, refined: refined)
                 return
             }
         }
@@ -116,8 +132,8 @@ final class MapKeeper {
         return t
     }
 
-    private func merge(_ piece: MapPiece, liveToPiece: simd_float4x4) {
-        let pieceToLive = liveToPiece.inverse
+    private func merge(_ piece: MapPiece, refined: MapLinker.Refined) {
+        let pieceToLive = refined.transform.inverse
         let moved = piece.transformed(by: pieceToLive)
         current.keyframes += moved.keyframes
         thinKeyframes()
@@ -127,9 +143,10 @@ final class MapKeeper {
         consensus.forget(piece.id)
         merged.append(piece.id)
         dirty = true
-        onLog?(String(format: "map: linked piece %@ (turn %.1f°, shift %.2f m)", String(piece.id.uuidString.prefix(4)),
-                      PointRegistration.yaw(of: pieceToLive) * 180 / .pi, simd_length(pieceToLive.columns.3.xyz)))
-        onLink?(piece, pieceToLive)
+        onLog?(String(format: "map: linked piece %@ (turn %.2f°, shift %.3f m, %d points, ±%.1f mm at the overlap)", String(piece.id.uuidString.prefix(4)),
+                      PointRegistration.yaw(of: pieceToLive) * 180 / .pi, simd_length(pieceToLive.columns.3.xyz), refined.matched,
+                      refined.uncertainty(at: refined.centre) * 1000))
+        onLink?(piece, refined, pieceToLive)
     }
 
     /// Saves this piece with the room surfaces ARKit has meshed so far; merged pieces are removed.
@@ -161,20 +178,7 @@ final class MapKeeper {
 
     // MARK: Geometry and fingerprints
 
-    /// The start for fitting a live view onto a stored one that looked alike: the camera stood
-    /// about where it stood then, and both worlds are upright, so only the headings differ.
-    nonisolated static func seed(live: simd_float4x4, stored: simd_float4x4) -> simd_float4x4 {
-        let yaw = heading(stored) - heading(live)
-        let r = PointRegistration.transform(yaw: yaw, translation: .zero)
-        let t = stored.columns.3.xyz - (r * simd_float4(live.columns.3.xyz, 1)).xyz
-        return PointRegistration.transform(yaw: yaw, translation: t)
-    }
-
-    /// The direction the camera looks, as a turn about the vertical (radians).
-    nonisolated static func heading(_ m: simd_float4x4) -> Float {
-        let forward = -m.columns.2.xyz
-        return atan2(forward.x, forward.z)
-    }
+    nonisolated static func heading(_ m: simd_float4x4) -> Float { MapLinker.heading(m) }
 
     nonisolated static func wrapped(_ a: Float) -> Float {
         var d = a.truncatingRemainder(dividingBy: 2 * .pi)

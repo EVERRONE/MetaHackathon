@@ -19,8 +19,16 @@ extension GuideModel {
         mapKeeper.enabled = memory.consent == true
         mapKeeper.begin(continuing: continuing, others: pieces.filter { $0.id != continuing?.id })
         mapKeeper.onLog = { [weak self] line in self?.log(line) }
-        mapKeeper.onLink = { [weak self] piece, transform in self?.linked(piece, transform: transform) }
+        mapKeeper.onLink = { [weak self] piece, refined, transform in self?.linked(piece, refined: refined, transform: transform) }
         ar.onRelocaliseGaveUp = { [weak self] in self?.relocalisationGaveUp() }
+        ar.onPlaceMoved = { [weak self] place in
+            guard let self else { return }
+            var p = place
+            p.piece = self.mapKeeper.current.id
+            self.memory.update([p])
+            self.saveRoomSoon()
+        }
+        mapKeeper.meshNear = { [weak self] centre, radius in self?.ar.meshPoints(near: centre, radius: radius) ?? [] }
         ar.start(initialMap: worldMap)
         // Places of the piece ARKit is recognising come back on their own anchors.
         ar.restore(memory.places.filter { $0.piece == nil || $0.piece == continuing?.id })
@@ -40,8 +48,14 @@ extension GuideModel {
     }
 
     /// A stored piece was recognised and linked: its places come into this session, and Pip says so.
-    private func linked(_ piece: MapPiece, transform: simd_float4x4) {
+    /// Each place lands within the link's uncertainty (logged); the first time Pip points at it, it
+    /// is found again on sight and corrected to the centimetre.
+    private func linked(_ piece: MapPiece, refined: MapLinker.Refined, transform: simd_float4x4) {
         let moved = memory.places.filter { $0.piece == piece.id }.compactMap { place -> SpaceMemory.Place? in
+            if let pose = place.pose, pose.count == 16 {
+                let at = ARController.matrix(pose).columns.3.xyz
+                log(String(format: "map: %@ lands within ±%.1f cm", place.name, refined.uncertainty(at: at) * 100))
+            }
             guard var p = ar.installLinked(place, transform: transform) else { return nil }
             p.piece = mapKeeper.current.id
             return p

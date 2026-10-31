@@ -20,6 +20,10 @@ final class SpaceMemory: ObservableObject {
         /// so it can be brought back when the piece is linked into a later session.
         var piece: UUID?
         var pose: [Float]?
+        /// What it is to the detector and what is printed on it, to find it again on sight and
+        /// correct its position to the centimetre.
+        var phrase: String?
+        var text: [String]?
     }
 
     struct Fact: Codable, Equatable {
