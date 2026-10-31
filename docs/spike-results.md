@@ -85,3 +85,20 @@ A code review found that the prompt's examples used positions from the two test 
 | Whole keyboard from afar (keys ≈ 45 px) | Spoken answer right; Spark's points up to two keys off, refused by the check, so no pointer |
 | Apple Vision accurate text recognition after a pause | ~25 s to reload its models (fast pass: 0.05 s). Both passes now run within a budget, and the app keeps the accurate one warm |
 
+## Incident (31 October, about 17:00 CET): speaker diarization stopped ending turns
+
+**Symptom.** After an app update Pip answered nothing. The phone was connected and streaming audio (the relay charged every 30 s), but no look reached the model and no look was recorded on the device.
+
+**Cause.** Meta's realtime transcription in `DIARIZATION` mode, which the app used to tell speakers apart, no longer ends turns: it sends one ever-growing cumulative transcript and never `speechStart`, `speechComplete` or a speaker label. Without `speechComplete` the app never has a finished question. The same mode worked in the device tests of 15:22–15:58 the same day; nothing in the app or the relay caused it.
+
+| Check (same Dutch question four times, 6 s of silence between) | Result |
+|---|---|
+| Realtime `DIARIZATION` | 0 of 4 turns ended, no speaker events; one transcript growing to all four questions |
+| Realtime `ENDPOINTING` | 4 of 4 turns ended, `speechComplete` with the audio's end; correct text |
+| Batch `/v1/transcribe?mode=DIARIZATION`, two different voices | Correct text, `"turns": []`: no speaker turns either |
+
+**Fix.** The app uses `ENDPOINTING` (commit `d8b29b7`). Speaker filtering is off until diarization works again: every voice is heard.
+
+**Re-check.** `MODE=DIARIZATION PIP_APP_TOKEN=… node worker/scripts/asr-modes.mjs speech.wav` exits 0 once turns end again (`MODE=ENDPOINTING` as the control).
+
+**Lesson.** A mode the conversation depends on can change without notice. The app should notice when transcripts arrive but no turn ends, fall back by itself, and say so in the trace instead of staying silent.
