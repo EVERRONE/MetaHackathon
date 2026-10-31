@@ -142,6 +142,14 @@ public struct Grounder: Sendable {
         return GroundingResult(instance: result, method: method + (nearby.isEmpty && !spec.text.isEmpty ? " (text not found nearby)" : ""), seconds: Date().timeIntervalSince(t0))
     }
 
+    /// Loads the text recognition models once; the first recognition otherwise takes seconds.
+    public static func warmUp() async {
+        guard let ctx = CGContext(data: nil, width: 64, height: 32, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue),
+              let image = ctx.makeImage() else { return }
+        _ = await findText(["warm"], in: image)
+    }
+
     /// Asks Spark which numbered candidate carries the printed text, on an enlarged crop.
     enum Verdict { case picked(SegmentInstance), noneOfThem, failed }
 

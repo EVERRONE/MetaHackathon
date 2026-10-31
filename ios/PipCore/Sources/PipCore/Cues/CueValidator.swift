@@ -90,7 +90,7 @@ public struct AnnotationBoard: Sendable {
     }
 
     public static let maxMarks = 3
-    public static let transientSeconds: TimeInterval = 3
+    public static let transientSeconds: TimeInterval = 6
     public static let candidateSeconds: TimeInterval = 8
 
     public private(set) var annotations: [Annotation] = []
@@ -114,7 +114,8 @@ public struct AnnotationBoard: Sendable {
         let lifetime: Lifetime
         switch cue {
         case .danger: lifetime = .untilResolved
-        case .move, .rotate, .place, .sequence: lifetime = .untilVerified
+        // A numbered step ("hold 1, then press 2") stays until done, so the whole sequence is visible.
+        case .move, .rotate, .place, .sequence, .ring(_, .some): lifetime = .untilVerified
         case .candidates: lifetime = .transient(until: now + Self.candidateSeconds)
         default: lifetime = .transient(until: now + Self.transientSeconds)
         }

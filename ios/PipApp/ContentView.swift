@@ -60,17 +60,23 @@ struct ContentView: View {
         .onAppear { model.start() }
     }
 
+    /// Mute and unmute while listening; stop Pip while it looks or talks.
     private var micButton: some View {
-        Button { model.micTapped() } label: {
+        let busy = model.phase == .speaking || model.phase == .looking
+        let icon = busy ? "stop.fill" : (model.muted ? "mic.slash.fill" : "mic.fill")
+        let fill: Color = busy ? .white : (model.muted ? Color(white: 0.25) : .white)
+        let ring: Color = model.phase == .hearing ? .green : .white.opacity(0.4)
+        return Button { model.micTapped() } label: {
             ZStack {
-                Circle().fill(model.phase == .listening ? Color.red : Color.white).frame(width: 84, height: 84)
-                Image(systemName: model.phase == .listening ? "stop.fill" : "mic.fill")
-                    .font(.system(size: 32, weight: .bold))
-                    .foregroundStyle(model.phase == .listening ? .white : .black)
+                Circle().stroke(ring, lineWidth: model.phase == .hearing ? 6 : 2).frame(width: 96, height: 96)
+                Circle().fill(fill).frame(width: 80, height: 80)
+                Image(systemName: icon)
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundStyle(model.muted && !busy ? .white : .black)
             }
             .shadow(radius: 8)
         }
-        .accessibilityLabel(model.phase == .listening ? "Stop listening" : "Ask Pip")
+        .accessibilityLabel(busy ? "Stop Pip" : (model.muted ? "Unmute" : "Mute"))
     }
 
     private var debugPanel: some View {

@@ -25,6 +25,37 @@ if args.first == "ground", args.count >= 5 {
     exit(0)
 }
 
+// pipeval listen <16 kHz wav>: streams it through the live transcription relay at real-time pace.
+if args.first == "listen", args.count >= 2 {
+    let env = ProcessInfo.processInfo.environment
+    guard let wav = FileManager.default.contents(atPath: args[1]) else { fail("cannot read \(args[1])") }
+    let asr = RealtimeTranscriber(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
+    let t0 = Date()
+    asr.connect()
+    let pcm = wav.dropFirst(44)
+    Task {
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        let frame = 2560 // 80 ms at 16 kHz
+        var o = pcm.startIndex
+        while o < pcm.endIndex {
+            asr.send(pcm: Data(pcm[o..<min(o + frame, pcm.endIndex)]))
+            o += frame
+            try? await Task.sleep(nanoseconds: 80_000_000)
+        }
+        print(String(format: "%5.2fs end of audio", Date().timeIntervalSince(t0)))
+        // Live, the microphone keeps sending (near) silence; endpointing decides when the turn ends.
+        for _ in 0..<100 { asr.send(pcm: Data(count: frame)); try? await Task.sleep(nanoseconds: 80_000_000) }
+        asr.finish()
+    }
+    for await e in asr.events {
+        print(String(format: "%5.2fs", Date().timeIntervalSince(t0)), e)
+        if case .final = e { break }
+        if case .closed = e { break }
+    }
+    asr.close()
+    exit(0)
+}
+
 guard args.first == "look", args.count >= 3 else {
     fail("usage: pipeval look <image> \"<utterance>\" [--prompts a,b] [--lang English|Dutch] [--goal \"…\"] [--out dir]")
 }

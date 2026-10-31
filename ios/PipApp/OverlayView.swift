@@ -38,7 +38,7 @@ final class OverlayView: UIView {
             let alpha = opacity(a, now: now)
             switch a.cue {
             case .outline(let m):
-                if let p = screenPolygons(marks[m], project) { stroke(p, color: Self.action, width: 4, alpha: alpha) }
+                if let p = screenPolygons(marks[m], project) { highlight(p, pop: pop(a, now), alpha: alpha, fill: 0.10) }
                 else { edgeHint(marks[m], project, color: Self.action) }
             case .candidates(let ms):
                 for (i, m) in ms.enumerated() {
@@ -47,10 +47,16 @@ final class OverlayView: UIView {
                     if let c = marks[m].flatMap({ project($0.centroid) }) { badge("\(i + 1)", at: c, color: .white, alpha: alpha) }
                 }
             case .ring(let m, let label):
-                guard let mark = marks[m], let c = project(mark.centroid) else { continue }
-                let r = max(18, (screenPolygons(mark, project).map { bounds($0) }?.width ?? 30) * 0.6)
-                ring(at: c, radius: r, color: Self.action, alpha: alpha)
-                if let label { badge(label, at: CGPoint(x: c.x, y: c.y - r - 16), color: Self.action, alpha: alpha) }
+                guard let mark = marks[m] else { continue }
+                guard let p = screenPolygons(mark, project) else { edgeHint(mark, project, color: Self.action); continue }
+                // A small target: the contour itself, tinted, with its step number above it.
+                highlight(p, pop: pop(a, now), alpha: alpha, fill: 0.22)
+                if let label {
+                    let b = bounds(p)
+                    let tag = CGPoint(x: b.midX, y: b.minY - 26)
+                    leader(from: CGPoint(x: b.midX, y: b.minY - 2), to: CGPoint(x: tag.x, y: tag.y + 12), alpha: alpha)
+                    stepBadge(label, at: tag, alpha: alpha)
+                }
             case .move(let m, let dir):
                 guard let mark = marks[m] else { continue }
                 if let p = screenPolygons(mark, project) { stroke(p, color: Self.action, width: 3, alpha: alpha * 0.8) }
@@ -111,6 +117,11 @@ final class OverlayView: UIView {
         return CGFloat(fadeIn)
     }
 
+    /// A short "pop" when a cue appears: 1 → 0 over about 0.4 s.
+    private func pop(_ a: AnnotationBoard.Annotation, _ now: TimeInterval) -> CGFloat {
+        CGFloat(exp(-max(0, now - a.shownAt) * 8))
+    }
+
     // MARK: Geometry
 
     private func screenPolygons(_ mark: AnchoredMark?, _ project: (simd_float3) -> CGPoint?) -> [[CGPoint]]? {
@@ -162,6 +173,57 @@ final class OverlayView: UIView {
 
     private func stroke(_ polys: [[CGPoint]], color: UIColor, width: CGFloat, alpha: CGFloat, dash: [NSNumber]? = nil) {
         shape(polygonPath(polys), stroke: color, fill: nil, width: width, alpha: alpha, dash: dash)
+    }
+
+    /// The refined pointer: a soft glow, a crisp light core and a faint tint inside the contour.
+    private func highlight(_ polys: [[CGPoint]], pop: CGFloat, alpha: CGFloat, fill tint: CGFloat) {
+        let path = polygonPath(polys)
+        let glow = CAShapeLayer()
+        glow.path = path.cgPath
+        glow.fillColor = Self.action.withAlphaComponent(tint).cgColor
+        glow.strokeColor = Self.action.withAlphaComponent(0.55).cgColor
+        glow.lineWidth = 7 + 10 * pop
+        glow.lineJoin = .round
+        glow.shadowColor = Self.action.cgColor
+        glow.shadowOpacity = 0.9
+        glow.shadowRadius = 8
+        glow.shadowOffset = .zero
+        glow.opacity = Float(alpha)
+        layer.addSublayer(glow)
+        let core = CAShapeLayer()
+        core.path = path.cgPath
+        core.fillColor = UIColor.clear.cgColor
+        core.strokeColor = UIColor(red: 0.85, green: 1, blue: 1, alpha: 1).cgColor
+        core.lineWidth = 2.2
+        core.lineJoin = .round
+        core.opacity = Float(alpha)
+        layer.addSublayer(core)
+    }
+
+    private func leader(from a: CGPoint, to b: CGPoint, alpha: CGFloat) {
+        let path = UIBezierPath()
+        path.move(to: a)
+        path.addLine(to: b)
+        shape(path, stroke: UIColor.white.withAlphaComponent(0.9), fill: nil, width: 1.5, alpha: alpha)
+    }
+
+    /// A round step number ("1", "2") in the action colour.
+    private func stepBadge(_ text: String, at c: CGPoint, alpha: CGFloat) {
+        let l = CATextLayer()
+        l.string = text
+        l.font = UIFont.systemFont(ofSize: 16, weight: .heavy)
+        l.fontSize = 16
+        l.alignmentMode = .center
+        l.foregroundColor = UIColor.black.cgColor
+        l.backgroundColor = Self.action.cgColor
+        l.contentsScale = UIScreen.main.scale
+        let w = max(26, CGFloat(text.count) * 10 + 14)
+        l.frame = CGRect(x: c.x - w / 2, y: c.y - 13, width: w, height: 26)
+        l.cornerRadius = 13
+        l.borderColor = UIColor.white.cgColor
+        l.borderWidth = 1.5
+        l.opacity = Float(alpha)
+        layer.addSublayer(l)
     }
 
     private func fill(_ polys: [[CGPoint]], color: UIColor, alpha: CGFloat) {

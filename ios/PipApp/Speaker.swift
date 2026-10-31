@@ -19,16 +19,18 @@ final class Speaker {
     var onIdle: (() -> Void)?
 
     private let synth = AVSpeechSynthesizer()
-    private let engine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
+    private let engine: AVAudioEngine
+    private let player: AVAudioPlayerNode
     private var playerFormat: AVAudioFormat?
     private var queue: [SpokenSentence] = []
     private var busy = false
     private var generation = 0
     private var pendingCues: [DispatchWorkItem] = []
 
-    init() {
-        engine.attach(player)
+    /// Plays through the shared engine, so voice processing can cancel Pip's own voice.
+    init(engine: AVAudioEngine, player: AVAudioPlayerNode) {
+        self.engine = engine
+        self.player = player
     }
 
     var isSpeaking: Bool { busy || !queue.isEmpty }
@@ -116,6 +118,8 @@ final class Speaker {
         if !engine.isRunning { try? engine.start() }
         player.play()
         let latency = AVAudioSession.sharedInstance().outputLatency
+        recentText.append(sentence.text)
+        if recentText.count > 6 { recentText.removeFirst() }
         onSentenceStart?(sentence)
 
         for cue in sentence.cues {
@@ -138,6 +142,9 @@ final class Speaker {
         engine.connect(player, to: engine.mainMixerNode, format: format)
         playerFormat = format
     }
+
+    /// The text of what is being said now, for telling the user's speech from Pip's own echo.
+    private(set) var recentText: [String] = []
 
     /// The best installed voice for a language: premium, then enhanced, then default.
     static func bestVoice(for language: String) -> AVSpeechSynthesisVoice? {

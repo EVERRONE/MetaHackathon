@@ -5,3 +5,5 @@ DerivedData/
 *.xcworkspace/xcuserdata/
 Secrets.xcconfig
 Pip.xcodeproj/
+build/
+build-check/

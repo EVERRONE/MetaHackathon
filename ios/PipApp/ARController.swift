@@ -30,14 +30,20 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         arView.session.currentFrame.flatMap { FrameSnapshot(frame: $0) }
     }
 
-    /// Lifts this look's instances into 3D. Marks from earlier looks are replaced.
-    func setMarks(_ list: [SegmentInstance], snapshot: FrameSnapshot) {
-        instances = Dictionary(uniqueKeysWithValues: list.map { ($0.id, $0) })
+    /// A new look: marks from the previous one no longer apply.
+    func beginLook() {
+        instances = [:]
         marks = [:]
-        for inst in list {
-            if let m = AnchoredMark(inst, snapshot: snapshot) { marks[inst.id] = m }
-        }
         board.show(.clear, at: CACurrentMediaTime())
+    }
+
+    /// Lifts one grounded instance into 3D. Returns how it was anchored, for the trace.
+    @discardableResult
+    func addMark(_ inst: SegmentInstance, snapshot: FrameSnapshot) -> String {
+        instances[inst.id] = inst
+        guard let m = AnchoredMark(inst, snapshot: snapshot) else { return "no depth" }
+        marks[inst.id] = m
+        return m.method
     }
 
     func show(_ cue: Cue) {

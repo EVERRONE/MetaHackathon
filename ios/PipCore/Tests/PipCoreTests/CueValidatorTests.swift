@@ -40,9 +40,9 @@ import Testing
     @Test func transientCuesFade() {
         var board = AnnotationBoard()
         board.show(.outline(mark: 1), at: 0)
-        board.tick(2.9)
+        board.tick(AnnotationBoard.transientSeconds - 0.1)
         #expect(board.annotations.count == 1)
-        board.tick(3.0)
+        board.tick(AnnotationBoard.transientSeconds)
         #expect(board.annotations.isEmpty)
     }
 
