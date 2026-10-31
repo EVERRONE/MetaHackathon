@@ -50,6 +50,7 @@ struct ContentView: View {
                 if let task = model.taskView { taskCard(task) }
                 if !model.shopping.isEmpty { shoppingCard }
                 if showDebug { debugPanel }
+                SpikeHUD(ar: model.ar)
 
                 Spacer()
 
@@ -186,8 +187,11 @@ struct ARContainer: UIViewRepresentable {
         controller.arView.translatesAutoresizingMaskIntoConstraints = false
         controller.overlay.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(controller.arView)
+        // EdgeTAM's mask (the spike) over the camera image, under Pip's own outlines.
+        container.addSubview(controller.edgeSpike.view)
         container.addSubview(controller.overlay)
-        for v in [controller.arView, controller.overlay] as [UIView] {
+        controller.edgeSpike.view.translatesAutoresizingMaskIntoConstraints = false
+        for v in [controller.arView, controller.edgeSpike.view, controller.overlay] as [UIView] {
             NSLayoutConstraint.activate([
                 v.leadingAnchor.constraint(equalTo: container.leadingAnchor),
                 v.trailingAnchor.constraint(equalTo: container.trailingAnchor),
@@ -199,6 +203,26 @@ struct ARContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {}
+}
+
+/// What the running tests measure (EdgeTAM's speed, the home map's state), one line each.
+struct SpikeHUD: View {
+    @ObservedObject var ar: ARController
+
+    var body: some View {
+        let lines = ar.spikeStatus.sorted { $0.key < $1.key }.map(\.value)
+        if !lines.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(lines, id: \.self) { Text($0) }
+            }
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .foregroundStyle(.white)
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal)
+        }
+    }
 }
 
 /// Every step with how it was checked, the source, and at the end the report to share.
@@ -242,6 +266,8 @@ struct MemorySheet: View {
     @ObservedObject var model: GuideModel
     @ObservedObject var memory: SpaceMemory
     @ObservedObject var ar: ARController
+    @AppStorage(EdgeTAMSpike.enabledKey) private var edgeTAMTest = true
+    @AppStorage(MapTest.enabledKey) private var mapTest = false
 
     var body: some View {
         NavigationStack {
@@ -269,6 +295,18 @@ struct MemorySheet: View {
                 }
                 Section {
                     Button("Forget everything", role: .destructive) { model.forgetEverything() }
+                }
+                Section {
+                    Toggle("EdgeTAM test (cyan mask)", isOn: $edgeTAMTest)
+                    Toggle("Map test: one home map", isOn: $mapTest)
+                    if ar.mapTest != nil {
+                        Button("Save the home map now") { model.saveHomeMap(reason: "button") }
+                    }
+                    ForEach(ar.spikeStatus.sorted { $0.key < $1.key }.map(\.value), id: \.self) { Text($0).font(.caption.monospaced()) }
+                } header: {
+                    Text("Tests")
+                } footer: {
+                    Text("The map test takes effect at the next start of the app. It keeps a map of the room's features on this iPhone, and waits until ARKit recognises it. Both tests write their measurements to the app's documents.")
                 }
             }
             .navigationTitle("What Pip remembers")

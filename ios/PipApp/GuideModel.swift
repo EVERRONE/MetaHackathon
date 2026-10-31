@@ -204,7 +204,10 @@ final class GuideModel: ObservableObject {
         }
         // The room map is saved when the app goes to the background, so new places survive.
         NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.saveRoomNow() }
+            Task { @MainActor in
+                self?.saveRoomNow()
+                self?.saveHomeMap(reason: "background")
+            }
         }
         startBasketWatch()
         for (key, fact) in memory.facts { facts[key] = Fact(value: fact.value, source: fact.source) }

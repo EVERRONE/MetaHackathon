@@ -14,9 +14,17 @@ extension GuideModel {
     func startMap() {
         memory.migrateLegacyMap()
         let pieces = memory.consent == true ? MapStore.loadAll() : []
-        let recent = pieces.max { $0.updated < $1.updated }
-        let worldMap = recent.flatMap { MapStore.loadWorldMap($0.id) }
+        // Spike T3: the one home map instead of the latest piece's (see MapTest).
+        let test = MapTest.enabled ? MapTest() : nil
+        let recent = test == nil ? pieces.max { $0.updated < $1.updated } : nil
+        let worldMap = test?.homeMap ?? recent.flatMap { MapStore.loadWorldMap($0.id) }
         let continuing = worldMap != nil ? recent : nil
+        if let test {
+            ar.mapTest = test
+            ar.keepRelocalising = test.homeMap != nil
+            test.onStatus = { [weak self] s in self?.ar.setSpikeStatus("map", s) }
+            log(test.homeMap != nil ? "map test: recognising the home map" : "map test: no home map yet")
+        }
         mapKeeper.enabled = memory.consent == true
         mapKeeper.begin(continuing: continuing, others: pieces.filter { $0.id != continuing?.id })
         mapKeeper.onLog = { [weak self] line in self?.log(line) }
@@ -44,8 +52,9 @@ extension GuideModel {
         keyframes.persist = memory.consent == true
         keyframes.currentPiece = mapKeeper.current.id
         keyframes.load(locatedPiece: continuing?.id)
-        // Places of the piece ARKit is recognising come back on their own anchors.
-        ar.restore(memory.places.filter { $0.piece == nil || $0.piece == continuing?.id })
+        // Places of the piece ARKit is recognising come back on their own anchors (with the home
+        // map: every place whose anchor it holds).
+        ar.restore(test != nil ? memory.places : memory.places.filter { $0.piece == nil || $0.piece == continuing?.id })
         if continuing != nil { log("map: recognising the room of last time") }
         mapSaveTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -195,6 +204,21 @@ extension GuideModel {
         ar.saveMap { map in
             if let map { MapStore.saveWorldMap(map, for: id) }
             background.done()
+        }
+    }
+
+    /// The map test's home map (see MapTest): on the button in the memory sheet, and when the app
+    /// goes to the background. Saved only when ARKit mapped the area and recognised the home map.
+    func saveHomeMap(reason: String) {
+        guard let test = ar.mapTest else { return }
+        let background = BackgroundWork(name: "Pip home map", parts: 1)
+        test.save(ar, reason: reason) { [weak self] message in
+            MapTest.log("save (\(reason)): \(message)")
+            Task { @MainActor in
+                self?.ar.setSpikeStatus("mapsave", message)
+                self?.log("map test: \(message)")
+                background.done()
+            }
         }
     }
 

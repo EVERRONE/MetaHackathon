@@ -92,3 +92,47 @@ Evidence: device sessions of 31 October (look recordings, `session.log`, `tracki
 | Plain 3D object (white bust) | outline from masks; 3D position about ±1 cm |
 | Places in the home, after relocalisation | 1–5 cm in the same room, more further away (to measure) |
 | Lost items from memory | depends on detection; position about 3–10 cm |
+
+## 7. Spike results
+
+### T2: SAM 3.1 on video (31 October, from the Mac, Meta's API in standard mode, `store: false`)
+
+**Re-acquiring an object from the last seconds.** Two seconds of synthetic hand motion: a 720×960 window slides over a recorded look frame by up to ~20 px per frame, so the truth is known on every frame. Box prompt on frame 0 for a 50×26 px key (pixels of 960×1280).
+
+| Clip | First frame back | All frames | Centre error (median / max) | Box IoU (median / min) |
+|---|---|---|---|---|
+| 60 frames at 30 fps, 720×960 | 2.6 s | 5.9 s | 1.1 / 1.8 px | 0.91 / 0.86 |
+| 20 frames at 10 fps, 720×960 (billed as 50) | 4.0 s | 4.4 s | 1.1 / 1.8 px | 0.91 / 0.86 |
+| 20 frames at 10 fps, 360×480 (billed as 50) | 2.6 s | 3.0 s | 1.4 / 2.2 px | 0.89 / 0.82 |
+
+Very accurate, but about 3 s per answer: far too slow to follow a moving object (that needs 10 fps or more on the phone). It is the right tool to re-acquire a lost object and to check the on-device tracker in the background.
+
+**Searching the visual memory (the "reel").** 61 recorded snapshots as one video (720×960, 3.9 MB inline), one concept per request (watch, glasses, pen, remote control):
+- 4.0–4.7 s and $0.012 per concept. The same 61 snapshots as single images: 9.5–9.8 s at 8 in parallel (1.15 s per call median) and $0.15.
+- It found every snapshot that single-image SAM found (watch 3 of 3, glasses 10 of 12), plus 2–4 more per concept. The video tracker carries an object across a cut into the next, unrelated snapshot, with the same object id and the same confidence. One or three grey frames between snapshots do not stop it.
+- Confidence belongs to the object's track, not to a frame, so it cannot rank snapshots. Where both modes found the object, the boxes agree (IoU median 0.97–0.98).
+- Longer reels: 122 frames 6.0–6.5 s, 244 frames 9.7–10.7 s, i.e. about 3 s plus 30 ms per frame.
+
+The reel is the cheap first pass: it gives candidates. Every candidate is then checked on its own snapshot (single-image SAM in parallel, and Muse Wonder for the top few) before Pip answers. Assumption 12 holds in that form.
+
+### T1: EdgeTAM, first on the Mac (M4)
+
+Same 60-frame clip, seeded with SAM 3.1's mask of the 50×26 px key (`pipeval edgetam`):
+- The key was found on all 60 frames. Median centre error 1.5 px.
+- On 9 of 60 frames the mask spilled onto a neighbouring key: the centre was 10–21 px off and the minimum box IoU 0.45.
+- Speed: 11.7 ms in the encoder plus 34.9 ms in the propagator and memory bank, or 21 fps of model time. This matches the conversion's own figure of 49 ms per frame on an M4.
+
+It follows the object reliably. Small parts spill onto look-alike neighbours, so they should be carried by their parent object (the plan in section 4) or gated on area. The iPhone test decides the rest:
+- speed with ARKit running;
+- heat;
+- real hand motion;
+- the mask against SAM 3.1.
+
+The app now has this test built in: `EdgeTAMSpike`, `Documents/edgetam.log`, and one frame per second kept for comparison.
+
+### T3: one home map
+
+The test mode is built (`MapTest`, `Documents/maptest.log`):
+- At launch the home map goes to ARKit, which waits for it without giving up.
+- The map is saved only once the area is `.mapped` and the home map has been recognised.
+- Device results are pending.

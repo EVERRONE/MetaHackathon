@@ -17,6 +17,9 @@ targets:
     platform: iOS
     sources:
       - path: PipApp
+      # Meta's EdgeTAM tracker (scripts/fetch-edgetam.sh); Xcode compiles the packages into the app.
+      - path: Models/EdgeTAM
+        optional: true
     dependencies:
       - package: PipCore
         product: PipCore
@@ -43,3 +46,5 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_USER_SCRIPT_SANDBOXING: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        # The models are loaded by name (PipCore's EdgeTAM), not through generated classes.
+        COREML_CODEGEN_LANGUAGE: None

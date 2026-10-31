@@ -13,3 +13,6 @@ build-release/
 PipCore/cues.jpg
 PipCore/*.jpg
 PipCore/*.png
+
+# EdgeTAM Core ML models (70 MB, Apache-2.0): fetched by scripts/fetch-edgetam.sh, never committed.
+Models/

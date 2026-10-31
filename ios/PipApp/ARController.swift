@@ -21,6 +21,19 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     private var trackingRecovered = false
     /// Follows pointed-at objects in the image, so outlines stay on things that move (a remote in the hand).
     let follower = ImageFollower()
+    /// Spike T1: EdgeTAM follows the latest pointed-at object, drawn as a cyan mask (see EdgeTAMSpike).
+    let edgeSpike = EdgeTAMSpike()
+    /// Spike T3: one home map, recognised at every start (see MapTest); nil when the test is off.
+    var mapTest: MapTest?
+    /// Wait for ARKit to recognise the saved map however long it takes (the map test), instead of
+    /// starting fresh after `firstRelocaliseWait`.
+    var keepRelocalising = false
+    /// One line per running test, for the screen.
+    @Published private(set) var spikeStatus: [String: String] = [:]
+
+    func setSpikeStatus(_ key: String, _ value: String) {
+        if spikeStatus[key] != (value.isEmpty ? nil : value) { spikeStatus[key] = value.isEmpty ? nil : value }
+    }
     /// A moved object lies still again: measure it anew (its box in screen points).
     var onMovedObjectSettled: ((Int, CGRect) -> Void)?
     /// Outlines locked to their object in 3D through ARKit image tracking, by reference image name.
@@ -58,6 +71,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         // Outlines are drawn in the same step as the camera image, so they do not lag or swim.
         renderSubscription = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in self?.renderNow() }
         follower.onSettled = { [weak self] id, box in self?.onMovedObjectSettled?(id, box) }
+        edgeSpike.onStatus = { [weak self] s in self?.setSpikeStatus("edgetam", s) }
+        edgeSpike.onLog = { [weak self] s in self?.onLockLog?(s) }
+        if EdgeTAMSpike.enabled { edgeSpike.preload() }
     }
 
     static func configuration(initialMap: ARWorldMap?) -> ARWorldTrackingConfiguration {
@@ -163,6 +179,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             tracks[m.id] = ObjectTrack(observation: obs, spec: spec)
             // Found again in the live image when its cue shows, then followed there.
             follower.start(m.id, image: snapshot.image, box: inst.boxRect)
+            if EdgeTAMSpike.enabled { edgeSpike.start(markID: m.id, snapshot: snapshot, instance: inst, phrase: spec?.phrase) }
         }
         return m.method
     }
@@ -430,6 +447,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         onFrame?(frame)
         followObjects(frame)
+        edgeSpike.frame(frame, viewSize: arView.bounds.size, markExists: edgeSpike.markID.map { marks[$0] != nil } ?? false)
+        mapTest?.frame(frame)
         // ARKit moves anchors when it corrects its map (loop closure, relocalisation); the drawn
         // outline eases towards the new place in `renderNow`.
         if !anchors.isEmpty {
@@ -473,6 +492,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + (firstTry ? Self.firstRelocaliseWait : Self.relocaliseWait)) { [weak self] in
                 guard let self, self.relocalisingSince == since else { return }
                 if firstTry, self.awaitingFirstRelocalisation {
+                    // The map test waits for the home map, cues hidden, however long it takes.
+                    if self.keepRelocalising { return }
                     // The saved room is not this one: start fresh; the map links it later.
                     self.onRelocaliseGaveUp?()
                     return
@@ -744,6 +765,16 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         removeMarks { $0 >= Self.foundMarkBase && $0 < Self.placeMarkBase }
         let m = AnchoredMark(id: id, world: polygons)
         place(m)
+    }
+
+    /// ARKit's map as it is now, with the places' anchors only (for the map test's home map).
+    func currentWorldMap(_ done: @escaping (ARWorldMap?) -> Void) {
+        arView.session.getCurrentWorldMap { map, _ in
+            DispatchQueue.main.async {
+                map?.anchors = map?.anchors.filter { $0.name == "pip-place" } ?? []
+                done(map)
+            }
+        }
     }
 
     /// Saves the room map with the places' anchors only (outline anchors are for this session).

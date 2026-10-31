@@ -42,6 +42,44 @@ if args.first == "confirm", args.count >= 5 {
     exit(0)
 }
 
+// pipeval edgetam <packages folder> <frames folder> <x1> <y1> <x2> <y2>: follows what SAM finds in
+// that box (pixels of the first frame; without PIP_APP_TOKEN the box itself) through the folder's
+// JPEGs, in name order, with EdgeTAM on this Mac's Neural Engine. One JSON line per frame: the box in
+// pixels, the object score and the milliseconds of the encoder and the decoder.
+if args.first == "edgetam", args.count >= 7 {
+    let env = ProcessInfo.processInfo.environment
+    let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
+    let compiled = FileManager.default.temporaryDirectory.appendingPathComponent("pipeval-edgetam")
+    try await EdgeTAM.compile(packagesIn: URL(fileURLWithPath: args[1]), into: compiled)
+    let tracker = try EdgeTAM(compiledIn: compiled)
+    let names = ((try? FileManager.default.contentsOfDirectory(atPath: args[2])) ?? []).filter { $0.lowercased().hasSuffix(".jpg") }.sorted()
+    let images = names.map { name -> CGImage in
+        guard let data = FileManager.default.contents(atPath: args[2] + "/" + name), let image = SetOfMarks.load(data, maxSide: 4096) else { fail("cannot read \(name)") }
+        return image
+    }
+    guard let first = images.first else { fail("no JPEGs in \(args[2])") }
+    let box = CGRect(x: Double(args[3])!, y: Double(args[4])!, width: Double(args[5])! - Double(args[3])!, height: Double(args[6])! - Double(args[4])!)
+    var polygons = [[CGPoint(x: box.minX, y: box.minY), CGPoint(x: box.maxX, y: box.minY), CGPoint(x: box.maxX, y: box.maxY), CGPoint(x: box.minX, y: box.maxY)]]
+    var seededBy = "box"
+    if env["PIP_APP_TOKEN"] != nil, let inst = await Grounder(client: client, frameJPEG: Data()).reground(box: box, id: 1, frame: first) {
+        polygons = inst.outlinePoints
+        seededBy = "SAM \(inst.box)"
+    }
+    let input = EdgeTAM.Input()
+    let size = CGSize(width: first.width, height: first.height)
+    let mask = EdgeTAM.Input.mask(polygons: polygons, in: size)
+    print(#"{"loaded_s": \#(String(format: "%.2f", tracker.loadSeconds)), "seed": "\#(seededBy)", "frames": \#(images.count)}"#)
+    for (i, image) in images.enumerated() {
+        let t0 = Date()
+        guard let pixels = input.image(image) else { fail("cannot convert frame \(i)") }
+        let prep = Date().timeIntervalSince(t0) * 1000
+        let f = i == 0 ? try tracker.seed(image: pixels, mask: mask) : try tracker.track(image: pixels)
+        let b = f.box.map { [Int($0.minX * size.width), Int($0.minY * size.height), Int($0.maxX * size.width), Int($0.maxY * size.height)] }
+        print(#"{"frame": \#(i), "box": \#(b.map { "\($0)" } ?? "null"), "score": \#(String(format: "%.2f", f.objectScore)), "iou": \#(String(format: "%.3f", f.iou)), "prep_ms": \#(String(format: "%.1f", prep)), "encode_ms": \#(String(format: "%.1f", f.encodeMs)), "decode_ms": \#(String(format: "%.1f", f.decodeMs))}"#)
+    }
+    exit(0)
+}
+
 // pipeval face <image.jpg> <x1> <y1> <x2> <y2> <out.png>: the reference image Pip would lock a
 // key (box in the image's pixels) to, with the key's outline drawn on it for checking.
 if args.first == "face", args.count >= 7 {
