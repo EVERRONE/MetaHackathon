@@ -62,6 +62,8 @@ final class GuideModel: ObservableObject {
     /// The 3D map of the home, built while Pip is used (see MapKeeper and GuideModel+Memory).
     let mapKeeper = MapKeeper()
     var mapSaveTimer: Timer?
+    /// Which places came from which linked piece, so they follow the drift measured against it.
+    var linkedPlaces: [UUID: Set<UUID>] = [:]
     /// How well outlines hold: every re-measurement, on this iPhone, to evaluate on the Mac.
     let trackingLog = TrackingLog()
     var foundCount = 0

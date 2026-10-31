@@ -44,14 +44,16 @@ final class MapKeeper {
     static let keyTurnDegrees: Float = 25
     static let keyInterval: TimeInterval = 10
     static let maxKeyframes = 400
-    /// Fingerprint distance beyond which a view is not even tried (the 3D fit decides).
-    static let maxPrintDistance: Float = 1.2
+    /// The fingerprint only proposes: the three most alike stored views are always tried, and
+    /// the 3D fit decides.
+    static let candidatesPerKeyframe = 3
     static let maxSurfacePoints = 250_000
 
     /// `piece`: the stored piece ARKit is relocalising into (its frame becomes this session's).
     func begin(continuing piece: MapPiece?, others: [MapPiece]) {
         current = piece ?? MapPiece()
         self.others = others
+        references = [:]
         targets = [:]
         consensus = LinkConsensus()
         merged = []
@@ -75,7 +77,10 @@ final class MapKeeper {
         if let last = lastKeyPose {
             let move = simd_distance(last.columns.3.xyz, pose.columns.3.xyz)
             let turn = abs(Self.wrapped(Self.heading(pose) - Self.heading(last))) * 180 / .pi
-            guard move >= Self.keyDistance || turn >= Self.keyTurnDegrees || (t - lastKeyTime > Self.keyInterval && move > 0.3) else { return }
+            guard move >= Self.keyDistance || turn >= Self.keyTurnDegrees || (t - lastKeyTime > Self.keyInterval && move > 0.3) else {
+                recheck(at: pose, now: t)
+                return
+            }
         }
         guard let snap = FrameSnapshot(frame: frame, maxSide: 384) else { return }
         lastKeyPose = pose
@@ -99,12 +104,18 @@ final class MapKeeper {
         dirty = true
         let live = VoxelIndex.downsample(dense, size: 0.08)
         guard !candidates.isEmpty, live.count >= 150 else { return }
-        for c in FeaturePrint.candidates(for: print, in: candidates, limit: 2, maxDistance: Self.maxPrintDistance) {
+        for c in FeaturePrint.candidates(for: print, in: candidates, limit: Self.candidatesPerKeyframe, maxDistance: .infinity) {
             guard others.contains(where: { $0.id == c.piece }), let piece = candidates.first(where: { $0.id == c.piece }),
                   piece.points.count >= 900, piece.keyframes.indices.contains(c.keyframe) else { continue }
             let target = await target(for: piece)
-            let seed = MapLinker.seed(live: pose, stored: piece.keyframes[c.keyframe].pose)
-            let fit = await Task.detached(priority: .utility) { PointRegistration.align(source: live, target: target, initial: seed) }.value
+            let stored = piece.keyframes[c.keyframe].pose
+            // Fifteen starts around that view (the user may stand elsewhere and look aside), the
+            // two most promising fitted in full, the best kept.
+            let fit = await Task.detached(priority: .utility) { () -> PointRegistration.Result? in
+                let starts = MapLinker.bestSeeds(MapLinker.seeds(live: pose, stored: stored), source: live, target: target, keep: 2)
+                return starts.compactMap { PointRegistration.align(source: live, target: target, initial: $0) }
+                    .max { ($0.isMatch ? 1 : 0, $0.inlierRatio) < ($1.isMatch ? 1 : 0, $1.inlierRatio) }
+            }.value
             guard let fit else { continue }
             onLog?(String(format: "map: view like piece %@ (%.2f): %.1f mm, %.0f%% matched, constraint %.2f%@", String(piece.id.uuidString.prefix(4)),
                           c.distance, fit.rms * 1000, fit.inlierRatio * 100, fit.constraint, fit.isMatch ? " ✓" : ""))
@@ -135,6 +146,12 @@ final class MapKeeper {
     private func merge(_ piece: MapPiece, refined: MapLinker.Refined) {
         let pieceToLive = refined.transform.inverse
         let moved = piece.transformed(by: pieceToLive)
+        // Kept as a reference, so this session's drift against it can be measured and corrected.
+        let surface = moved.surface
+        Task.detached(priority: .utility) { [weak self] in
+            let target = RegistrationTarget(points: surface)
+            await self?.addReference(piece.id, target)
+        }
         current.keyframes += moved.keyframes
         thinKeyframes()
         current.setSurface(VoxelIndex.downsample(current.surface + moved.surface, size: 0.04))
@@ -147,6 +164,62 @@ final class MapKeeper {
                       PointRegistration.yaw(of: pieceToLive) * 180 / .pi, simd_length(pieceToLive.columns.3.xyz), refined.matched,
                       refined.uncertainty(at: refined.centre) * 1000))
         onLink?(piece, refined, pieceToLive)
+    }
+
+    // MARK: Staying aligned (like a VPS's background relocalisation)
+
+    /// A linked piece's surfaces, in this session's frame as they were linked, and how this
+    /// session has drifted against them since.
+    private struct Reference {
+        let target: RegistrationTarget
+        /// Where the linked surfaces are now in this session's frame: linking-time frame → live
+        /// frame now (identity until drift shows).
+        var drift = matrix_identity_float4x4
+    }
+    private var references: [UUID: Reference] = [:]
+    private var lastRecheck: TimeInterval = 0
+    static let recheckInterval: TimeInterval = 30
+
+    /// This session drifted against a linked piece: move its places by `delta` (live frame).
+    var onDrift: ((UUID, simd_float4x4) -> Void)?
+
+    private func addReference(_ id: UUID, _ target: RegistrationTarget) {
+        references[id] = Reference(target: target)
+    }
+
+    /// Every half minute in a linked room: lay the live mesh around the user onto the linked
+    /// piece again. A firm fit that differs from before is drift; the piece's places follow it.
+    func recheck(at pose: simd_float4x4, now: TimeInterval) {
+        guard enabled, !working, !references.isEmpty, now - lastRecheck >= Self.recheckInterval,
+              let mesh = meshNear?(pose.columns.3.xyz, 3.5), mesh.count >= 2000 else { return }
+        lastRecheck = now
+        working = true
+        let refs = references
+        Task.detached(priority: .utility) { [weak self] in
+            var results: [(UUID, MapLinker.Refined)] = []
+            for (id, ref) in refs {
+                if let r = MapLinker.refine(source: mesh, target: ref.target, initial: ref.drift.inverse), r.inlierRatio > 0.5 { results.append((id, r)) }
+            }
+            await self?.applyRecheck(results)
+        }
+    }
+
+    private func applyRecheck(_ results: [(UUID, MapLinker.Refined)]) {
+        defer { working = false }
+        for (id, r) in results {
+            guard var ref = references[id] else { continue }
+            let firm = r.constraint >= PointRegistration.minConstraint && r.uncertainty(at: r.centre) < 0.01
+            let drift = r.transform.inverse
+            let delta = drift * ref.drift.inverse
+            let shift = simd_length(delta.columns.3.xyz), turn = abs(PointRegistration.yaw(of: delta)) * 180 / .pi
+            onLog?(String(format: "map: recheck piece %@: drift %.1f cm, %.2f°%@", String(id.uuidString.prefix(4)),
+                          simd_length(drift.columns.3.xyz) * 100, PointRegistration.yaw(of: drift) * 180 / .pi, firm ? "" : " (not firm, ignored)"))
+            // Under half a centimetre is noise; over 30 cm or 3° is not drift but a wrong fit.
+            guard firm, shift > 0.005 || turn > 0.1, shift < 0.3, turn < 3 else { continue }
+            ref.drift = drift
+            references[id] = ref
+            onDrift?(id, delta)
+        }
     }
 
     /// Saves this piece with the room surfaces ARKit has meshed so far; merged pieces are removed.

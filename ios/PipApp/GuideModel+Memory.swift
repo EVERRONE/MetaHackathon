@@ -29,6 +29,10 @@ extension GuideModel {
             self.saveRoomSoon()
         }
         mapKeeper.meshNear = { [weak self] centre, radius in self?.ar.meshPoints(near: centre, radius: radius) ?? [] }
+        mapKeeper.onDrift = { [weak self] piece, delta in
+            guard let self else { return }
+            self.ar.applyDrift(delta, toPlaces: self.linkedPlaces[piece] ?? [])
+        }
         ar.start(initialMap: worldMap)
         // Places of the piece ARKit is recognising come back on their own anchors.
         ar.restore(memory.places.filter { $0.piece == nil || $0.piece == continuing?.id })
@@ -61,6 +65,7 @@ extension GuideModel {
             return p
         }
         memory.update(moved)
+        linkedPlaces[piece.id] = Set(moved.map(\.id))
         let names = moved.map(\.name)
         say(names.isEmpty ? phrases.linkedRoom : phrases.linkedRoom(with: names))
         saveRoomSoon()

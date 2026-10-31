@@ -465,6 +465,16 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
+    /// The session drifted against the map piece these places came from: move them along.
+    func applyDrift(_ delta: simd_float4x4, toPlaces ids: Set<UUID>) {
+        for (id, stored) in places where ids.contains(stored.id) {
+            guard let m = marks[id] else { continue }
+            let before = m.centroid
+            let world = m.polygons.map { ring in ring.map { (delta * simd_float4($0 - m.glide, 1)).xyz } }
+            place(AnchoredMark(id: id, world: world), glideFrom: before)
+        }
+    }
+
     /// A remembered place was measured again: its new pose and outline, to store.
     var onPlaceMoved: ((SpaceMemory.Place) -> Void)?
 

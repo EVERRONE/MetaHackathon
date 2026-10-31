@@ -24,6 +24,36 @@ public enum MapLinker {
         return PointRegistration.transform(yaw: yaw, translation: t)
     }
 
+    /// Starts around a look-alike keyframe: the user may stand up to ~1.5 m nearer or further
+    /// along the view and look up to ~50° to either side (one fit converges from about 20° and
+    /// 0.6 m, measured), so five headings at three distances.
+    public static func seeds(live: simd_float4x4, stored: simd_float4x4) -> [simd_float4x4] {
+        let forward = simd_normalize(simd_float3(-stored.columns.2.x, 0, -stored.columns.2.z))
+        var out: [simd_float4x4] = []
+        for along: Float in [0, -0.8, 0.8] {
+            var at = stored
+            at.columns.3 = simd_float4(stored.columns.3.xyz + forward * along, 1)
+            for turn: Float in [0, 20, -20, 40, -40] {
+                let base = seed(live: live, stored: at)
+                // Turning the start about the stored camera's position.
+                let c = at.columns.3.xyz
+                let r = PointRegistration.transform(yaw: turn * .pi / 180, translation: .zero)
+                let t = (r * simd_float4(base.columns.3.xyz - c, 1)).xyz + c
+                out.append(PointRegistration.transform(yaw: PointRegistration.yaw(of: base) + turn * .pi / 180, translation: t))
+            }
+        }
+        return out
+    }
+
+    /// The most promising starts: the share of live points that land near a stored surface.
+    public static func bestSeeds(_ seeds: [simd_float4x4], source: [simd_float3], target: RegistrationTarget, keep: Int) -> [simd_float4x4] {
+        let index = target.index(for: 0.15)
+        let scored = seeds.map { m -> (simd_float4x4, Int) in
+            (m, source.reduce(0) { n, s in index.nearestIndex(to: (m * simd_float4(s, 1)).xyz, within: 0.15) == nil ? n : n + 1 })
+        }
+        return scored.sorted { $0.1 > $1.1 }.prefix(keep).map(\.0)
+    }
+
     public struct Refined: Sendable {
         /// Live frame → stored frame.
         public var transform: simd_float4x4
@@ -34,6 +64,8 @@ public enum MapLinker {
         /// Where the turn's uncertainty is centred (stored frame): the middle of the overlap.
         public var centre: simd_float3
         public var matched: Int
+        /// As in `PointRegistration.Result`: how firmly the weakest direction is pinned down.
+        public var constraint: Float = 0
 
         /// How far off (one standard deviation, metres) a point of the stored frame can land in
         /// the live frame: the fit's own uncertainty (shift, and turn growing with distance from
@@ -112,6 +144,7 @@ public enum MapLinker {
         // Residual spread along the normals, the measurement noise of this fit.
         let sigma2 = Double(residuals.reduce(0) { $0 + $1 * $1 }) / Double(max(1, residuals.count))
         let covariance = information.inverse * (sigma2 * correlation)
-        return Refined(transform: final, rms: rms, inlierRatio: ratio, covariance: covariance, centre: centre, matched: residuals.count)
+        let constraint = Float((SymmetricEigen.values(information).min() ?? 0) / Double(max(1, residuals.count)))
+        return Refined(transform: final, rms: rms, inlierRatio: ratio, covariance: covariance, centre: centre, matched: residuals.count, constraint: max(0, constraint))
     }
 }
