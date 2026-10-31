@@ -163,6 +163,13 @@ final class Keyframes {
         }
     }
 
+    /// ARKit is now recognising `piece` instead (another saved room): its snapshots can be pointed
+    /// at, the others not.
+    func locate(_ piece: UUID) {
+        for i in frames.indices { frames[i].located = frames[i].piece == piece }
+        currentPiece = piece
+    }
+
     /// This session started a new piece (the saved room was not recognised): snapshots of the
     /// piece it tried can no longer be pointed at until that piece is linked.
     func pieceChanged(to new: UUID) {

@@ -1,3 +1,4 @@
+import ARKit
 import Foundation
 import UIKit
 import PipCore
@@ -8,23 +9,32 @@ import simd
 extension GuideModel {
     // MARK: The map of the home
 
-    /// At launch: the most recently used map piece is handed to ARKit, which recognises the room
-    /// within seconds if Pip is in it (its places come back on their anchors). If not, Pip starts a
-    /// fresh piece, and every stored piece waits to be recognised and linked while the user walks.
+    /// At launch, without the user doing anything: ARKit is handed the map of the room used last,
+    /// and recognises it within seconds if Pip is in it (its places come back on their anchors).
+    /// If not, the saved room that holds the most of the home is tried; if that is not it either,
+    /// Pip maps this room as a new piece. Each session extends the map of the room it recognised
+    /// as the user walks, also into rooms not mapped yet, and the map is saved whenever ARKit
+    /// calls it good: rooms join up by being walked through, and the user never maps on purpose.
     func startMap() {
         memory.migrateLegacyMap()
         let pieces = memory.consent == true ? MapStore.loadAll() : []
-        // Spike T3: the one home map instead of the latest piece's (see MapTest).
-        let test = MapTest.enabled ? MapTest() : nil
-        let recent = test == nil ? pieces.max { $0.updated < $1.updated } : nil
-        let worldMap = test?.homeMap ?? recent.flatMap { MapStore.loadWorldMap($0.id) }
-        let continuing = worldMap != nil ? recent : nil
-        if let test {
-            ar.mapTest = test
-            ar.keepRelocalising = test.homeMap != nil
-            test.onStatus = { [weak self] s in self?.ar.setSpikeStatus("map", s) }
-            log(test.homeMap != nil ? "map test: recognising the home map" : "map test: no home map yet")
+        // Most promising first: the room used last, then the one with the most places and views.
+        let saved = pieces.filter { MapStore.hasWorldMap($0.id) }
+        func worth(_ p: MapPiece) -> Int { memory.places.filter { $0.piece == p.id }.count * 20 + p.keyframes.count }
+        var order: [MapPiece] = []
+        if let recent = saved.max(by: { $0.updated < $1.updated }) { order.append(recent) }
+        if let richest = saved.filter({ $0.id != order.first?.id }).max(by: { worth($0) < worth($1) }) { order.append(richest) }
+        var worldMap: ARWorldMap?
+        var continuing: MapPiece?
+        while worldMap == nil, !order.isEmpty {
+            let p = order.removeFirst()
+            worldMap = MapStore.loadWorldMap(p.id)
+            if worldMap != nil { continuing = p }
         }
+        mapCandidates = order
+        ar.relocalisation.onStatus = { [weak self] s in self?.ar.setSpikeStatus("map", s) }
+        ar.relocalisation.onHint = { [weak self] hint in self?.mappingHint(hint) }
+        ar.relocalisation.trying(continuing.map { String($0.id.uuidString.prefix(4)) }, detail: continuing.map(describe) ?? "\(pieces.count) pieces stored")
         mapKeeper.enabled = memory.consent == true
         mapKeeper.begin(continuing: continuing, others: pieces.filter { $0.id != continuing?.id })
         mapKeeper.onLog = { [weak self] line in self?.log(line) }
@@ -52,9 +62,8 @@ extension GuideModel {
         keyframes.persist = memory.consent == true
         keyframes.currentPiece = mapKeeper.current.id
         keyframes.load(locatedPiece: continuing?.id)
-        // Places of the piece ARKit is recognising come back on their own anchors (with the home
-        // map: every place whose anchor it holds).
-        ar.restore(test != nil ? memory.places : memory.places.filter { $0.piece == nil || $0.piece == continuing?.id })
+        // Places of the piece ARKit is recognising come back on their own anchors.
+        ar.restore(memory.places.filter { $0.piece == nil || $0.piece == continuing?.id })
         if continuing != nil { log("map: recognising the room of last time") }
         mapSaveTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -65,10 +74,46 @@ extension GuideModel {
     }
 
     private func relocalisationGaveUp() {
-        log("map: not the room of last time; starting a new piece")
+        ar.relocalisation.gaveUp()
+        // Another saved room first, if there is one.
+        while let next = mapCandidates.first {
+            mapCandidates.removeFirst()
+            guard let map = MapStore.loadWorldMap(next.id) else { continue }
+            log("map: not the room of last time; trying another saved room")
+            ar.restart(initialMap: map)
+            let others = mapKeeper.others.filter { $0.id != next.id } + (mapKeeper.current.keyframes.isEmpty ? [] : [mapKeeper.current])
+            mapKeeper.begin(continuing: next, others: others)
+            keyframes.locate(next.id)
+            ar.restore(memory.places.filter { $0.piece == nil || $0.piece == next.id })
+            ar.relocalisation.trying(String(next.id.uuidString.prefix(4)), detail: describe(next))
+            return
+        }
+        log("map: not a saved room; mapping this one as a new piece")
         ar.restartFresh()
         mapKeeper.startNewPiece()
         keyframes.pieceChanged(to: mapKeeper.current.id)
+        ar.relocalisation.trying(nil, detail: "after the saved rooms")
+    }
+
+    private func describe(_ p: MapPiece) -> String {
+        let places = memory.places.filter { $0.piece == p.id }.count
+        return String(format: "%d keyframes, %d places, %.1f h old", p.keyframes.count, places, Date().timeIntervalSince(p.updated) / 3600)
+    }
+
+    /// The mapping needs the user's help: said once in a while, only when Pip is free.
+    func mappingHint(_ hint: Relocalisation.Hint) {
+        let key = "\(hint)"
+        // Looking around is asked once per start; the others at most every three minutes.
+        let wait: TimeInterval = hint == .lookAround ? .infinity : 180
+        if let last = hintSaid[key], wait == .infinity || Date().timeIntervalSince(last) < wait { return }
+        guard !speaker.isSpeaking, !lookActive, phase == .listening else { return }
+        hintSaid[key] = Date()
+        log("map hint: \(key)")
+        switch hint {
+        case .moveSlower: say(phrases.moveSlower)
+        case .lookAround: say(phrases.lookAround)
+        case .moreFeatures: say(phrases.moreFeatures)
+        }
     }
 
     /// A stored piece was recognised and linked: its places come into this session, and Pip says so.
@@ -201,24 +246,11 @@ extension GuideModel {
         }
         keyframes.saveIndex()
         let id = mapKeeper.current.id
-        ar.saveMap { map in
+        ar.saveMap { [weak self] map in
             if let map { MapStore.saveWorldMap(map, for: id) }
+            self?.ar.relocalisation.saved(map != nil, detail: map.map { String(format: "piece %@, %d feature points, %.1f×%.1f m",
+                String(id.uuidString.prefix(4)), $0.rawFeaturePoints.points.count, $0.extent.x, $0.extent.z) } ?? "not good enough yet, or the room not recognised yet")
             background.done()
-        }
-    }
-
-    /// The map test's home map (see MapTest): on the button in the memory sheet, and when the app
-    /// goes to the background. Saved only when ARKit mapped the area and recognised the home map.
-    func saveHomeMap(reason: String) {
-        guard let test = ar.mapTest else { return }
-        let background = BackgroundWork(name: "Pip home map", parts: 1)
-        test.save(ar, reason: reason) { [weak self] message in
-            MapTest.log("save (\(reason)): \(message)")
-            Task { @MainActor in
-                self?.ar.setSpikeStatus("mapsave", message)
-                self?.log("map test: \(message)")
-                background.done()
-            }
         }
     }
 

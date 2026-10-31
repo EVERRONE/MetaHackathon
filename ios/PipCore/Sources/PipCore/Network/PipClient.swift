@@ -48,6 +48,56 @@ public struct PipClient: Sendable {
 
     /// Speech for one sentence from the Worker's ElevenLabs route: 24 kHz 16-bit mono PCM plus the
     /// start time of every character (times run from the start of the sentence).
+    /// One piece of a sentence's speech as it streams in: 16-bit PCM and the start times of the
+    /// characters it covers (seconds from the start of the sentence).
+    public struct SpeechChunk: Sendable {
+        public var pcm: Data
+        public var characters: [String]
+        public var starts: [Double]
+    }
+
+    /// The same speech as `speak`, piece by piece as the Worker streams it, so playback can start
+    /// with the first piece instead of after the whole sentence.
+    public func speakStream(text: String, voice: String, language: String?) -> AsyncThrowingStream<SpeechChunk, Error> {
+        struct Chunk: Decodable {
+            struct Alignment: Decodable {
+                var characters: [String]
+                var character_start_times_seconds: [Double]
+            }
+            var audio_base64: String?
+            var alignment: Alignment?
+        }
+        var r = request("v1/speak")
+        var body: [String: String] = ["text": text, "voice": voice]
+        if let language { body["language"] = language }
+        r.httpBody = try? JSONEncoder().encode(body)
+        r.timeoutInterval = 20
+        let request = r, session = session
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let (bytes, response) = try await session.bytes(for: request)
+                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                        var data = Data()
+                        for try await b in bytes { data.append(b) }
+                        try Self.check(response, body: data)
+                    }
+                    let decoder = JSONDecoder()
+                    for try await line in bytes.lines {
+                        guard let chunk = try? decoder.decode(Chunk.self, from: Data(line.utf8)) else { continue }
+                        let pcm = chunk.audio_base64.flatMap { Data(base64Encoded: $0) } ?? Data()
+                        continuation.yield(SpeechChunk(pcm: pcm, characters: chunk.alignment?.characters ?? [],
+                                                       starts: chunk.alignment?.character_start_times_seconds ?? []))
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     public func speak(text: String, voice: String, language: String?) async throws -> SpokenAudio {
         struct Chunk: Decodable {
             struct Alignment: Decodable {

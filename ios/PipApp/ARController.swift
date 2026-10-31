@@ -23,11 +23,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     let follower = ImageFollower()
     /// Spike T1: EdgeTAM follows the latest pointed-at object, drawn as a cyan mask (see EdgeTAMSpike).
     let edgeSpike = EdgeTAMSpike()
-    /// Spike T3: one home map, recognised at every start (see MapTest); nil when the test is off.
-    var mapTest: MapTest?
-    /// Wait for ARKit to recognise the saved map however long it takes (the map test), instead of
-    /// starting fresh after `firstRelocaliseWait`.
-    var keepRelocalising = false
+    /// How recognising the saved room at start goes, and how well the room is being mapped.
+    let relocalisation = Relocalisation()
     /// One line per running test, for the screen.
     @Published private(set) var spikeStatus: [String: String] = [:]
 
@@ -94,6 +91,17 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             config.sceneReconstruction = .mesh
         }
         return config
+    }
+
+    /// The saved room was not recognised: ARKit tries another saved room's map.
+    func restart(initialMap: ARWorldMap) {
+        awaitingFirstRelocalisation = true
+        relocalisingSince = nil
+        removeMarks { _ in true }
+        places = [:]
+        pendingPlaces = [:]
+        clearCues()
+        arView.session.run(Self.configuration(initialMap: initialMap), options: [.resetTracking, .removeExistingAnchors])
     }
 
     /// The saved room was not recognised (Pip is in another room): start fresh, so tracking works
@@ -448,7 +456,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         onFrame?(frame)
         followObjects(frame)
         edgeSpike.frame(frame, viewSize: arView.bounds.size, markExists: edgeSpike.markID.map { marks[$0] != nil } ?? false)
-        mapTest?.frame(frame)
+        relocalisation.frame(frame, awaitingRecognition: awaitingFirstRelocalisation)
         // ARKit moves anchors when it corrects its map (loop closure, relocalisation); the drawn
         // outline eases towards the new place in `renderNow`.
         if !anchors.isEmpty {
@@ -492,9 +500,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + (firstTry ? Self.firstRelocaliseWait : Self.relocaliseWait)) { [weak self] in
                 guard let self, self.relocalisingSince == since else { return }
                 if firstTry, self.awaitingFirstRelocalisation {
-                    // The map test waits for the home map, cues hidden, however long it takes.
-                    if self.keepRelocalising { return }
-                    // The saved room is not this one: start fresh; the map links it later.
+                    // The saved room is not this one: another saved room, or start fresh.
                     self.onRelocaliseGaveUp?()
                     return
                 }
@@ -513,9 +519,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     static let relocaliseWait: TimeInterval = 10
     /// At start with a saved room: ARKit recognises it within a few seconds when Pip is in it.
-    static let firstRelocaliseWait: TimeInterval = 8
+    static let firstRelocaliseWait: TimeInterval = 6
     private var relocalisingSince: Date?
-    private var awaitingFirstRelocalisation = false
+    private(set) var awaitingFirstRelocalisation = false
     /// ARKit lost the room since tracking was last normal (`trackingNormal` may already be true
     /// again, when Pip gave up waiting and shows the cues anyway).
     private var trackingLost = false
@@ -767,23 +773,22 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         place(m)
     }
 
-    /// ARKit's map as it is now, with the places' anchors only (for the map test's home map).
-    func currentWorldMap(_ done: @escaping (ARWorldMap?) -> Void) {
-        arView.session.getCurrentWorldMap { map, _ in
-            DispatchQueue.main.async {
-                map?.anchors = map?.anchors.filter { $0.name == "pip-place" } ?? []
-                done(map)
-            }
-        }
-    }
-
     /// Saves the room map with the places' anchors only (outline anchors are for this session).
     /// ARKit needs to have mapped enough of the room first: Pip waits and tries again. `store`
     /// gets nil when Pip gives up.
     func saveMap(attempt: Int = 0, _ store: @escaping (ARWorldMap?) -> Void) {
+        // While ARKit is still recognising the saved room, this session's map is in a frame of
+        // its own: saving it would spoil the room's map.
+        guard !awaitingFirstRelocalisation else { store(nil); return }
         let status = arView.session.currentFrame?.worldMappingStatus
-        guard status == .mapped || status == .extending || attempt >= 5 else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.saveMap(attempt: attempt + 1, store) }
+        // Only a map ARKit itself calls good (as MultiSet keeps its maps clean): a limited one is
+        // never written over the last good one.
+        guard status == .mapped || status == .extending else {
+            if attempt < 5 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.saveMap(attempt: attempt + 1, store) }
+            } else {
+                store(nil)
+            }
             return
         }
         arView.session.getCurrentWorldMap { [weak self] map, _ in

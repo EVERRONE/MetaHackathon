@@ -267,7 +267,6 @@ struct MemorySheet: View {
     @ObservedObject var memory: SpaceMemory
     @ObservedObject var ar: ARController
     @AppStorage(EdgeTAMSpike.enabledKey) private var edgeTAMTest = true
-    @AppStorage(MapTest.enabledKey) private var mapTest = false
 
     var body: some View {
         NavigationStack {
@@ -298,15 +297,11 @@ struct MemorySheet: View {
                 }
                 Section {
                     Toggle("EdgeTAM test (cyan mask)", isOn: $edgeTAMTest)
-                    Toggle("Map test: one home map", isOn: $mapTest)
-                    if ar.mapTest != nil {
-                        Button("Save the home map now") { model.saveHomeMap(reason: "button") }
-                    }
                     ForEach(ar.spikeStatus.sorted { $0.key < $1.key }.map(\.value), id: \.self) { Text($0).font(.caption.monospaced()) }
                 } header: {
                     Text("Tests")
                 } footer: {
-                    Text("The map test takes effect at the next start of the app. It keeps a map of the room's features on this iPhone, and waits until ARKit recognises it. Both tests write their measurements to the app's documents.")
+                    Text("The room is mapped on its own while you use Pip, and recognised at the next start. The measurements go to the app's documents.")
                 }
             }
             .navigationTitle("What Pip remembers")

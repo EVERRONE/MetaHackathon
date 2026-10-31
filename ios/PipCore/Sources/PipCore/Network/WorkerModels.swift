@@ -116,6 +116,19 @@ public struct SpokenAudio: Sendable {
 
     public static let sampleRate = 24_000.0
 
+    public init(pcm: Data, characters: [String], starts: [Double]) {
+        self.pcm = pcm
+        self.characters = characters
+        self.starts = starts
+    }
+
+    /// Like `startTime`, but only once that character's time has arrived (speech still streaming).
+    public func knownStartTime(atUTF16 offset: Int, in text: String) -> Double? {
+        let prefix = String(decoding: Array(text.utf16.prefix(offset)), as: UTF16.self)
+        let index = prefix.count
+        return index < starts.count ? starts[index] : nil
+    }
+
     /// Start time of the character at a UTF-16 offset in `text` (the cue anchors are UTF-16).
     public func startTime(atUTF16 offset: Int, in text: String) -> Double? {
         guard !starts.isEmpty else { return nil }

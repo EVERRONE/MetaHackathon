@@ -49,6 +49,7 @@ final class MapKeeper {
     /// The fingerprint only proposes: the three most alike stored views are always tried, and
     /// the 3D fit decides.
     static let candidatesPerKeyframe = 3
+    static let linkPieces = false
     static let maxSurfacePoints = 400_000
 
     /// `piece`: the stored piece ARKit is relocalising into (its frame becomes this session's).
@@ -115,7 +116,9 @@ final class MapKeeper {
         lastKeyPose = pose
         lastKeyTime = t
         working = true
-        let candidates = others
+        // Linking pieces by their surfaces (ICP) found no link in practice (31 Oct: 43 tries, 0
+        // links): off. Rooms join by ARKit recognising its own map (see GuideModel.startMap).
+        let candidates = Self.linkPieces ? others : []
         // The live mesh around the user when ARKit has built enough of it, else this depth frame.
         let mesh = candidates.isEmpty ? [] : (meshNear?(pose.columns.3.xyz, 3.5) ?? [])
         Task.detached(priority: .utility) { [weak self] in

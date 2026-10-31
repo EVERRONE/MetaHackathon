@@ -37,6 +37,8 @@ enum MapStore {
         try? data.write(to: worldMapURL(id), options: [.atomic, .completeFileProtection])
     }
 
+    static func hasWorldMap(_ id: UUID) -> Bool { FileManager.default.fileExists(atPath: worldMapURL(id).path) }
+
     static func loadWorldMap(_ id: UUID) -> ARWorldMap? {
         guard let data = try? Data(contentsOf: worldMapURL(id)) else { return nil }
         return try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data)

@@ -5,10 +5,12 @@ import QuartzCore
 
 /// Speaks sentences and fires each cue just before the word it belongs to.
 ///
-/// Voices: ElevenLabs through the Worker (with each character's start time), or the iPhone's own
-/// voice as a fallback (with word markers; `byteSampleOffset` is a byte offset into the synthesised
-/// audio, measured: 4 bytes per Float32 frame). Each sentence is rendered as soon as it is queued,
-/// so the next one is ready when the current one ends.
+/// Voices: ElevenLabs through the Worker (with each character's start time), streamed: a
+/// sentence starts playing with its first piece of audio, and each cue is timed as soon as its
+/// word's time arrives. The iPhone's own voice is the fallback (with word markers;
+/// `byteSampleOffset` is a byte offset into the synthesised audio, measured: 4 bytes per Float32
+/// frame). Each sentence's speech is requested as soon as it is queued, so the next one is ready
+/// when the current one ends.
 final class Speaker {
     /// Research: show a cue 300–800 ms before the noun it goes with.
     static let cueLead: TimeInterval = 0.4
@@ -39,10 +41,27 @@ final class Speaker {
     private var busy = false
     private var generation = 0
     private var pendingCues: [DispatchWorkItem] = []
+    /// The streamed sentence playing now (to cancel on stop).
+    private var current: StreamedSpeech?
 
     private struct Item {
         var sentence: SpokenSentence
-        var audio: Task<RenderedSpeech?, Never>
+        var speech: Speech
+        var enqueued: CFTimeInterval
+        /// The first sentence after silence: its delay is what the user waits for.
+        var first: Bool
+
+        func cancel() {
+            switch speech {
+            case .streamed(let s): s.cancel()
+            case .rendered(let t): t.cancel()
+            }
+        }
+    }
+
+    private enum Speech {
+        case streamed(StreamedSpeech)
+        case rendered(Task<RenderedSpeech?, Never>)
     }
 
     /// Plays through the shared engine, so voice processing can cancel Pip's own voice.
@@ -54,34 +73,52 @@ final class Speaker {
     var isSpeaking: Bool { busy || !queue.isEmpty }
 
     func enqueue(_ sentence: SpokenSentence) {
-        // Settings are read here, on the main thread, not inside the background render.
-        let text = sentence.text, cloud = cloud, voice = voice, rate = rate, device = device
-        let log = onLog
-        let audio = Task { () -> RenderedSpeech? in
-            if let cloud {
+        // Settings are read here, on the main thread, not inside the background work.
+        let text = sentence.text, voice = voice, rate = rate, device = device
+        let speech: Speech
+        if let cloud {
+            let s = StreamedSpeech()
+            let log = onLog
+            s.task = Task { @MainActor [weak s] in
+                // An odd byte at the end of a piece belongs to the next one.
+                var carry = Data()
                 do {
-                    let spoken = try await cloud.client.speak(text: text, voice: cloud.voiceId, language: cloud.language)
-                    if let buffer = Self.buffer(fromPCM16: spoken.pcm, rate: SpokenAudio.sampleRate) {
-                        return RenderedSpeech(buffers: [buffer], time: { spoken.startTime(atUTF16: $0, in: text) ?? 0 })
+                    for try await chunk in cloud.client.speakStream(text: text, voice: cloud.voiceId, language: cloud.language) {
+                        guard let s else { return }
+                        var pcm = carry + chunk.pcm
+                        if pcm.count % 2 == 1 {
+                            carry = pcm.suffix(1)
+                            pcm.removeLast()
+                        } else {
+                            carry = Data()
+                        }
+                        if let b = Self.buffer(fromPCM16: pcm, rate: SpokenAudio.sampleRate) { s.buffers.append(b) }
+                        s.timing.characters += chunk.characters
+                        s.timing.starts += chunk.starts
+                        s.changed()
                     }
                 } catch {
-                    // Stopped by barge-in: no fallback for speech nobody will hear.
-                    if Task.isCancelled { return nil }
-                    await MainActor.run { log?("voice fallback: \(error)") }
+                    // Stopped by barge-in: nobody waits for this speech.
+                    if !Task.isCancelled { log?("voice: \(error)") }
                 }
+                s?.finished = true
+                s?.changed()
             }
-            if Task.isCancelled { return nil }
-            return await device.render(text, voice: voice, rate: rate)
+            speech = .streamed(s)
+        } else {
+            speech = .rendered(Task { await device.render(text, voice: voice, rate: rate) })
         }
-        queue.append(Item(sentence: sentence, audio: audio))
+        queue.append(Item(sentence: sentence, speech: speech, enqueued: CACurrentMediaTime(), first: !busy && queue.isEmpty))
         pump()
     }
 
     /// Stops at once (barge-in): audio, queued sentences and cues that have not fired yet.
     func stop() {
         generation += 1
-        queue.forEach { $0.audio.cancel() }
+        queue.forEach { $0.cancel() }
         queue.removeAll()
+        current?.cancel()
+        current = nil
         pendingCues.forEach { $0.cancel() }
         pendingCues.removeAll()
         player.stop()
@@ -100,15 +137,36 @@ final class Speaker {
         busy = true
         let item = queue.removeFirst()
         let gen = generation
-        Task { @MainActor [weak self] in
-            let rendered = await item.audio.value
-            guard let self, gen == self.generation else { return }
-            guard let rendered, !rendered.buffers.isEmpty else {
-                self.busy = false
-                self.pump()
-                return
+        switch item.speech {
+        case .rendered(let task):
+            Task { @MainActor [weak self] in
+                let rendered = await task.value
+                guard let self, gen == self.generation else { return }
+                self.play(item, rendered, generation: gen)
             }
-            self.play(item.sentence, rendered, generation: gen)
+        case .streamed(let s):
+            current = s
+            var begun = false
+            // As soon as the first audio is there; with none at all, the iPhone's own voice.
+            func begin() {
+                guard gen == generation, !begun else { return }
+                if !s.buffers.isEmpty {
+                    begun = true
+                    playStreamed(item, s, generation: gen)
+                } else if s.finished {
+                    begun = true
+                    s.onChange = nil
+                    if current === s { current = nil }
+                    let text = item.sentence.text, voice = voice, rate = rate, device = device
+                    Task { @MainActor [weak self] in
+                        let rendered = await device.render(text, voice: voice, rate: rate)
+                        guard let self, gen == self.generation else { return }
+                        self.play(item, rendered, generation: gen)
+                    }
+                }
+            }
+            s.onChange = { begin() }
+            begin()
         }
     }
 
@@ -127,17 +185,113 @@ final class Speaker {
 
     // MARK: Playback
 
-    private func play(_ sentence: SpokenSentence, _ rendered: RenderedSpeech, generation gen: Int) {
-        guard let format = rendered.buffers.first?.format else { return }
+    /// Whether the engine runs (an interruption can stop it); otherwise the sentence is skipped.
+    private func ready(_ format: AVAudioFormat) -> Bool {
         if !engine.isRunning { try? engine.start() }
         guard engine.isRunning else {
-            // No audio right now (an interruption): skip the sentence rather than crash.
             onLog?("audio engine not running; sentence skipped")
+            return false
+        }
+        connect(format)
+        return true
+    }
+
+    private func started(_ item: Item, at start: CFTimeInterval) {
+        recentText.append(item.sentence.text)
+        if recentText.count > 6 { recentText.removeFirst() }
+        lastSpokeAt = Date()
+        onSentenceStart?(item.sentence)
+        if item.first { onLog?(String(format: "voice: first audio %.2f s after the sentence", start - item.enqueued)) }
+    }
+
+    /// A streamed sentence being played: how far it is, and which cues still wait for their time.
+    private final class Playback {
+        let item: Item
+        let stream: StreamedSpeech
+        let generation: Int
+        let start: CFTimeInterval
+        let latency: TimeInterval
+        var scheduled = 0
+        var played = 0
+        var done = false
+        var untimed: [Int]
+
+        init(item: Item, stream: StreamedSpeech, generation: Int, start: CFTimeInterval, latency: TimeInterval) {
+            self.item = item
+            self.stream = stream
+            self.generation = generation
+            self.start = start
+            self.latency = latency
+            untimed = Array(item.sentence.cues.indices)
+        }
+    }
+
+    /// A sentence whose audio streams in: each piece is queued on the player as it arrives.
+    private func playStreamed(_ item: Item, _ s: StreamedSpeech, generation gen: Int) {
+        guard let format = s.buffers.first?.format, ready(format) else {
+            s.cancel()
+            if current === s { current = nil }
             busy = false
             pump()
             return
         }
-        connect(format)
+        let start = CACurrentMediaTime()
+        let p = Playback(item: item, stream: s, generation: gen, start: start, latency: AVAudioSession.sharedInstance().outputLatency)
+        s.onChange = { [weak self] in self?.update(p) }
+        update(p)
+        player.play()
+        started(item, at: start)
+    }
+
+    private func update(_ p: Playback) {
+        guard p.generation == generation, !p.done else { return }
+        let s = p.stream
+        while p.scheduled < s.buffers.count {
+            let b = s.buffers[p.scheduled]
+            p.scheduled += 1
+            player.scheduleBuffer(b, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                DispatchQueue.main.async {
+                    guard let self, p.generation == self.generation else { return }
+                    p.played += 1
+                    self.update(p)
+                }
+            }
+        }
+        // A cue is timed once its word's time has arrived; at the end, the rest at the nearest
+        // known time.
+        let sentence = p.item.sentence
+        p.untimed.removeAll { i in
+            let cue = sentence.cues[i]
+            let t = s.timing.knownStartTime(atUTF16: cue.anchor, in: sentence.text)
+                ?? (s.finished ? (s.timing.startTime(atUTF16: cue.anchor, in: sentence.text) ?? 0) : nil)
+            guard let t else { return false }
+            let delay = max(0, p.start + t - Self.cueLead + p.latency - CACurrentMediaTime())
+            let gen = p.generation
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, gen == self.generation else { return }
+                self.onCue?(cue)
+            }
+            pendingCues.append(work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+            return true
+        }
+        guard s.finished, p.played == p.scheduled else { return }
+        p.done = true
+        s.onChange = nil
+        if current === s { current = nil }
+        lastSpokeAt = Date()
+        busy = false
+        pump()
+    }
+
+    /// A sentence rendered whole (the iPhone's own voice).
+    private func play(_ item: Item, _ rendered: RenderedSpeech?, generation gen: Int) {
+        guard let rendered, let format = rendered.buffers.first?.format, ready(format) else {
+            busy = false
+            pump()
+            return
+        }
+        let sentence = item.sentence
         for (i, b) in rendered.buffers.enumerated() {
             let last = i == rendered.buffers.count - 1
             player.scheduleBuffer(b, completionCallbackType: .dataPlayedBack) { [weak self] _ in
@@ -152,19 +306,16 @@ final class Speaker {
         }
         player.play()
         let latency = AVAudioSession.sharedInstance().outputLatency
-        recentText.append(sentence.text)
-        if recentText.count > 6 { recentText.removeFirst() }
-        lastSpokeAt = Date()
-        onSentenceStart?(sentence)
+        started(item, at: CACurrentMediaTime())
 
         for cue in sentence.cues {
             let delay = max(0, rendered.time(cue.anchor) - Self.cueLead + latency)
-            let item = DispatchWorkItem { [weak self] in
+            let work = DispatchWorkItem { [weak self] in
                 guard let self, gen == self.generation else { return }
                 self.onCue?(cue)
             }
-            pendingCues.append(item)
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+            pendingCues.append(work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
         }
     }
 
@@ -189,6 +340,23 @@ final class Speaker {
             if let best = matching.max(by: { $0.quality.rawValue < $1.quality.rawValue }) { return best }
         }
         return AVSpeechSynthesisVoice(language: prefixes.first)
+    }
+}
+
+/// A sentence's cloud speech as it streams in (main thread only).
+final class StreamedSpeech {
+    var buffers: [AVAudioPCMBuffer] = []
+    /// The start time of each character received so far (no audio kept here).
+    var timing = SpokenAudio(pcm: Data(), characters: [], starts: [])
+    var finished = false
+    var task: Task<Void, Never>?
+    var onChange: (() -> Void)?
+
+    func changed() { onChange?() }
+
+    func cancel() {
+        task?.cancel()
+        onChange = nil
     }
 }
 

@@ -130,9 +130,16 @@ It follows the object reliably. Small parts spill onto look-alike neighbours, so
 
 The app now has this test built in: `EdgeTAMSpike`, `Documents/edgetam.log`, and one frame per second kept for comparison.
 
-### T3: one home map
+### T3: the home map, automatic
 
-The test mode is built (`MapTest`, `Documents/maptest.log`):
-- At launch the home map goes to ARKit, which waits for it without giving up.
-- The map is saved only once the area is `.mapped` and the home map has been recognised.
-- Device results are pending.
+The user never maps on purpose; Pip maps while it is used (`Relocalisation`, `Documents/relocalise.log`):
+- At launch ARKit gets the map of the room used last. If it does not recognise it within 6 s, Pip tries the saved room with the most places and views, then maps the room as a new piece.
+- A session extends the map of the room it recognised as the user walks, into new rooms too. Rooms therefore join by being walked through.
+- A map is saved only when ARKit calls it `.mapped` or `.extending`, and never while the saved room is still being recognised. It is saved every two minutes when the map has grown, and when the app goes to the background.
+- Pip says when the mapping needs the user's help, at most every three minutes:
+  - "move a little slower", when ARKit reports excessive motion for 1.5 s;
+  - "point at the room", when ARKit sees too few features for 3 s;
+  - "look around", once per start, while recognition takes longer than 4 s.
+- ICP linking of pieces is off (43 tries, 0 links).
+
+Device results are pending.

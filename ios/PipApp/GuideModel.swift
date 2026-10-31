@@ -55,6 +55,10 @@ final class GuideModel: ObservableObject {
     /// The consent question waits for Pip to be free before it is asked.
     var consentQueued = false
     var pendingPlaces: [SpaceMemory.Place] = []
+    /// Saved rooms still to try at start when ARKit does not recognise the first (see startMap).
+    var mapCandidates: [MapPiece] = []
+    /// When each mapping hint was last said, so Pip does not nag.
+    var hintSaid: [String: Date] = [:]
     var pendingFacts: [(key: String, value: String, source: String)] = []
 
     // MARK: Visual memory and shopping list (see GuideModel+Find.swift)
@@ -204,10 +208,7 @@ final class GuideModel: ObservableObject {
         }
         // The room map is saved when the app goes to the background, so new places survive.
         NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in
-                self?.saveRoomNow()
-                self?.saveHomeMap(reason: "background")
-            }
+            Task { @MainActor in self?.saveRoomNow() }
         }
         startBasketWatch()
         for (key, fact) in memory.facts { facts[key] = Fact(value: fact.value, source: fact.source) }
@@ -251,10 +252,81 @@ final class GuideModel: ObservableObject {
     }
 
     private func interrupt() {
+        dropEarly()
         speaker.stop()
         task?.cancel()
         activeLook = nil
         phase = muted ? .muted : .listening
+    }
+
+    // MARK: Answering before the turn officially ends
+
+    /// The transcription service ends a turn about a second after the user stops. Pip does not
+    /// wait for that: when the words have stood still for `earlyAfter`, the look starts on them,
+    /// with its answer held back until the final transcript confirms the same words. Different
+    /// words (the user went on, or the service heard it otherwise): the early look is dropped
+    /// unseen and the final goes the usual way. Only questions for the model start early; commands,
+    /// answers, hazards and the like always wait for the final transcript.
+    static let earlyAfter: TimeInterval = 0.45
+    /// Without a final transcript this long after the early start, the words stand if the user stayed quiet.
+    static let earlyConfirmAfter: TimeInterval = 2.5
+
+    private struct EarlyTurn {
+        let text: String
+        let words: [String]
+        let started: Date
+        let gate: TurnGate
+    }
+
+    private var early: EarlyTurn?
+    private var earlyTimer: Task<Void, Never>?
+
+    private func scheduleEarly(_ text: String) {
+        earlyTimer?.cancel()
+        guard early == nil, phase == .hearing else { return }
+        earlyTimer = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.earlyAfter * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            self.startEarly(text)
+        }
+    }
+
+    private func startEarly(_ text: String) {
+        guard early == nil, !busy, !muted, phase == .hearing, wouldLook(text), let snapshot = ar.snapshot() else { return }
+        if let spoken = Utterance.language(of: text), spoken != language {
+            log("language: \(spoken)")
+            adoptLanguage(spoken)
+        }
+        let gate = TurnGate()
+        early = EarlyTurn(text: text, words: words(text), started: Date(), gate: gate)
+        heard = text
+        log("early: looking on \"\(text)\"")
+        task?.cancel()
+        let t0 = Date()
+        task = Task { await look(text, snapshot: snapshot, started: t0, gate: gate) }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.earlyConfirmAfter * 1_000_000_000))
+            guard let self, let e = self.early, e.gate === gate else { return }
+            self.log("early: no final transcript; the words stand")
+            self.early = nil
+            gate.open(true)
+        }
+    }
+
+    /// Whether `route` would hand these words to a look, judged without acting on them.
+    private func wouldLook(_ text: String) -> Bool {
+        guard wordCount(text) >= 3, SafetyPolicy.spokenHazard(in: text) == nil,
+              Command.parse(text) == nil, Utterance.acknowledgement(text) == nil, !Utterance.startsWithYes(text),
+              !awaitingConsent, pageReader == nil, !offering else { return false }
+        return true
+    }
+
+    /// The early look is dropped unseen (it has not spoken or shown anything yet).
+    private func dropEarly() {
+        earlyTimer?.cancel()
+        guard let e = early else { return }
+        early = nil
+        e.gate.open(false)
     }
 
     private func restartListening() {
@@ -297,6 +369,14 @@ final class GuideModel: ObservableObject {
             }
         case .partial(let text):
             guard !muted, !isEcho(text) else { return }
+            // The user went on after Pip had started on their words: those were not the question.
+            if let e = early, words(text) != e.words {
+                log("early: dropped, the user went on")
+                dropEarly()
+                task?.cancel()
+                activeLook = nil
+                phase = .hearing
+            }
             // A hazard stops Pip at once, also as a single word ("Sparks!", "Rook!").
             if bargeInPending, wordCount(text) >= 2 || SafetyPolicy.spokenHazard(in: text) != nil {
                 log("barge-in")
@@ -304,17 +384,37 @@ final class GuideModel: ObservableObject {
                 interrupt()
                 phase = .hearing
             }
-            if !busy { heard = text }
+            if !busy {
+                heard = text
+                scheduleEarly(text)
+            }
         case .speechEnd:
-            break
+            // The service heard the user stop: Pip starts on the words at once (see `startEarly`).
+            earlyTimer?.cancel()
+            if !busy, !heard.isEmpty { startEarly(heard) }
         case .final(_, let text, let speaker):
             bargeInPending = false
+            earlyTimer?.cancel()
             // A hazard is never dropped, also not while Pip speaks or looks, and not for being
             // said by someone else: it stops everything.
             let hazard = !muted && text.count >= 2 && !isEcho(text) && SafetyPolicy.spokenHazard(in: text) != nil
             if hazard, busy {
                 log("barge-in: hazard")
                 interrupt()
+            }
+            // Pip already started on these words: the final transcript only confirms them.
+            if let e = early {
+                early = nil
+                if words(text) == e.words, !e.gate.abandoned, !muted, acceptSpeaker(speaker, text: text) {
+                    heard = text
+                    log(String(format: "early: confirmed %.2f s later", Date().timeIntervalSince(e.started)))
+                    e.gate.open(true)
+                    return
+                }
+                log("early: dropped, the final transcript was \"\(text)\"")
+                e.gate.open(false)
+                task?.cancel()
+                activeLook = nil
             }
             guard !muted, text.count >= 2, !isEcho(text), !busy else {
                 if phase == .hearing { phase = .listening }
@@ -363,7 +463,10 @@ final class GuideModel: ObservableObject {
 
     /// One look: Pip answers `utterance`, or carries out `directive` (give a step, check a step).
     /// `onState` receives the model's state tag, which a check uses as its evidence.
-    func look(_ utterance: String, snapshot: FrameSnapshot, started: Date, directive: String? = nil, onState: (([String: String]) -> Void)? = nil) async {
+    /// `gate`: started before the final transcript (see `startEarly`); nothing is said, shown or
+    /// remembered until it opens, and the look ends unseen if it opens with false.
+    func look(_ utterance: String, snapshot: FrameSnapshot, started: Date, directive: String? = nil, gate: TurnGate? = nil,
+              onState: (([String: String]) -> Void)? = nil) async {
         lookCount += 1
         let me = lookCount
         activeLook = me
@@ -404,9 +507,15 @@ final class GuideModel: ObservableObject {
         var firstWord: Double?
         var raw: String?
         var shownThisLook = Set<Int>()
+        // An early look waits here for the final transcript; the model is already at work.
+        var confirmed = gate == nil
         do {
             for try await event in pipeline.run(request) {
                 if Task.isCancelled { break }
+                if !confirmed, let gate {
+                    guard await gate.wait(), !Task.isCancelled else { break }
+                    confirmed = true
+                }
                 switch event {
                 case .target(let id, let spec):
                     specs[id] = spec
@@ -459,15 +568,30 @@ final class GuideModel: ObservableObject {
                     note("invalid: \(e)")
                 case .finished(let summary):
                     raw = summary.rawText
-                    note(String(format: "first word %.1fs after you stopped · total %.1fs", firstWord ?? -1, Date().timeIntervalSince(started)))
+                    note(String(format: "first word %.1fs after you stopped (model: first token %.1fs, first sentence %.1fs)%@ · total %.1fs",
+                                firstWord ?? -1, summary.firstTokenSeconds ?? -1, summary.firstSentenceSeconds ?? -1,
+                                gate != nil ? " · started early" : "", Date().timeIntervalSince(started)))
                     if let u = summary.usage { note("tokens \(u.promptTokens) in (\(u.promptTokensDetails?.cachedTokens ?? 0) cached), \(u.completionTokens) out") }
                 }
+            }
+            // Dropped before the final transcript came: it never happened (the final goes the
+            // usual way if it still comes).
+            guard confirmed else {
+                gate?.abandon()
+                recorder?.finish(rawText: nil)
+                return
             }
             // Pip's own silent turns (a false alarm while watching) are not kept.
             if directive == nil || !spokenThisTurn.isEmpty { remember(directive == nil ? utterance : "(Pip's own turn)") }
             if !speaker.isSpeaking, phase == .looking || phase == .speaking { phase = muted ? .muted : .listening }
         } catch {
             note("error: \(error)")
+            // An early look that failed before the final transcript: the final starts afresh.
+            guard confirmed else {
+                gate?.abandon()
+                recorder?.finish(rawText: nil)
+                return
+            }
             remember(utterance)
             if !Task.isCancelled { phase = .failed("Look failed: \(error)") }
         }
@@ -513,5 +637,46 @@ final class GuideModel: ObservableObject {
         // decisions also in map.log), so a test can be read back afterwards.
         TrackingLog.append(line, to: "session.log")
         if line.hasPrefix("map:") { TrackingLog.append(line, to: "map.log") }
+    }
+}
+
+/// Opens once, with true (go on) or false (drop); every waiter gets the same answer.
+final class TurnGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Bool?
+    private var waiters: [CheckedContinuation<Bool, Never>] = []
+    private var gaveUp = false
+
+    func open(_ go: Bool) {
+        lock.lock()
+        guard result == nil else { lock.unlock(); return }
+        result = go
+        let w = waiters
+        waiters = []
+        lock.unlock()
+        w.forEach { $0.resume(returning: go) }
+    }
+
+    func wait() async -> Bool {
+        await withCheckedContinuation { c in
+            lock.lock()
+            if let r = result {
+                lock.unlock()
+                c.resume(returning: r)
+            } else {
+                waiters.append(c)
+                lock.unlock()
+            }
+        }
+    }
+
+    /// The look behind this gate ended before it opened (an error, or it was dropped).
+    func abandon() {
+        lock.lock(); gaveUp = true; lock.unlock()
+    }
+
+    var abandoned: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return gaveUp
     }
 }
