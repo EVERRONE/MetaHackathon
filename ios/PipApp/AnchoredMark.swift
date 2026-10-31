@@ -19,6 +19,9 @@ struct AnchoredMark {
     /// A short glide from where the outline was drawn before a re-measurement, decaying to zero,
     /// so a correction moves the outline smoothly instead of making it jump.
     var glide = simd_float3.zero
+    /// Where a moving object has got to since its last measurement (EdgeTAM's velocity times the
+    /// mask's age); unlike `glide` it does not ease away.
+    var lead = simd_float3.zero
     private let rawPolygons: [[simd_float3]]
     private let rawCentroid: simd_float3
     /// This measurement as a ray from the camera, for fusing it with later looks (nil for a
@@ -32,7 +35,7 @@ struct AnchoredMark {
 
     private func apply(_ p: simd_float3) -> simd_float3 {
         let q = correction * simd_float4(p, 1)
-        return simd_float3(q.x, q.y, q.z) + glide
+        return simd_float3(q.x, q.y, q.z) + glide + lead
     }
     private let lift: (CGPoint) -> simd_float3
     private let imageCentre: CGPoint

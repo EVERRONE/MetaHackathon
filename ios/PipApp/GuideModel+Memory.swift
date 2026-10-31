@@ -18,11 +18,13 @@ extension GuideModel {
     func startMap() {
         memory.migrateLegacyMap()
         let pieces = memory.consent == true ? MapStore.loadAll() : []
-        // Most promising first: the room used last, then the one with the most places and views.
+        // Most promising first: the room used last (of the ones mapped over a while), then the one
+        // with the most places and views.
         let saved = pieces.filter { MapStore.hasWorldMap($0.id) }
         func worth(_ p: MapPiece) -> Int { memory.places.filter { $0.piece == p.id }.count * 20 + p.keyframes.count }
         var order: [MapPiece] = []
-        if let recent = saved.max(by: { $0.updated < $1.updated }) { order.append(recent) }
+        let substantial = saved.filter { $0.keyframes.count >= 10 }
+        if let recent = (substantial.isEmpty ? saved : substantial).max(by: { $0.updated < $1.updated }) { order.append(recent) }
         if let richest = saved.filter({ $0.id != order.first?.id }).max(by: { worth($0) < worth($1) }) { order.append(richest) }
         var worldMap: ARWorldMap?
         var continuing: MapPiece?

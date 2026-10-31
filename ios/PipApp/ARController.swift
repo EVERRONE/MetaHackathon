@@ -27,6 +27,11 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// moved and is not seen.
     private var steered = Set<Int>()
     private var steerHidden = Set<Int>()
+    /// A steered object's velocity and the time of the frame its outline came from.
+    private var steerMotion: [Int: (velocity: simd_float3, time: TimeInterval)] = [:]
+    /// The mask is about 0.15–0.3 s old when drawn: a moving object is drawn where it has got to,
+    /// up to this far ahead (an object that stopped is corrected by the next mask, 0.1 s later).
+    static let maxLead: TimeInterval = 0.35
     /// How recognising the saved room at start goes, and how well the room is being mapped.
     let relocalisation = Relocalisation()
     /// One line per running test, for the screen.
@@ -74,7 +79,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         follower.onSettled = { [weak self] id, box in self?.onMovedObjectSettled?(id, box) }
         edgeSpike.onStatus = { [weak self] s in self?.setSpikeStatus("edgetam", s) }
         edgeSpike.onLog = { [weak self] s in self?.onLockLog?(s) }
-        edgeSpike.onOutline = { [weak self] id, world in self?.steer(id, world: world) }
+        edgeSpike.onOutline = { [weak self] id, world, velocity, time in self?.steer(id, world: world, velocity: velocity, at: time) }
         edgeSpike.onLost = { [weak self] id, moving in self?.steerLost(id, moving: moving) }
         if EdgeTAMSpike.enabled { edgeSpike.preload() }
     }
@@ -268,6 +273,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             follower.stop(id)
             steered.remove(id)
             steerHidden.remove(id)
+            steerMotion[id] = nil
         }
         let gone = imageLocks.filter { marks[$0.value.markID] == nil }.map(\.key)
         if !gone.isEmpty {
@@ -370,7 +376,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     /// EdgeTAM saw the object: its outline is the mask's, in the room. A flat face that ARKit's image
     /// tracking holds is more exact (under a millimetre to 1.5 mm): there the lock keeps the outline.
-    func steer(_ id: Int, world: [[simd_float3]]) {
+    func steer(_ id: Int, world: [[simd_float3]], velocity: simd_float3 = .zero, at time: TimeInterval = CACurrentMediaTime()) {
         guard marks[id] != nil else { return }
         if imageLocks.values.contains(where: { $0.markID == id && $0.seen && $0.tracked }) { return }
         if !steered.contains(id) {
@@ -384,6 +390,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         }
         steerHidden.remove(id)
         marks[id] = AnchoredMark(id: id, world: world)
+        steerMotion[id] = (velocity, time)
     }
 
     /// EdgeTAM does not see the object: if it was moving, its outline waits hidden until it is seen
@@ -595,6 +602,12 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             } else if m.glide != .zero {
                 m.glide = .zero
                 changed = true
+            }
+            // A moving object steered by EdgeTAM: drawn where it has got to since its mask.
+            if let motion = steerMotion[id] {
+                var lead = motion.velocity * Float(min(max(0, now - motion.time), Self.maxLead))
+                if simd_length(lead) > 0.05 { lead = simd_normalize(lead) * 0.05 }
+                if lead != m.lead { m.lead = lead; changed = true }
             }
             if changed { marks[id] = m }
         }
@@ -860,6 +873,13 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
                     store(nil, String(format: "it has drifted (%.0f × %.0f m)", size.x, size.y))
                     return
                 }
+                // A map of a metre or so is recognised from that one view only (31 Oct: saved 10 s
+                // after start at 1.2 × 1.3 m, then tried first at the next start): it waits until
+                // it covers more of the room.
+                guard max(size.x, size.y) >= Self.minMapExtent, map.rawFeaturePoints.points.count >= Self.minMapPoints else {
+                    store(nil, String(format: "it covers too little yet (%.1f × %.1f m, %d points)", size.x, size.y, map.rawFeaturePoints.points.count))
+                    return
+                }
                 map.anchors = map.anchors.filter { $0.name == "pip-place" }
                 store(map, String(format: "%.1f × %.1f m", size.x, size.y))
             }
@@ -870,6 +890,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     static let steadyBeforeSave: TimeInterval = 5
     /// No home map is wider than this (2nd to 98th percentile of its feature points, across the floor).
     static let maxMapExtent: Float = 25
+    /// A map is worth keeping from this size on.
+    static let minMapExtent: Float = 1.5
+    static let minMapPoints = 2000
     /// When tracking was last limited, lost or in the dark.
     private var lastTrackingTrouble: CFTimeInterval = 0
 

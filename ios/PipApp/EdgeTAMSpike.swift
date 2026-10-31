@@ -36,8 +36,9 @@ final class EdgeTAMSpike {
     private let maskLayer = CALayer()
     var onStatus: ((String) -> Void)?
     var onLog: ((String) -> Void)?
-    /// The object's outline in the room (world space), from this frame's mask.
-    var onOutline: ((Int, [[simd_float3]]) -> Void)?
+    /// The object's outline in the room (world space), from this frame's mask, with the object's
+    /// velocity (m/s, zero when still) and the frame's time.
+    var onOutline: ((Int, [[simd_float3]], simd_float3, TimeInterval) -> Void)?
     /// Not seen in this frame; `moving`: it moved just before.
     var onLost: ((Int, Bool) -> Void)?
     private var centres: [(t: TimeInterval, p: simd_float3)] = []
@@ -91,6 +92,7 @@ final class EdgeTAMSpike {
         totals = []
         doneTimes = []
         centres = []
+        smoothedVelocity = .zero
         lastDrawn = nil
         checks = []
         Self.pruneRuns()
@@ -193,9 +195,9 @@ final class EdgeTAMSpike {
     private func steer(_ id: Int, _ r: EdgeTAMWorker.Tracked, time: TimeInterval) {
         if r.frame.present, r.outline.count >= 3, let c = r.world {
             check(id, r, now: c)
-            centres.append((time, c))
-            centres.removeAll { time - $0.t > 0.6 }
-            onOutline?(id, [r.outline])
+            centres.append((r.time, c))
+            centres.removeAll { r.time - $0.t > 0.6 }
+            onOutline?(id, [r.outline], velocity(), r.time)
         } else {
             let moving = centres.count >= 2 && simd_distance(centres.first!.p, centres.last!.p) > Self.movingDistance
             onLost?(id, moving)
@@ -235,6 +237,22 @@ final class EdgeTAMSpike {
         log(String(format: "edgetam check mark %d: outline %.1f mm off (median of %d, max %.1f mm) at %.2f m; object moved %.0f mm per update (max %.0f)",
                    id % 1000, mms[mms.count / 2], mms.count, mms.last!, d, moves[moves.count / 2], moves.last!))
         checks = []
+    }
+
+    /// The object's velocity over the last 0.35 s of masks; below 5 cm/s it counts as still (on
+    /// 31 Oct a still object's centre moved 1–2 mm per update, up to 1 cm, from the depth's noise:
+    /// that must not push its outline about). An object moved by hand goes 10–50 cm/s.
+    static let stillSpeed: Float = 0.05
+    private var smoothedVelocity = simd_float3.zero
+
+    private func velocity() -> simd_float3 {
+        guard let last = centres.last, let first = centres.first(where: { last.t - $0.t <= 0.35 }), last.t - first.t >= 0.15 else {
+            smoothedVelocity = .zero
+            return .zero
+        }
+        let v = (last.p - first.p) / Float(last.t - first.t)
+        smoothedVelocity = 0.5 * smoothedVelocity + 0.5 * v
+        return simd_length(smoothedVelocity) < Self.stillSpeed ? .zero : smoothedVelocity
     }
 
     /// Keeps the kept frames of the last few runs only.
@@ -365,6 +383,10 @@ private final class EdgeTAMWorker: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "pip.edgetam", qos: .userInitiated)
     private var tracker: EdgeTAM?
+    /// The object's depth, followed over frames (on the queue): raw LiDAR jitters by millimetres
+    /// to a centimetre from frame to frame; a jump of 3 cm is the object moving and is taken at once.
+    private var depthFilter: Float?
+    static let depthJump: Float = 0.03
     private let input = EdgeTAM.Input()
     private let context = CIContext(options: [.cacheIntermediates: false])
 
@@ -392,6 +414,7 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                 guard let pixels = input.image(image) else { throw Failure.noInput }
                 let t0 = CACurrentMediaTime()
                 let f = try tracker.seed(image: pixels, mask: mask)
+                depthFilter = nil
                 return Seeded(frame: f, ms: (CACurrentMediaTime() - t0) * 1000, loadSeconds: tracker.loadSeconds)
             }
             DispatchQueue.main.async { done(result) }
@@ -406,7 +429,13 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                 guard let pixels = input.image(r.buffer, orientation: .right) else { throw Failure.noInput }
                 let prep = (CACurrentMediaTime() - t0) * 1000
                 let f = try tracker.track(image: pixels)
-                let (world, samples, depth) = Self.centre(f, depth: r.depth, camera: r.camera)
+                let (rawWorld, samples, rawDepth) = Self.centre(f, depth: r.depth, camera: r.camera)
+                let depth = rawDepth.map { d -> Float in
+                    let smooth = depthFilter.map { abs(d - $0) > Self.depthJump ? d : $0 + 0.35 * (d - $0) } ?? d
+                    depthFilter = smooth
+                    return smooth
+                }
+                let world = depth.flatMap { d in f.centroid.map { Self.lift([$0], depth: d, camera: r.camera)[0] } } ?? rawWorld
                 let outline = depth.map { Self.lift(f.outline, depth: $0, camera: r.camera) } ?? []
                 let ms = (CACurrentMediaTime() - t0) * 1000
                 if let keep = r.keep { self.keep(r.buffer, f, world: world, at: keep) }
