@@ -239,6 +239,22 @@ if args.first == "check", args.count >= 3 {
     exit(0)
 }
 
+// pipeval overlay <kept EdgeTAM run folder> [frame numbers…] [--sheet N] [out=dir]: Pip's cues on kept
+// frames, old against new (see Preview.swift). Images go to a temp folder unless out= is given.
+if args.first == "overlay", args.count >= 2 {
+    let folder = URL(fileURLWithPath: args[1])
+    var rest = Array(args.dropFirst(2))
+    let out = rest.first(where: { $0.hasPrefix("out=") }).map { URL(fileURLWithPath: String($0.dropFirst(4))) }
+        ?? FileManager.default.temporaryDirectory.appendingPathComponent("pipeval-overlay")
+    rest.removeAll { $0.hasPrefix("out=") }
+    if let i = rest.firstIndex(of: "--sheet"), i + 1 < rest.count, let n = Int(rest[i + 1]) {
+        Preview.sheet(folder: folder, frame: n, out: out)
+    } else {
+        Preview.run(folder: folder, frames: rest.compactMap(Int.init).isEmpty ? [1] : rest.compactMap(Int.init), out: out)
+    }
+    exit(0)
+}
+
 // pipeval lookup "<question>" ["<the user's words>"] [--lang Dutch]: a web look-up as Pip makes it.
 if args.first == "lookup", args.count >= 2 {
     let env = ProcessInfo.processInfo.environment

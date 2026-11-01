@@ -101,7 +101,8 @@ public final class EdgeTAM: @unchecked Sendable {
         /// The mask at full resolution (1024²) inside `cropRect` (pixels of the 1024² square).
         public let crop: [UInt8]
         public let cropRect: CGRect
-        /// The object's outline from the full-resolution mask, normalised like `box`.
+        /// The object's outline from the full-resolution mask, normalised like `box`: smooth and
+        /// 96 evenly spaced points (see `contour`).
         public let outline: [CGPoint]
         public let encodeMs: Double
         public let decodeMs: Double
@@ -287,7 +288,7 @@ public final class EdgeTAM: @unchecked Sendable {
         let side = Double(Self.side)
         let box = count > 0 ? CGRect(x: Double(bx0) / side, y: Double(by0) / side, width: Double(bx1 - bx0 + 1) / side, height: Double(by1 - by0 + 1) / side) : nil
         let centroid = count > 0 ? CGPoint(x: (sumX / Double(count) + 0.5) / side, y: (sumY / Double(count) + 0.5) / side) : nil
-        let outline = count > 0 ? Self.outline(crop, width: x1 - x0, height: y1 - y0).map { CGPoint(x: (Double(x0) + $0.x) / side, y: (Double(y0) + $0.y) / side) } : []
+        let outline = count > 0 ? Self.contour(crop, width: x1 - x0, height: y1 - y0).map { CGPoint(x: (Double(x0) + $0.x) / side, y: (Double(y0) + $0.y) / side) } : []
         return Frame(objectScore: score, iou: iou, box: box, centroid: centroid, area: Double(count) / (side * side), lowRes: lowRes,
                      crop: crop, cropRect: CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0), outline: outline,
                      encodeMs: encodeMs, decodeMs: decodeMs)
@@ -295,10 +296,36 @@ public final class EdgeTAM: @unchecked Sendable {
 
     // MARK: Outline
 
-    /// The outer boundary of the largest region of a binary mask (row-major, nonzero = in), traced
-    /// through its boundary pixels' centres (Moore neighbours, Jacob's stop) and simplified to
-    /// within `tolerance` pixels: the object's outline as the mask draws it.
+    /// The outer boundary of the largest region of a binary mask (row-major, nonzero = in), through
+    /// its boundary pixels' centres, simplified to within `tolerance` pixels: the object's outline as
+    /// the mask draws it, with its pixel steps.
     public static func outline(_ mask: [UInt8], width w: Int, height h: Int, tolerance: Double = 1.0, maxPoints: Int = 80) -> [CGPoint] {
+        let points = trace(mask, width: w, height: h)
+        guard points.count > 3 else { return points }
+        var tol = tolerance
+        var simple = simplify(points, tolerance: tol)
+        while simple.count > maxPoints {
+            tol *= 1.5
+            simple = simplify(points, tolerance: tol)
+        }
+        return simple
+    }
+
+    /// The edge the mask's pixel steps approximate: the traced boundary smoothed over about
+    /// `sigma` pixels and resampled to `count` evenly spaced points (the same count for every mask,
+    /// so one outline can morph into the next; see Contour).
+    public static func contour(_ mask: [UInt8], width w: Int, height h: Int, count: Int = 96, sigma: Double = 2) -> [CGPoint] {
+        let points = trace(mask, width: w, height: h)
+        guard points.count >= 3 else { return points }
+        // Boundary pixels are about a pixel apart: n binomial passes have a variance of n / 2.
+        let passes = max(1, Int((2 * sigma * sigma).rounded()))
+        let soft = Contour.smooth(points.map { SIMD2<Double>(Double($0.x), Double($0.y)) }, passes: passes)
+        return Contour.resample(soft, count: count).map { CGPoint(x: $0.x, y: $0.y) }
+    }
+
+    /// The outer boundary of the largest 8-connected region, through its boundary pixels' centres
+    /// (Moore neighbours, Jacob's stop), clockwise with y down.
+    public static func trace(_ mask: [UInt8], width w: Int, height h: Int) -> [CGPoint] {
         guard w > 0, h > 0, mask.count == w * h else { return [] }
         // The largest 8-connected region.
         var label = [Int32](repeating: 0, count: w * h)
@@ -361,13 +388,7 @@ public final class EdgeTAM: @unchecked Sendable {
             guard let n = step(from: cur.x, cur.y, back: cur.back) else { break }
             cur = n
         }
-        var tol = tolerance
-        var simple = simplify(points, tolerance: tol)
-        while simple.count > maxPoints {
-            tol *= 1.5
-            simple = simplify(points, tolerance: tol)
-        }
-        return simple
+        return points
     }
 
     /// Ramer–Douglas–Peucker on a closed ring (split at the point farthest from the first).

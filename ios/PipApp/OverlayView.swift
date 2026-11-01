@@ -2,25 +2,31 @@ import PipCore
 import UIKit
 import simd
 
-/// Draws the cues on the camera view. The model chose the meaning; this file chooses the visuals:
-/// one action colour, red only for danger, green only for verified, and a distinct shape for each.
+/// Draws the cues on the camera view. The model chose the meaning; this file chooses the visuals,
+/// in the one visual language of CueArt: the action colour for what to do, red only for danger,
+/// green only for verified, and a distinct shape for each kind of cue. Outlines draw themselves on
+/// round their object when a cue appears.
 final class OverlayView: UIView {
-    static let action = UIColor(red: 0.25, green: 0.95, blue: 1, alpha: 1)
     static let danger = UIColor(red: 1, green: 0.27, blue: 0.23, alpha: 1)
-    static let verified = UIColor(red: 0.2, green: 0.85, blue: 0.35, alpha: 1)
 
     private let dangerBanner = UILabel()
+    /// Labels: SF Rounded, semibold.
+    private let chipFont: CTFont = {
+        let base = UIFont.systemFont(ofSize: 14, weight: .semibold)
+        let rounded = base.fontDescriptor.withDesign(.rounded).map { UIFont(descriptor: $0, size: 14) } ?? base
+        return rounded as CTFont
+    }()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         isUserInteractionEnabled = false
         backgroundColor = .clear
         dangerBanner.textColor = .white
-        dangerBanner.backgroundColor = Self.danger.withAlphaComponent(0.9)
-        dangerBanner.font = .systemFont(ofSize: 17, weight: .semibold)
+        dangerBanner.backgroundColor = Self.danger.withAlphaComponent(0.92)
+        dangerBanner.font = .systemFont(ofSize: 16, weight: .semibold)
         dangerBanner.textAlignment = .center
         dangerBanner.numberOfLines = 2
-        dangerBanner.layer.cornerRadius = 12
+        dangerBanner.layer.cornerRadius = 14
         dangerBanner.layer.masksToBounds = true
         dangerBanner.isHidden = true
         addSubview(dangerBanner)
@@ -42,8 +48,8 @@ final class OverlayView: UIView {
             if a.hidden { return { _ in nil } }
             return { w in base(w).map { CGPoint(x: a.to.x + ($0.x - a.from.x) * a.scale, y: a.to.y + ($0.y - a.from.y) * a.scale) } }
         }
-        // Where an edge arrow points for a mark: its place on screen or, behind the camera, far
-        // off in its direction. Nothing for an outline hidden because its object moved.
+        // Where an edge hint points for a mark: its place on screen or, behind the camera, far off
+        // in its direction. Nothing for an outline hidden because its object moved.
         let centre = CGPoint(x: bounds.midX, y: bounds.midY)
         func aim(_ mark: AnchoredMark?) -> CGPoint? {
             guard let mark else { return nil }
@@ -52,87 +58,96 @@ final class OverlayView: UIView {
             let len = max(hypot(d.dx, d.dy), 1e-6)
             return CGPoint(x: centre.x + d.dx / len * 10_000, y: centre.y + d.dy / len * 10_000)
         }
+        func polygons(_ m: Int) -> [[CGPoint]]? { screenPolygons(marks[m], proj(marks[m])) }
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer.sublayers?.filter { $0 !== dangerBanner.layer }.forEach { $0.removeFromSuperlayer() }
         var generalDanger: String?
+        let dangerShown = annotations.contains { if case .danger = $0.cue { return true } else { return false } }
+        // Labels keep clear of the status line at the top, and of the danger banner.
+        let topInset = safeAreaInsets.top + (dangerShown ? 116 : 56)
+        let scale = traitCollection.displayScale
+        func mark(_ rings: [[CGPoint]], _ palette: CueArt.Palette, _ a: AnnotationBoard.Annotation, fill: CGFloat = 0.08, width: CGFloat = 2,
+                  dash: [CGFloat]? = nil, opacity: CGFloat, emphasis: Bool = true, label: String? = nil, filledLabel: Bool = false) {
+            add(CueArt.mark(rings, palette: palette, progress: CueArt.progress(since: a.shownAt, now: now),
+                            pop: emphasis ? CueArt.pop(since: a.shownAt, now: now) : 0, fill: fill, width: width, dash: dash,
+                            opacity: opacity, label: label, filledLabel: filledLabel, font: chipFont, scale: scale, view: bounds, topInset: topInset))
+        }
 
         var hinted = Set<Int>()
         for a in annotations {
             let alpha = opacity(a, now: now)
-            // Off screen: a wedge at the edge points the way back, for every kind of cue.
-            if let first = a.cue.marks.first, let mark = marks[first],
-               !a.cue.marks.contains(where: { screenPolygons(marks[$0], proj(marks[$0])) != nil }) {
+            // Off screen: a button at the edge points the way back, for every kind of cue.
+            if let first = a.cue.marks.first, let target = marks[first], !a.cue.marks.contains(where: { polygons($0) != nil }) {
                 if case .danger(_, let reason) = a.cue { generalDanger = reason }
                 if hinted.insert(first).inserted {
-                    edgeHint(aim(mark), color: { if case .danger = a.cue { return Self.danger } else { return Self.action } }(), force: true)
+                    edgeHint(aim(target), palette: { if case .danger = a.cue { return CueArt.danger } else { return CueArt.action } }(), force: true)
                 }
                 continue
             }
             switch a.cue {
             case .outline(let m):
-                if let p = screenPolygons(marks[m], proj(marks[m])) { highlight(p, pop: pop(a, now), alpha: alpha, fill: 0.10) }
-                else { edgeHint(aim(marks[m]), color: Self.action) }
+                if let p = polygons(m) { mark(p, CueArt.action, a, opacity: alpha) } else { edgeHint(aim(marks[m]), palette: CueArt.action) }
             case .candidates(let ms):
+                // Look-alikes: dotted, numbered, no emphasis on any of them.
                 for (i, m) in ms.enumerated() {
-                    guard let p = screenPolygons(marks[m], proj(marks[m])) else { continue }
-                    stroke(p, color: .white, width: 2.5, alpha: alpha, dash: [8, 6])
-                    if let c = marks[m].flatMap({ proj($0)($0.centroid) }) { badge("\(i + 1)", at: c, color: .white, alpha: alpha) }
+                    guard let p = polygons(m) else { continue }
+                    mark(p, CueArt.neutral, a, fill: 0, dash: CueArt.dots, opacity: alpha, emphasis: false, label: "\(i + 1)")
                 }
             case .ring(let m, let label):
-                guard let mark = marks[m] else { continue }
-                guard let p = screenPolygons(mark, proj(mark)) else { edgeHint(aim(mark), color: Self.action); continue }
-                // A small target: the contour itself, tinted, with its step number above it.
-                highlight(p, pop: pop(a, now), alpha: alpha, fill: 0.22)
-                if let label {
-                    let b = bounds(p)
-                    let tag = CGPoint(x: b.midX, y: b.minY - 26)
-                    leader(from: CGPoint(x: b.midX, y: b.minY - 2), to: CGPoint(x: tag.x, y: tag.y + 12), alpha: alpha)
-                    stepBadge(label, at: tag, alpha: alpha)
-                }
+                // A small target: its contour, tinted, a reticle round it when it is small on
+                // screen, and its step number above it.
+                guard let p = polygons(m) else { edgeHint(aim(marks[m]), palette: CueArt.action); continue }
+                mark(p, CueArt.action, a, fill: 0.14, opacity: alpha, label: label)
             case .move(let m, let dir):
-                guard let mark = marks[m] else { continue }
-                if let p = screenPolygons(mark, proj(mark)) { stroke(p, color: Self.action, width: 3, alpha: alpha * 0.8) }
+                guard let target = marks[m] else { continue }
+                let project = proj(target)
+                if let p = polygons(m) { add(CueArt.outline(p, palette: CueArt.action, progress: CueArt.progress(since: a.shownAt, now: now), fill: 0, width: 1.5, opacity: alpha * 0.8)) }
+                let t = CGFloat(now - a.shownAt)
                 if dir == .in || dir == .out {
-                    if let c = proj(mark)(mark.centroid) { ring(at: c, radius: 22, color: Self.action, alpha: alpha) }
-                } else if let (s, e) = mark.arrow(dir) {
-                    if let a0 = proj(mark)(s), let a1 = proj(mark)(e) { arrow(from: a0, to: a1, color: Self.action, alpha: alpha) }
-                } else if let c = proj(mark)(mark.centroid) {
+                    if let c = project(target.centroid) {
+                        add(CueArt.pulse(centre: c, inward: dir == .in, palette: CueArt.action, phase: (t / 1.2).truncatingRemainder(dividingBy: 1), opacity: alpha))
+                    }
+                } else if let (s, e) = target.arrow(dir) {
+                    if let a0 = project(s), let a1 = project(e) {
+                        add(CueArt.arrow(from: a0, to: a1, palette: CueArt.action, phase: (t / 1.4).truncatingRemainder(dividingBy: 1), opacity: alpha))
+                    }
+                } else if let c = project(target.centroid) {
                     // No surface to lay it on: along the screen, about half the outline's size.
-                    let size = screenPolygons(mark, proj(mark)).map { b in max(bounds(b).width, bounds(b).height) } ?? 80
+                    let size = polygons(m).map { b in max(Contour.bounds(b).width, Contour.bounds(b).height) } ?? 80
                     let len = max(60, size * 0.55), v = dir.screenVector
-                    arrow(from: c, to: CGPoint(x: c.x + v.dx * len, y: c.y + v.dy * len), color: Self.action, alpha: alpha)
+                    add(CueArt.arrow(from: c, to: CGPoint(x: c.x + v.dx * len, y: c.y + v.dy * len), palette: CueArt.action,
+                                     phase: (t / 1.4).truncatingRemainder(dividingBy: 1), opacity: alpha))
                 }
             case .rotate(let m, let dir, _):
-                guard let mark = marks[m], let c = proj(mark)(mark.centroid) else { continue }
-                let r = max(26, (screenPolygons(mark, proj(mark)).map { bounds($0) }?.width ?? 40) * 0.55)
-                rotation(at: c, radius: r, clockwise: dir == .cw, color: Self.action, alpha: alpha)
+                guard let target = marks[m], let c = proj(target)(target.centroid) else { continue }
+                let r = max(26, (polygons(m).map { Contour.bounds($0).width } ?? 40) * 0.55)
+                add(CueArt.rotation(centre: c, radius: r, clockwise: dir == .cw, palette: CueArt.action,
+                                    progress: CueArt.progress(since: a.shownAt, now: now), opacity: alpha))
             case .place(let m):
-                if let p = screenPolygons(marks[m], proj(marks[m])) { stroke(p, color: Self.action, width: 3, alpha: alpha, dash: [12, 8]) }
+                if let p = polygons(m) { mark(p, CueArt.action, a, fill: 0.06, dash: CueArt.dashes, opacity: alpha) }
             case .sequence(let ms):
                 for (i, m) in ms.enumerated() {
-                    guard let mark = marks[m], let c = proj(mark)(mark.centroid) else { continue }
-                    if let p = screenPolygons(mark, proj(mark)) { stroke(p, color: Self.action, width: i == 0 ? 3.5 : 2, alpha: alpha * (i == 0 ? 1 : 0.5)) }
-                    badge("\(i + 1)", at: c, color: Self.action, alpha: alpha * (i == 0 ? 1 : 0.6))
+                    guard let p = polygons(m) else { continue }
+                    mark(p, CueArt.action, a, fill: i == 0 ? 0.08 : 0, width: i == 0 ? 2 : 1.5, opacity: alpha * (i == 0 ? 1 : 0.6),
+                         emphasis: i == 0, label: "\(i + 1)")
                 }
             case .danger(let m, let reason):
-                if let m, let p = screenPolygons(marks[m], proj(marks[m])) {
-                    fill(p, color: Self.danger, alpha: 0.28)
-                    stroke(p, color: Self.danger, width: 4, alpha: 1)
-                    if let c = marks[m].flatMap({ proj($0)($0.centroid) }) { badge("!", at: c, color: Self.danger, alpha: 1) }
-                }
+                if let m, let p = polygons(m) { mark(p, CueArt.danger, a, fill: 0.16, opacity: 1, label: "!", filledLabel: true) }
                 generalDanger = reason
             case .landmark(let m, let name):
-                guard let mark = marks[m], let p = screenPolygons(mark, proj(mark)) else { continue }
-                highlight(p, pop: pop(a, now), alpha: alpha, fill: 0.15)
-                let b = bounds(p)
-                stepBadge(name, at: CGPoint(x: b.midX, y: b.minY - 22), alpha: alpha)
+                guard let p = polygons(m) else { continue }
+                mark(p, CueArt.action, a, fill: 0.1, opacity: alpha, label: name)
             case .offscreen(let m):
-                edgeHint(aim(marks[m]), color: Self.action, force: true)
+                edgeHint(aim(marks[m]), palette: CueArt.action, force: true)
             case .verified(let m):
-                guard let mark = marks[m] else { continue }
-                if let p = screenPolygons(mark, proj(mark)) { stroke(p, color: Self.verified, width: 4, alpha: alpha) }
-                if let c = proj(mark)(mark.centroid) { badge("✓", at: c, color: Self.verified, alpha: alpha) }
+                guard let target = marks[m] else { continue }
+                if let p = polygons(m) {
+                    mark(p, CueArt.verified, a, fill: 0.1, opacity: alpha, label: "✓", filledLabel: true)
+                } else if let c = proj(target)(target.centroid) {
+                    add(CueArt.chip("✓", centre: c, palette: CueArt.verified, font: chipFont, scale: scale, filled: true, opacity: alpha))
+                }
             case .clear, .state, .locate, .needView, .remember, .task, .readPages, .find, .list, .lookup:
                 break
             }
@@ -148,6 +163,10 @@ final class OverlayView: UIView {
         CATransaction.commit()
     }
 
+    private func add(_ layers: [CALayer]) {
+        for l in layers { layer.addSublayer(l) }
+    }
+
     // MARK: Lifetimes
 
     /// Fades in over 0.25 s; transient cues fade out over their last 0.6 s.
@@ -157,11 +176,6 @@ final class OverlayView: UIView {
             return CGFloat(fadeIn * min(1, max(0, (until - now) / 0.6)))
         }
         return CGFloat(fadeIn)
-    }
-
-    /// A short "pop" when a cue appears: 1 → 0 over about 0.4 s.
-    private func pop(_ a: AnnotationBoard.Annotation, _ now: TimeInterval) -> CGFloat {
-        CGFloat(exp(-max(0, now - a.shownAt) * 8))
     }
 
     // MARK: Geometry
@@ -177,159 +191,19 @@ final class OverlayView: UIView {
         return polys.contains(where: { $0.contains(where: { bounds.insetBy(dx: -20, dy: -20).contains($0) }) }) ? polys : nil
     }
 
-    private func bounds(_ polys: [[CGPoint]]) -> CGRect {
-        let pts = polys.flatMap { $0 }
-        let xs = pts.map(\.x), ys = pts.map(\.y)
-        return CGRect(x: xs.min() ?? 0, y: ys.min() ?? 0, width: (xs.max() ?? 0) - (xs.min() ?? 0), height: (ys.max() ?? 0) - (ys.min() ?? 0))
-    }
-
-    // MARK: Shapes
-
-    private func shape(_ path: UIBezierPath, stroke: UIColor?, fill: UIColor?, width: CGFloat, alpha: CGFloat, dash: [NSNumber]? = nil) {
-        let l = CAShapeLayer()
-        l.path = path.cgPath
-        l.strokeColor = stroke?.cgColor
-        l.fillColor = fill?.cgColor ?? UIColor.clear.cgColor
-        l.lineWidth = width
-        l.lineJoin = .round
-        l.lineCap = .round
-        l.lineDashPattern = dash
-        l.opacity = Float(alpha)
-        layer.addSublayer(l)
-    }
-
-    private func polygonPath(_ polys: [[CGPoint]]) -> UIBezierPath {
-        let path = UIBezierPath()
-        for ring in polys {
-            guard let first = ring.first else { continue }
-            path.move(to: first)
-            ring.dropFirst().forEach { path.addLine(to: $0) }
-            path.close()
-        }
-        return path
-    }
-
-    private func stroke(_ polys: [[CGPoint]], color: UIColor, width: CGFloat, alpha: CGFloat, dash: [NSNumber]? = nil) {
-        shape(polygonPath(polys), stroke: color, fill: nil, width: width, alpha: alpha, dash: dash)
-    }
-
-    /// The pointer: a thin, crisp line on the object's edge, a dark rim for contrast on any
-    /// background, and a faint tint inside that briefly brightens when the cue appears.
-    private func highlight(_ polys: [[CGPoint]], pop: CGFloat, alpha: CGFloat, fill tint: CGFloat) {
-        let path = polygonPath(polys).cgPath
-        let fill = CAShapeLayer()
-        fill.path = path
-        fill.fillColor = Self.action.withAlphaComponent(tint + 0.25 * pop).cgColor
-        fill.strokeColor = UIColor.black.withAlphaComponent(0.45).cgColor
-        fill.lineWidth = 4.5
-        fill.lineJoin = .round
-        fill.opacity = Float(alpha)
-        layer.addSublayer(fill)
-        let core = CAShapeLayer()
-        core.path = path
-        core.fillColor = UIColor.clear.cgColor
-        core.strokeColor = UIColor(red: 0.55, green: 1, blue: 1, alpha: 1).cgColor
-        core.lineWidth = 2
-        core.lineJoin = .round
-        core.opacity = Float(alpha)
-        layer.addSublayer(core)
-    }
-
-    private func leader(from a: CGPoint, to b: CGPoint, alpha: CGFloat) {
-        let path = UIBezierPath()
-        path.move(to: a)
-        path.addLine(to: b)
-        shape(path, stroke: UIColor.white.withAlphaComponent(0.9), fill: nil, width: 1.5, alpha: alpha)
-    }
-
-    /// A round step number ("1", "2") in the action colour.
-    private func stepBadge(_ text: String, at c: CGPoint, alpha: CGFloat) {
-        let l = CATextLayer()
-        l.string = text
-        l.font = UIFont.systemFont(ofSize: 16, weight: .heavy)
-        l.fontSize = 16
-        l.alignmentMode = .center
-        l.foregroundColor = UIColor.black.cgColor
-        l.backgroundColor = Self.action.cgColor
-        l.contentsScale = traitCollection.displayScale
-        let w = max(26, CGFloat(text.count) * 9 + 18)
-        l.frame = CGRect(x: c.x - w / 2, y: c.y - 13, width: w, height: 26)
-        l.cornerRadius = 13
-        l.borderColor = UIColor.white.cgColor
-        l.borderWidth = 1.5
-        l.opacity = Float(alpha)
-        layer.addSublayer(l)
-    }
-
-    private func fill(_ polys: [[CGPoint]], color: UIColor, alpha: CGFloat) {
-        shape(polygonPath(polys), stroke: nil, fill: color.withAlphaComponent(alpha), width: 0, alpha: 1)
-    }
-
-    private func ring(at c: CGPoint, radius r: CGFloat, color: UIColor, alpha: CGFloat) {
-        shape(UIBezierPath(ovalIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)), stroke: color, fill: nil, width: 4, alpha: alpha)
-    }
-
-    private func arrow(from a: CGPoint, to b: CGPoint, color: UIColor, alpha: CGFloat) {
-        let dx = b.x - a.x, dy = b.y - a.y
-        let len = max(1, hypot(dx, dy))
-        let ux = dx / len, uy = dy / len
-        let head: CGFloat = min(26, len * 0.4)
-        let path = UIBezierPath()
-        path.move(to: a)
-        path.addLine(to: CGPoint(x: b.x - ux * head * 0.6, y: b.y - uy * head * 0.6))
-        shape(path, stroke: color, fill: nil, width: 7, alpha: alpha)
-        let tip = UIBezierPath()
-        tip.move(to: b)
-        tip.addLine(to: CGPoint(x: b.x - ux * head - uy * head * 0.6, y: b.y - uy * head + ux * head * 0.6))
-        tip.addLine(to: CGPoint(x: b.x - ux * head + uy * head * 0.6, y: b.y - uy * head - ux * head * 0.6))
-        tip.close()
-        shape(tip, stroke: nil, fill: color, width: 0, alpha: alpha)
-    }
-
-    private func rotation(at c: CGPoint, radius r: CGFloat, clockwise: Bool, color: UIColor, alpha: CGFloat) {
-        let start: CGFloat = -.pi * 0.9
-        let end: CGFloat = start + .pi * 1.5 * (clockwise ? 1 : -1)
-        let path = UIBezierPath(arcCenter: c, radius: r, startAngle: start, endAngle: end, clockwise: clockwise)
-        shape(path, stroke: color, fill: nil, width: 6, alpha: alpha)
-        let tipPoint = CGPoint(x: c.x + r * cos(end), y: c.y + r * sin(end))
-        // Tangent direction at the end of the arc.
-        let t: CGFloat = clockwise ? 1 : -1
-        let ux = -sin(end) * t, uy = cos(end) * t
-        let head: CGFloat = 18
-        let tip = UIBezierPath()
-        tip.move(to: CGPoint(x: tipPoint.x + ux * head * 0.6, y: tipPoint.y + uy * head * 0.6))
-        tip.addLine(to: CGPoint(x: tipPoint.x - ux * head * 0.4 - uy * head * 0.6, y: tipPoint.y - uy * head * 0.4 + ux * head * 0.6))
-        tip.addLine(to: CGPoint(x: tipPoint.x - ux * head * 0.4 + uy * head * 0.6, y: tipPoint.y - uy * head * 0.4 - ux * head * 0.6))
-        tip.close()
-        shape(tip, stroke: nil, fill: color, width: 0, alpha: alpha)
-    }
-
-    private func badge(_ text: String, at c: CGPoint, color: UIColor, alpha: CGFloat) {
-        let l = CATextLayer()
-        l.string = text
-        l.fontSize = 17
-        l.font = UIFont.systemFont(ofSize: 17, weight: .bold)
-        l.alignmentMode = .center
-        l.foregroundColor = UIColor.black.cgColor
-        l.backgroundColor = color.cgColor
-        l.contentsScale = traitCollection.displayScale
-        let w = max(28, CGFloat(text.count) * 11 + 14)
-        l.frame = CGRect(x: c.x - w / 2, y: c.y - 14, width: w, height: 28)
-        l.cornerRadius = 14
-        l.opacity = Float(alpha)
-        layer.addSublayer(l)
-    }
-
-    /// A wedge at the screen edge pointing at a mark that is out of view (`p`, see `aim`).
-    private func edgeHint(_ p: CGPoint?, color: UIColor, force: Bool = false) {
+    /// A round button at the screen edge pointing at a mark that is out of view (`p`, see `aim`),
+    /// clear of the status line at the top and the controls at the bottom.
+    private func edgeHint(_ p: CGPoint?, palette: CueArt.Palette, force: Bool = false) {
         guard let p else { return }
-        let inner = bounds.insetBy(dx: 28, dy: 60)
+        let inner = CGRect(x: 30, y: safeAreaInsets.top + 80, width: bounds.width - 60,
+                           height: bounds.height - safeAreaInsets.top - safeAreaInsets.bottom - 220)
+        guard inner.width > 0, inner.height > 0 else { return }
         if inner.contains(p), !force { return }
-        let c = CGPoint(x: bounds.midX, y: bounds.midY)
+        let c = CGPoint(x: inner.midX, y: inner.midY)
         let dx = p.x - c.x, dy = p.y - c.y
-        let t = min(inner.width / 2 / max(abs(dx), 1), inner.height / 2 / max(abs(dy), 1), 1)
-        let edge = CGPoint(x: c.x + dx * t, y: c.y + dy * t)
-        let len = max(1, hypot(dx, dy))
-        arrow(from: CGPoint(x: edge.x - dx / len * 40, y: edge.y - dy / len * 40), to: edge, color: color, alpha: 1)
+        guard abs(dx) + abs(dy) > 1 else { return }
+        // Onto the border of `inner`, along the line from its centre towards the mark.
+        let t = min(inner.width / 2 / max(abs(dx), 1e-6), inner.height / 2 / max(abs(dy), 1e-6))
+        add(CueArt.edgeHint(at: CGPoint(x: c.x + dx * t, y: c.y + dy * t), angle: atan2(dy, dx), palette: palette))
     }
 }

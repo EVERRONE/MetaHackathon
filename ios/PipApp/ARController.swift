@@ -32,6 +32,17 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// The mask is about 0.15–0.3 s old when drawn: a moving object is drawn where it has got to,
     /// up to this far ahead (an object that stopped is corrected by the next mask, 0.1 s later).
     static let maxLead: TimeInterval = 0.35
+    /// A steered outline as drawn and as last measured. Each new mask's outline (the same number
+    /// of points every time) is aligned to the drawn one, and the drawn one moves towards it over a
+    /// few frames: masks come about ten times a second, and an outline that jumped to each would
+    /// look restless.
+    private var steerShape: [Int: (shown: [simd_float3], target: [simd_float3])] = [:]
+    static let steerPoints = 96
+    /// How quickly a drawn outline takes up a new mask: at once for a moving object (its lead makes
+    /// up for this lag), more calmly for a still one, where only the mask's noise changes it.
+    static let followMoving: TimeInterval = 0.04
+    static let followStill: TimeInterval = 0.12
+    private var lastRender: TimeInterval = 0
     /// How recognising the saved room at start goes, and how well the room is being mapped.
     let relocalisation = Relocalisation()
     /// One line per running test, for the screen.
@@ -274,6 +285,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             steered.remove(id)
             steerHidden.remove(id)
             steerMotion[id] = nil
+            steerShape[id] = nil
         }
         let gone = imageLocks.filter { marks[$0.value.markID] == nil }.map(\.key)
         if !gone.isEmpty {
@@ -389,7 +401,20 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             onLockLog?("edgetam: mark \(id % 1000) is drawn from EdgeTAM's mask")
         }
         steerHidden.remove(id)
-        marks[id] = AnchoredMark(id: id, world: world)
+        guard let ring = world.first, ring.count >= 3 else { return }
+        var target = Contour.resample(ring, count: Self.steerPoints)
+        // From the outline drawn so far (the first time: SAM's), unless the object was found again
+        // somewhere else: then it is drawn there at once rather than sliding across the room.
+        if let drawn = steerShape[id]?.shown ?? marks[id]?.polygons.first.map({ Contour.resample($0, count: Self.steerPoints) }) {
+            target = Contour.aligned(target, to: drawn, eitherWay: steerShape[id] == nil)
+            let jumped = simd_distance(Contour.centroid(target), Contour.centroid(drawn)) > 0.25
+            steerShape[id] = (jumped ? target : drawn, target)
+        } else {
+            steerShape[id] = (target, target)
+        }
+        var m = AnchoredMark(id: id, world: [steerShape[id]!.shown])
+        m.lead = marks[id]?.lead ?? .zero
+        marks[id] = m
         steerMotion[id] = (velocity, time)
     }
 
@@ -589,6 +614,27 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func renderNow() {
         let now = CACurrentMediaTime()
+        let dt = lastRender > 0 ? min(0.1, now - lastRender) : 1.0 / 60
+        lastRender = now
+        // Steered outlines take up their latest mask (see `steerShape`); a face ARKit's image
+        // tracking holds is drawn from the lock instead.
+        let lockHeld = Set(imageLocks.values.filter { $0.seen && $0.tracked }.map(\.markID))
+        for (id, shape) in steerShape where steered.contains(id) && !lockHeld.contains(id) && shape.shown != shape.target {
+            guard let current = marks[id] else { continue }
+            let moving = steerMotion[id].map { simd_length($0.velocity) > 0 } ?? false
+            let k = Float(1 - exp(-dt / (moving ? Self.followMoving : Self.followStill)))
+            var shown = shape.shown
+            var settled = true
+            for i in shown.indices {
+                shown[i] += (shape.target[i] - shown[i]) * k
+                if simd_distance(shown[i], shape.target[i]) > 0.0002 { settled = false }
+            }
+            if settled { shown = shape.target }
+            steerShape[id] = (shown, shape.target)
+            var m = AnchoredMark(id: id, world: [shown])
+            m.lead = current.lead
+            marks[id] = m
+        }
         // Corrections and re-measurements ease in over about a fifth of a second.
         for (id, var m) in marks {
             var changed = false
@@ -605,7 +651,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             }
             // A moving object steered by EdgeTAM: drawn where it has got to since its mask.
             if let motion = steerMotion[id] {
-                var lead = motion.velocity * Float(min(max(0, now - motion.time), Self.maxLead))
+                // Ahead by the mask's age, and by the time the drawn outline takes to follow it.
+                var lead = motion.velocity * Float(min(max(0, now - motion.time) + Self.followMoving, Self.maxLead))
                 if simd_length(lead) > 0.05 { lead = simd_normalize(lead) * 0.05 }
                 if lead != m.lead { m.lead = lead; changed = true }
             }
