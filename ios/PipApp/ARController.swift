@@ -39,6 +39,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     var steered = Set<Int>()
 
     var steerHidden = Set<Int>()
+    /// Marks riding along with the one EdgeTAM follows, at their offset from its centre (see
+    /// `takeRiders`).
+    var riders: [Int: (leader: Int, offset: [[simd_float3]])] = [:]
 
     /// A steered object's velocity and the time of the frame its outline came from.
     var steerMotion: [Int: (velocity: simd_float3, time: TimeInterval)] = [:]
@@ -149,7 +152,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         edgeTAM.onStopped = { [weak self] id in self?.unsteer(id) }
         edgeTAM.lockHeld = { [weak self] id in
             let now = CACurrentMediaTime()
-            return self?.imageLocks.values.contains { $0.markID == id && $0.seen && now - $0.lastTracked < 3 } ?? false
+            return self?.imageLocks.values.contains { $0.marks[id] != nil && $0.seen && now - $0.lastTracked < 3 } ?? false
         }
         edgeTAM.onShownCheck = { [weak self] id, mm, moving, sure in self?.lockComparison(id, mm: mm, moving: moving, sure: sure) }
         edgeTAM.drawnAt = { [weak self] id, t in
@@ -185,6 +188,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         clearCues()
         coordinates += 1
         arView.session.run(Self.configuration(initialMap: initialMap), options: [.resetTracking, .removeExistingAnchors])
+        imagesCleared()
     }
 
     /// The saved room was not recognised (Pip is in another room): start fresh, so tracking works
@@ -198,6 +202,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         clearCues()
         coordinates += 1
         arView.session.run(Self.configuration(initialMap: nil), options: [.resetTracking, .removeExistingAnchors])
+        imagesCleared()
     }
 
     func snapshot() -> FrameSnapshot? {
@@ -240,7 +245,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     @discardableResult
     func updateMark(_ inst: SegmentInstance, snapshot: FrameSnapshot, reason: ObjectTrack.Reason) -> ObjectTrack.Update? {
         // EdgeTAM or an image lock took the outline over while this was measured: theirs is newer.
-        guard !steered.contains(inst.id), !lockSeen(inst.id), let carry = carry(from: snapshot.coordinates) else { return nil }
+        guard !steered.contains(inst.id), riders[inst.id] == nil, !lockSeen(inst.id), let carry = carry(from: snapshot.coordinates) else { return nil }
         guard let old = marks[inst.id], var fresh = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return nil }
         if carry != matrix_identity_float4x4 { fresh = fresh.transformed(by: carry) }
         guard let obs = fresh.observation else { return nil }
@@ -301,11 +306,17 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             drawnHistory[id] = nil
             lockDisagreements[id] = nil
             inSavedRoomCoordinates.remove(id)
+            riders[id] = nil
         }
-        let gone = imageLocks.filter { marks[$0.value.markID] == nil }.map(\.key)
-        if !gone.isEmpty {
-            for name in gone { imageLocks[name] = nil }
-            reconfigureImages()
+        // Riding along with a mark that is gone: back on room anchors.
+        let orphans = riders.filter { marks[$0.value.leader] == nil }.map(\.key)
+        orphans.forEach { riders[$0] = nil }
+        reanchor(orphans)
+        // A lock keeps the marks still there; one with none left goes (its picture stays in
+        // ARKit's set until the next run, see `reconfigureImages`).
+        for (name, var lock) in imageLocks {
+            lock.marks = lock.marks.filter { marks[$0.key] != nil }
+            imageLocks[name] = lock.marks.isEmpty ? nil : lock
         }
     }
 
@@ -316,6 +327,11 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     var lockDisagreements: [Int: [Bool]] = [:]
 
     var lastImageSet: Set<String> = []
+    /// When the session was last run with other reference images, and whether a run waits (see
+    /// `reconfigureImages`).
+    var lastImageRun: TimeInterval = 0
+    var imageRunScheduled = false
+    var lockSerial = 0
 
     // MARK: Measuring again
 
@@ -326,7 +342,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         guard let centre = marks[id]?.centroid, simd_length(offset) > 0.01, simd_length(offset) < 1 else { return }
         for (other, m) in marks where other != id && other < Self.placeMarkBase && simd_distance(m.centroid, centre) < 4 {
             // Only objects not measured since the drift showed up, and not held by EdgeTAM or a lock.
-            guard !steered.contains(other), !lockSeen(other), var track = tracks[other], track.needsCheck || track.isAway else { continue }
+            guard !steered.contains(other), riders[other] == nil, !lockSeen(other), var track = tracks[other], track.needsCheck || track.isAway else { continue }
             let before = m.centroid
             track.align(targetCorrections[other] ?? matrix_identity_float4x4)
             place(m.relocated(to: m.centroid + offset), glideFrom: before)
@@ -346,7 +362,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         var out: [(Int, CGRect, ObjectTrack.Reason, Int)] = []
         // Remembered places too: one brought back from storage is found again when Pip points at it.
         // Once an outline is locked to its object, only the lock (or EdgeTAM) moves it.
-        let locked = Set(imageLocks.values.filter(\.seen).map(\.markID)).union(steered)
+        let locked = Set(imageLocks.values.filter(\.seen).flatMap(\.marks.keys)).union(steered).union(riders.keys)
         for (id, box) in visibleMarkBoxes(in: snapshot) where !locked.contains(id) {
             guard var track = tracks[id], let m = marks[id] else { continue }
             if recovered { track.needsCheck = true; tracks[id] = track }

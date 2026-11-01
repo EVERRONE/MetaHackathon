@@ -12,11 +12,11 @@ import simd
 /// with it. Objects without enough texture are refused by ARKit's own check, and fall back to the
 /// image tracker and re-measuring.
 struct ImageLock {
-    let markID: Int
+    /// The marks on this face (keys of one keyboard share it), each with its outline in the
+    /// image's plane: x to the right, z down the image, y out of it (metres at the reference's
+    /// physical size; ARKit's estimated scale is applied on top).
+    var marks: [Int: [[simd_float3]]]
     let reference: ARReferenceImage
-    /// The outline in the image's plane: x to the right, z down the image, y out of it (metres at
-    /// the reference's physical size; ARKit's estimated scale is applied on top).
-    let local: [[simd_float3]]
     var tracked = false
     var seen = false
     /// When ARKit last tracked the face (CACurrentMediaTime): a lock seen moments ago still says
@@ -27,11 +27,10 @@ struct ImageLock {
 
     var name: String { reference.name ?? "" }
 
-    /// Builds the reference image and the outline in its plane (see ObjectFace). nil when the
-    /// region is too small to track.
-    static func make(key: SegmentInstance, object: SegmentInstance?, snapshot: FrameSnapshot, distance: Float) -> (image: CGImage, physicalWidth: CGFloat, local: [[simd_float3]])? {
+    /// Builds the reference image and each key's outline in its plane (see ObjectFace). nil when
+    /// the region is too small to track.
+    static func make(keys: [SegmentInstance], object: SegmentInstance?, snapshot: FrameSnapshot, distance: Float) -> ObjectFace.Made? {
         let focal = CGFloat(snapshot.intrinsics[0][0]) * CGFloat(snapshot.image.height) / snapshot.sensorSize.width
-        guard let made = ObjectFace.make(key: key, object: object, image: snapshot.image, focal: focal, distance: distance) else { return nil }
-        return (made.image, made.physicalWidth, made.local)
+        return ObjectFace.make(keys: keys, object: object, image: snapshot.image, focal: focal, distance: distance)
     }
 }

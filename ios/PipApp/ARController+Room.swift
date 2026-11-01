@@ -42,12 +42,20 @@ extension ARController {
                 let correction = now * simd_inverse(entry.origin)
                 full = simd_distance(now.columns.3.xyz, expected) < simd_distance(now.columns.3.xyz, origin) ? correction : jump * correction
             }
+            let carried = steerShape[id] != nil || lockSeen(id) || riders[id] != nil
             if var track = tracks[id] {
-                track.align(steerShape[id] != nil || lockSeen(id) ? jump : full)
+                track.align(carried ? jump : full)
                 tracks[id] = track
             }
             // ARKit's image anchor carries a locked outline into the new coordinates itself.
             if lockSeen(id) { continue }
+            // A rider keeps its offset from the mark it rides with, turned along.
+            if let ride = riders[id] {
+                let turn = simd_float3x3(jump.columns.0.xyz, jump.columns.1.xyz, jump.columns.2.xyz)
+                riders[id] = (ride.leader, ride.offset.map { ring in ring.map { turn * $0 } })
+                moved += 1
+                continue
+            }
             if let shape = steerShape[id] {
                 func move(_ p: simd_float3) -> simd_float3 { (jump * simd_float4(p, 1)).xyz }
                 steerShape[id] = (shape.shown.map(move), shape.target.map(move))

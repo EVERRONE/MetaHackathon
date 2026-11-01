@@ -160,6 +160,8 @@ final class GuideModel: ObservableObject {
     var watchChecks = 0
     var checking = false
     var refreshing = false
+    /// Keys waiting to be locked together, by look and object (see `lockToObject`).
+    var pendingLocks: [String: PendingLock] = [:]
     /// After a false alarm, mistake checks stay quiet for a while.
     var problemQuietUntil = Date.distantPast
     /// Speech started while Pip was busy; Pip stops once it is clearly the user (see `handle`).

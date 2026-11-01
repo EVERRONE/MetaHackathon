@@ -8,31 +8,47 @@ public enum ObjectFace {
         public var image: CGImage
         /// The image's width in the world, in metres (from LiDAR depth).
         public var physicalWidth: CGFloat
-        /// The key's outline in the image's plane: x right, y out of the image, z down the image.
-        public var local: [[simd_float3]]
+        /// Each key's outline in the image's plane, in the order given: x right, y out of the
+        /// image, z down the image.
+        public var locals: [[[simd_float3]]]
+        /// The first key's.
+        public var local: [[simd_float3]] { locals.first ?? [] }
     }
 
     /// `key`: the pointed-at instance, `object`: the object it is on (pixels of `image`),
     /// `focal`: focal length in those pixels, `distance`: metres from the camera to the key.
     public static func make(key: SegmentInstance, object: SegmentInstance?, image: CGImage, focal: CGFloat, distance: Float) -> Made? {
+        make(keys: [key], object: object, image: image, focal: focal, distance: distance)
+    }
+
+    /// One face for several keys on the same object (three keys of one keyboard): the region that
+    /// holds all of them, so ARKit has one picture of the object to find, and it carries every key.
+    public static func make(keys: [SegmentInstance], object: SegmentInstance?, image: CGImage, focal: CGFloat, distance: Float) -> Made? {
+        guard !keys.isEmpty else { return nil }
         let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
-        let k = key.boxRect
-        let side = max(k.width, k.height)
-        // The object's face around the key (at most six keys each way); without a known object, a
-        // tight patch of about a key and a half around it, which on a device is mostly the device.
-        var region = object.map { $0.boxRect.intersection(k.insetBy(dx: -6 * side, dy: -6 * side)) } ?? k.insetBy(dx: -1.5 * side, dy: -1.5 * side)
-        region = region.union(k.insetBy(dx: -1.5 * side, dy: -1.5 * side)).intersection(bounds).integral
-        guard region.width >= 96, region.height >= 96, let crop = image.cropping(to: region) else { return nil }
+        // Around each key, the object's face (at most six keys each way); without a known object,
+        // a tight patch of about a key and a half around it, which on a device is mostly the device.
+        var region = CGRect.null
+        for key in keys {
+            let k = key.boxRect
+            let side = max(k.width, k.height)
+            let around = object.map { $0.boxRect.intersection(k.insetBy(dx: -6 * side, dy: -6 * side)) } ?? k.insetBy(dx: -1.5 * side, dy: -1.5 * side)
+            region = region.union(around).union(k.insetBy(dx: -1.5 * side, dy: -1.5 * side))
+        }
+        region = region.intersection(bounds).integral
+        guard !region.isNull, region.width >= 96, region.height >= 96, let crop = image.cropping(to: region) else { return nil }
         guard let face = object.map({ masked(crop, by: $0, region: region) }) ?? crop else { return nil }
         let width = region.width * CGFloat(distance) / max(focal, 100)
         let height = width * region.height / region.width
-        let local = key.regularized().outlinePoints.map { ring in
-            ring.map { p in
-                simd_float3(Float(((p.x - region.minX) / region.width - 0.5) * width), 0.002,
-                            Float(((p.y - region.minY) / region.height - 0.5) * height))
+        let locals = keys.map { key in
+            key.regularized().outlinePoints.map { ring in
+                ring.map { p in
+                    simd_float3(Float(((p.x - region.minX) / region.width - 0.5) * width), 0.002,
+                                Float(((p.y - region.minY) / region.height - 0.5) * height))
+                }
             }
         }
-        return Made(image: face, physicalWidth: width, local: local)
+        return Made(image: face, physicalWidth: width, locals: locals)
     }
 
     /// The crop with everything outside the object's mask a flat grey, so the background (which

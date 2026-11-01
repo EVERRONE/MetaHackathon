@@ -177,34 +177,64 @@ extension GuideModel {
         }
     }
 
+    /// Keys waiting to be locked together (see `lockToObject`).
+    struct PendingLock {
+        var on: String?
+        var snapshot: FrameSnapshot
+        var keys: [(id: Int, key: SegmentInstance)] = []
+        var generation = 0
+    }
+
+    /// The keys of one look ground within a second or two of each other: a lock waits this long
+    /// after the last one for the others on the same object.
+    static let lockGathering: TimeInterval = 1.5
+
     /// Makes a reference image of the object a mark is on and hands it to ARKit, which then
     /// follows the object in 3D with the outline on it. `on`: what the model said the target is
     /// part of ("remote control"); SAM finds that object around the key and its mask is the
     /// image. Without it, a tight patch around the key (on a device, mostly the device).
+    /// Keys of one look on the same object share one lock: one picture of the object for ARKit to
+    /// find, which then carries every key, and one re-run of the session (1 Nov: three nearly
+    /// identical pictures of one keyboard, one per key, were never found, and the session's
+    /// re-runs for them and their removal crashed ARKit).
     func lockToObject(_ id: Int, key: SegmentInstance, on: String?, snapshot: FrameSnapshot) {
+        let group = on.map { "\(id / 1000)|\($0)" } ?? "\(id)"
+        var pending = pendingLocks[group] ?? PendingLock(on: on, snapshot: snapshot)
+        pending.keys.append((id, key))
+        pending.generation += 1
+        pendingLocks[group] = pending
+        let generation = pending.generation
         Task { [weak self] in
-            guard let self else { return }
-            let k = key.boxRect
-            let centre = CGPoint(x: k.midX, y: k.midY)
-            let bounds = CGRect(x: 0, y: 0, width: snapshot.image.width, height: snapshot.image.height)
-            var parent: SegmentInstance?
-            if let on {
-                let object = await Grounder(client: self.client, frameJPEG: Data()).object(named: on, at: centre, in: snapshot.image, id: 0)
-                // The object the key is on: it contains the key, is clearly bigger, and is not the whole view.
-                parent = object.flatMap { o -> SegmentInstance? in
-                    let area = Double(o.area), keyArea = Double(k.width * k.height)
-                    return Grounding.contains(o, centre) && area >= 3 * keyArea && area < 0.7 * Double(bounds.width * bounds.height) ? o : nil
-                }
-            }
-            let distance = snapshot.depth(atSensor: snapshot.sensorPoint(CGPoint(x: k.midX, y: k.midY)), minConfidence: 1) ?? 0.4
-            guard let made = ImageLock.make(key: key, object: parent, snapshot: snapshot, distance: distance) else {
-                self.log("lock: mark \(id % 1000): no region to lock to")
-                return
-            }
-            self.log(String(format: "lock: mark %d: reference %@ (%.0f mm), key at %.2f m", id % 1000, parent == nil ? "around the key" : "of its object",
-                            made.physicalWidth * 1000, distance))
-            self.ar.lock(markID: id, image: made.image, physicalWidth: made.physicalWidth, local: made.local)
+            if on != nil { try? await Task.sleep(nanoseconds: UInt64(Self.lockGathering * 1_000_000_000)) }
+            guard let self, let p = self.pendingLocks[group], p.generation == generation else { return }
+            self.pendingLocks[group] = nil
+            await self.makeLock(p)
         }
+    }
+
+    private func makeLock(_ p: PendingLock) async {
+        guard let first = p.keys.first?.key.boxRect else { return }
+        let snapshot = p.snapshot
+        let bounds = CGRect(x: 0, y: 0, width: snapshot.image.width, height: snapshot.image.height)
+        let label = p.keys.map { String($0.id % 1000) }.joined(separator: ",")
+        var parent: SegmentInstance?
+        if let on = p.on {
+            let object = await Grounder(client: client, frameJPEG: Data()).object(named: on, at: CGPoint(x: first.midX, y: first.midY), in: snapshot.image, id: 0)
+            // The object the keys are on: it holds each of them, is clearly bigger, and is not the whole view.
+            parent = object.flatMap { o -> SegmentInstance? in
+                let keyArea = p.keys.map { Double($0.key.boxRect.width * $0.key.boxRect.height) }.max() ?? 0
+                let holdsAll = p.keys.allSatisfy { Grounding.contains(o, CGPoint(x: $0.key.boxRect.midX, y: $0.key.boxRect.midY)) }
+                return holdsAll && Double(o.area) >= 3 * keyArea && Double(o.area) < 0.7 * Double(bounds.width * bounds.height) ? o : nil
+            }
+        }
+        let distance = snapshot.depth(atSensor: snapshot.sensorPoint(CGPoint(x: first.midX, y: first.midY)), minConfidence: 1) ?? 0.4
+        guard let made = ImageLock.make(keys: p.keys.map(\.key), object: parent, snapshot: snapshot, distance: distance) else {
+            log("lock: mark\(p.keys.count > 1 ? "s" : "") \(label): no region to lock to")
+            return
+        }
+        log(String(format: "lock: mark%@ %@: reference %@ (%.0f mm), at %.2f m", p.keys.count > 1 ? "s" : "", label,
+                   parent == nil ? "around the key" : "of their object", made.physicalWidth * 1000, distance))
+        ar.lock(Dictionary(uniqueKeysWithValues: zip(p.keys.map(\.id), made.locals)), image: made.image, physicalWidth: made.physicalWidth)
     }
 
     /// An object Pip pointed at was moved (followed in the image) and lies still again: measure it
