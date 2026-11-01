@@ -70,9 +70,16 @@ knows where the user is. Built step by step; each step is measured before the ne
    live room (their poses carried by the links); remembered places of a linked session come back on
    anchors of their own, found again on sight.
 7. **Light**: snapshots of every session are kept, so mornings and evenings both get views to link
-   to, more with every session. Local normalisation did not help (see above). Descriptors that hold
-   across light are the next lever: Meta's DINOv2 patch features (light-robust, to find which stored
-   view shows the same place, then the corners pin it down) need a Core ML conversion first.
+   to, more with every session: the practical path. Local normalisation did not help (see above).
+   Meta's DINOv2 (small, 22 M parameters, its 14-pixel patch features matched both ways and lifted at
+   their depth, the same four-unknown fit; run on the Mac from the published weights): on the two
+   morning sessions it finds the same links as the corners, coarser (1.3-2.6 cm against 0.4-0.8 cm,
+   the turn less sure: -6° to -14° where the corners say -17° to -21°); across daylight and evening
+   lamps it finds what the corners do not (14:06 against 17:01: 12 view links, the best 36 matches
+   at 1.7 cm), but their turns spread from -12° to -25°: never within the 2° the rules ask (10° is
+   50 cm at 3 m). So DINOv2 can say which stored view shows the same place across light; pinning it
+   down needs a finer matcher on top (a dense one, or learned corners), with a Core ML conversion.
+   Not in the app.
 8. **Beyond home**: within one visit (a shop) the session's own snapshots already answer "where did I
    see…" (the last 30 minutes are kept in full, located in the live session). Across visits the same
    linking, per place on earth: the linker only matches sessions mapped at the same place
@@ -80,6 +87,6 @@ knows where the user is. Built step by step; each step is measured before the ne
 
 ## Status (1 Nov, evening)
 
-Steps 1-6 and 8 are in the app; 7 as far as accumulating views. To be shown on the device: a session
+Steps 1-6 and 8 are in the app; 7 as far as accumulating views (DINOv2 measured, not enough alone). To be shown on the device: a session
 linked to an earlier one (the log says "space: linked to the session of …"), things of the earlier
 session found and pointed at here, remembered places back and corrected on sight.
