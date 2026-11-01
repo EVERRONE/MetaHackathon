@@ -191,7 +191,8 @@ private final class Tracker: @unchecked Sendable {
     func start(_ box: CGRect) {
         if let old = request { finishing.append(old) }
         let r = VNTrackObjectRequest(detectedObjectObservation: VNDetectedObjectObservation(boundingBox: box))
-        r.trackingLevel = .accurate
+        // The fast level: the accurate one took 35–90 ms a frame on 1 Nov and slowed EdgeTAM.
+        r.trackingLevel = .fast
         request = r
     }
 

@@ -286,8 +286,7 @@ final class GuideModel: ObservableObject {
     private var early: EarlyTurn?
 
     private func startEarly(_ text: String) {
-        // While ARKit still tries to recognise a saved room, the final transcript decides (see `.final`).
-        guard early == nil, !busy, !muted, phase == .hearing, !ar.awaitingFirstRelocalisation, wouldLook(text),
+        guard early == nil, !busy, !muted, phase == .hearing, wouldLook(text),
               let snapshot = ar.snapshot() else { return }
         if let spoken = Utterance.language(of: text), spoken != language {
             log("language: \(spoken)")
@@ -426,22 +425,9 @@ final class GuideModel: ObservableObject {
             // Only real user speech chooses who Pip talks with, never its own echo.
             guard hazard || acceptSpeaker(speaker, text: text) else { return }
             heard = text
-            // ARKit still tries to recognise a saved room: giving up later would wipe this answer's
-            // outlines (31 Oct: the first answer's outline vanished), so Pip gives up now and
-            // answers in a fresh map once tracking runs (about a second).
-            if ar.awaitingFirstRelocalisation {
-                giveUpRecognising()
-                Task { [weak self] in
-                    guard let self else { return }
-                    await self.ar.waitForTracking(seconds: 2)
-                    guard let snapshot = self.ar.snapshot() else {
-                        self.phase = self.muted ? .muted : .listening
-                        return
-                    }
-                    self.route(text, snapshot: snapshot)
-                }
-                return
-            }
+            // While ARKit still recognises a saved room, the answer comes at once: its outlines are
+            // drawn in this session's coordinates and move along when the room is recognised
+            // (ARController.realign); a fresh start waits while they are on screen.
             // The frame the user was looking at when they finished speaking.
             guard let snapshot = ar.snapshot() else {
                 phase = muted ? .muted : .listening

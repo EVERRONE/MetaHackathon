@@ -26,10 +26,22 @@ public struct TrackGate: Sendable {
         case reject(Float)
         /// Taken: the object was moved to a new place, confirmed by several masks.
         case moved
+
+        public var taken: Bool {
+            if case .reject = self { return false }
+            return true
+        }
     }
 
     private var accepted: [(t: Double, p: SIMD3<Float>)] = []
     private var pending: [(t: Double, p: SIMD3<Float>)] = []
+    /// The mask's size (fraction of the frame) of recent accepted masks, and of masks refused for
+    /// their size. On 1 Nov the mask of a remote's POWER button alternated with one of half the
+    /// remote, fifty times larger.
+    private var areas: [Float] = []
+    private var oddAreas: [Float] = []
+    /// A mask more than this many times larger (or smaller) than the recent ones is another thing.
+    public var areaJump: Float = 2.5
 
     public init() {}
 
@@ -49,7 +61,31 @@ public struct TrackGate: Sendable {
     /// EdgeTAM did not see the object a moment ago (a fast turn): then a new place needs twice the
     /// confirmation, and a path away from where it lay does not count (on 1 Nov the wrong mask
     /// slid steadily along the neighbouring keys).
-    public mutating func judge(time t: Double, position p: SIMD3<Float>, lockHeld: Bool, recentlyLost: Bool = false) -> Verdict {
+    public mutating func judge(time t: Double, position p: SIMD3<Float>, area: Float? = nil, lockHeld: Bool, recentlyLost: Bool = false) -> Verdict {
+        // A sudden change of size is a different thing (the whole remote for one of its buttons),
+        // unless masks keep agreeing on the new size (the user came closer).
+        if let area, area > 0, areas.count >= 3 {
+            let usual = areas.sorted()[areas.count / 2]
+            if area > areaJump * usual || area < usual / areaJump {
+                oddAreas.append(area)
+                if oddAreas.count > confirm { oddAreas.removeFirst(oddAreas.count - confirm) }
+                let steady = oddAreas.count >= confirm && (oddAreas.max()! / max(oddAreas.min()!, 1e-9)) < 1.5
+                guard steady else { return .reject(anchor.map { simd_distance(p, $0) } ?? 0) }
+                areas = oddAreas
+                oddAreas = []
+            } else {
+                oddAreas = []
+            }
+        }
+        let verdict = position(t, p, lockHeld: lockHeld, recentlyLost: recentlyLost)
+        if verdict.taken, let area, area > 0 {
+            areas.append(area)
+            if areas.count > 9 { areas.removeFirst(areas.count - 9) }
+        }
+        return verdict
+    }
+
+    private mutating func position(_ t: Double, _ p: SIMD3<Float>, lockHeld: Bool, recentlyLost: Bool) -> Verdict {
         if let a = anchor {
             let d = simd_distance(p, a)
             if d <= jump {
@@ -110,6 +146,8 @@ public struct TrackGate: Sendable {
     public mutating func reset() {
         accepted = []
         pending = []
+        areas = []
+        oddAreas = []
     }
 
     private mutating func record(_ t: Double, _ p: SIMD3<Float>) {

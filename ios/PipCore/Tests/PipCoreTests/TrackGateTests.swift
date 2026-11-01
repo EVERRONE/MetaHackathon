@@ -124,6 +124,28 @@ import simd
         #expect(taken)
     }
 
+    /// 1 Nov, 12:27: the POWER button's mask (0.1 % of the frame) alternated with one of half the
+    /// remote (5 %). Those are not taken; coming closer (the button growing steadily) is.
+    @Test func aMaskOfSomethingFarBiggerIsNotTaken() {
+        var gate = TrackGate()
+        var t = 0.0
+        for _ in 0..<6 {
+            #expect(gate.judge(time: t, position: Self.key, area: 0.001, lockHeld: false) == .accept)
+            t += 0.1
+        }
+        if case .reject = gate.judge(time: t, position: Self.key + SIMD3(0.005, 0, 0), area: 0.05, lockHeld: false) {} else { Issue.record("taken") }
+        t += 0.1
+        #expect(gate.judge(time: t, position: Self.key, area: 0.0011, lockHeld: false) == .accept)
+        t += 0.1
+        // Closer and closer: three times the size, mask after mask, is taken from the fifth on.
+        var taken = 0
+        for _ in 0..<8 {
+            if gate.judge(time: t, position: Self.key, area: 0.0033, lockHeld: false) == .accept { taken += 1 }
+            t += 0.1
+        }
+        #expect(taken >= 4)
+    }
+
     @Test func anImpossibleLeapWhileMovingIsAGlitch() {
         var gate = TrackGate()
         var t = 0.0

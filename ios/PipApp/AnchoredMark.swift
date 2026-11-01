@@ -124,6 +124,21 @@ struct AnchoredMark {
                             observation: observation, lift: { move(oldLift($0)) }, imageCentre: imageCentre, imageExtent: imageExtent)
     }
 
+    /// The same mark after the room's coordinates moved by `t` (ARKit recognised the saved room
+    /// and put its origin where it was then): every point, its camera ray and its lift go along.
+    func transformed(by t: simd_float4x4) -> AnchoredMark {
+        func move(_ p: simd_float3) -> simd_float3 { let q = t * simd_float4(p, 1); return simd_float3(q.x, q.y, q.z) }
+        let rotate = simd_float3x3(simd_float3(t.columns.0.x, t.columns.0.y, t.columns.0.z), simd_float3(t.columns.1.x, t.columns.1.y, t.columns.1.z),
+                                   simd_float3(t.columns.2.x, t.columns.2.y, t.columns.2.z))
+        let obs = observation.map { o in
+            RayFusion.Observation(origin: move(o.origin), direction: rotate * o.direction, distance: o.distance,
+                                  distanceSigma: o.distanceSigma, lateralSigma: o.lateralSigma, time: o.time)
+        }
+        let oldLift = lift
+        return AnchoredMark(id: id, method: method, rawPolygons: rawPolygons.map { $0.map(move) }, rawCentroid: move(rawCentroid),
+                            observation: obs, lift: { move(oldLift($0)) }, imageCentre: imageCentre, imageExtent: imageExtent)
+    }
+
     /// A remembered place, rebuilt from its saved outline in world space.
     init(id: Int, world polygons: [[simd_float3]]) {
         self.id = id

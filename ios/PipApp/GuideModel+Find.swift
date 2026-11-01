@@ -47,8 +47,12 @@ extension GuideModel {
                 let point = CGPoint(x: s.x / 1000 * Double(frame.width), y: s.y / 1000 * Double(frame.height))
                 // Confirmation: SAM has to find that kind of object there (not just anything), with
                 // depth to place it in the room.
-                let confirmed = phrase.isEmpty ? await grounder.object(at: point, in: image, id: 1)
-                    : await grounder.object(named: phrase, at: point, in: image, id: 1)
+                // SAM may not know the word (on 1 Nov it found no "statue" in two golden figures
+                // Wonder had seen): then a solid object of SAM's own at that point confirms it.
+                var confirmed = phrase.isEmpty ? nil : await grounder.object(named: phrase, at: point, in: image, id: 1)
+                if confirmed == nil, let atPoint = await grounder.object(at: point, in: image, id: 1), phrase.isEmpty || Grounder.solid(atPoint) {
+                    confirmed = atPoint
+                }
                 if Task.isCancelled { return }
                 guard let inst = confirmed, let depth = frame.depth(atPixel: inst.centre) ?? frame.depth(atPixel: point) else {
                     log("sighting not confirmed")

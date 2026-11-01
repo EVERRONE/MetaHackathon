@@ -43,6 +43,9 @@ final class EdgeTAMSpike {
     var onLost: ((Int, Bool) -> Void)?
     /// Whether an image lock saw this mark's object face recently (ARController).
     var lockHeld: ((Int) -> Bool)?
+    /// A comparison of the shown outline with this frame's mask, in mm, and whether the object
+    /// moved (ARController checks image locks against it).
+    var onShownCheck: ((Int, Double, Bool) -> Void)?
     /// Where the outline was drawn on the camera frame of a given time, if it was (ARController):
     /// what the user saw, to compare with where the mask of that same frame finds the object.
     var drawnAt: ((Int, TimeInterval) -> simd_float3?)?
@@ -244,6 +247,18 @@ final class EdgeTAMSpike {
         }
     }
 
+    /// The room's coordinates moved (ARKit recognised the saved room): positions kept from before
+    /// are in the old ones, so the gate and the fast tracker start again from the next mask.
+    func coordinatesMoved() {
+        centres = []
+        smoothedVelocity = .zero
+        lastDrawn = nil
+        lastTaken = nil
+        disagreements = 0
+        fast.stop()
+        worker.resetGate()
+    }
+
     // MARK: Between masks
 
     /// Keeps the fast tracker on the object EdgeTAM sees: started at the first mask, and again
@@ -317,6 +332,7 @@ final class EdgeTAMSpike {
                 let smm = Double(simd_distance(s, oc)) * 1000
                 let moving = moved > 5 || simd_length(smoothedVelocity) >= Self.stillSpeed
                 shownChecks.append((smm, spx, moving))
+                onShownCheck?(id, smm, moving)
                 shown = String(format: "%.1f\t%.1f\t%d", spx, smm, moving ? 1 : 0)
             }
         }
@@ -537,6 +553,14 @@ private final class EdgeTAMWorker: @unchecked Sendable {
         }
     }
 
+    /// Forgets where the object was (new room coordinates); on the queue, in order with the masks.
+    func resetGate() {
+        queue.async { [self] in
+            gate.reset()
+            lastAbsent = nil
+        }
+    }
+
     func track(_ r: Request, done: @escaping (Result<Tracked, Error>) -> Void) {
         queue.async { [self] in
             let result = Result<Tracked, Error> {
@@ -559,7 +583,7 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                 let recentlyLost = lastAbsent.map { r.time - $0 < Self.lostFor } ?? false
                 var verdict: TrackGate.Verdict?
                 if f.present, let w = world {
-                    verdict = gate.judge(time: r.time, position: w, lockHeld: r.lockHeld, recentlyLost: recentlyLost)
+                    verdict = gate.judge(time: r.time, position: w, area: Float(f.area), lockHeld: r.lockHeld, recentlyLost: recentlyLost)
                     if case .reject = verdict {
                         tracker.forgetLatest()
                         depthFilter = depthBefore
