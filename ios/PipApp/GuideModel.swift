@@ -61,6 +61,8 @@ final class GuideModel: ObservableObject {
     var pendingPlaces: [SpaceMemory.Place] = []
     /// Saved rooms still to try at start when ARKit does not recognise the first (see startMap).
     var mapCandidates: [MapPiece] = []
+    /// Every saved room that can be here (with ARKit's map), for choosing by light at start.
+    var savedPieces: [MapPiece] = []
     /// When each mapping hint was last said, so Pip does not nag.
     var hintSaid: [String: Date] = [:]
     var pendingFacts: [(key: String, value: String, source: String)] = []

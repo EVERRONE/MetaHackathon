@@ -46,6 +46,7 @@ extension GuideModel {
             if worldMap != nil { continuing = p }
         }
         mapCandidates = order
+        savedPieces = saved
         ar.relocalisation.onStatus = { [weak self] s in self?.ar.setSpikeStatus("map", s) }
         // The location can come in a second or two after start: a room from elsewhere is given up then.
         homeLocation.onUpdate = { [weak self] here in self?.locationArrived(here) }
@@ -74,6 +75,14 @@ extension GuideModel {
             self.ar.applyDrift(delta, toPlaces: self.linkedPlaces[piece] ?? [])
         }
         ar.start(initialMap: worldMap)
+        // Once ARKit has measured the light: if another saved room was mapped in light much more
+        // like now's, it is tried instead, at once (one switch; maps are not cycled every few seconds).
+        if let tried = continuing, savedPieces.count > 1 {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                self?.preferSameLight(over: tried)
+            }
+        }
         // The week's snapshots: those of the room ARKit is recognising can be pointed at.
         keyframes.persist = memory.consent == true
         keyframes.currentPiece = mapKeeper.current.id
@@ -87,6 +96,32 @@ extension GuideModel {
                 self.saveRoomNow()
             }
         }
+    }
+
+    /// The saved room whose light is most like now's, among the one being tried and the others:
+    /// switched to when it is clearly closer (by 0.8: a third brighter and 700 K, or so).
+    private func preferSameLight(over tried: MapPiece) {
+        guard ar.awaitingFirstRelocalisation, let now = ar.currentLight else { return }
+        func distance(_ p: MapPiece) -> Double { p.light.map { $0.distance(to: now) } ?? 1 }
+        // Any saved room of here, not only the next ones in line; among those in the same light,
+        // the one updated last.
+        let others = savedPieces.filter { $0.id != tried.id && $0.keyframes.count >= 10 }
+        guard let best = others.min(by: { distance($0) != distance($1) ? distance($0) < distance($1) : $0.updated > $1.updated }),
+              distance(best) + 0.8 < distance(tried),
+              let map = usableMap(best) else {
+            Relocalisation.log(String(format: "light now %.0f lm, %.0f K; trying piece %@ (its light %@)", now.intensity, now.temperature,
+                                      String(tried.id.uuidString.prefix(4)), tried.light.map { String(format: "%.0f lm, %.0f K", $0.intensity, $0.temperature) } ?? "unknown"))
+            return
+        }
+        log(String(format: "map: the light now (%.0f lm, %.0f K) is closer to that of piece %@; trying it first", now.intensity, now.temperature, String(best.id.uuidString.prefix(4))))
+        mapCandidates.removeAll { $0.id == best.id }
+        mapCandidates.insert(tried, at: 0)
+        ar.restart(initialMap: map)
+        let others = mapKeeper.others.filter { $0.id != best.id } + (mapKeeper.current.keyframes.isEmpty ? [] : [mapKeeper.current])
+        mapKeeper.begin(continuing: best, others: others)
+        keyframes.locate(best.id)
+        ar.restore(memory.places.filter { $0.piece == nil || $0.piece == best.id })
+        ar.relocalisation.trying(String(best.id.uuidString.prefix(4)), detail: describe(best) + " (closer light)")
     }
 
     /// The user asked something while ARKit still tries a saved room: no more tries this session.
@@ -285,8 +320,10 @@ extension GuideModel {
             memory.update(ar.restoredPlaces.map { var p = $0; p.piece = mapKeeper.current.id; return p })
             ar.restoredPlaces = []
         }
-        // Where on earth this piece is, once it is this session's own (not while ARKit still tries it).
+        // Where on earth this piece is, once it is this session's own (not while ARKit still tries it),
+        // and the light it is mapped in.
         if let here = homeLocation.point, !ar.awaitingFirstRelocalisation { mapKeeper.setLocation(here) }
+        if let light = ar.currentLight, !ar.awaitingFirstRelocalisation { mapKeeper.setLight(light) }
         // iOS gives the app a little time in the background to finish writing: until both the
         // map piece and ARKit's own map (which may wait for ARKit and retry) are written.
         let background = BackgroundWork(name: "Pip map", parts: 2)

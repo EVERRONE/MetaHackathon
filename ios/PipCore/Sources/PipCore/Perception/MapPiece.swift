@@ -32,6 +32,26 @@ public struct GeoPoint: Codable, Sendable, Equatable {
     }
 }
 
+/// The light a room was mapped in, from ARKit's estimate: a map made under evening lamps is
+/// rarely recognised in daylight (Apple: relocalising is "less likely when lighting conditions
+/// have changed"), so the saved room whose light is most like now's is tried first.
+public struct MapLight: Codable, Equatable, Sendable {
+    /// ARKit's ambient intensity (lumen; 1000 is neutral).
+    public var intensity: Double
+    /// ARKit's ambient colour temperature (kelvin; daylight about 5000-6500, lamps 2700-3500).
+    public var temperature: Double
+
+    public init(intensity: Double, temperature: Double) {
+        self.intensity = intensity
+        self.temperature = temperature
+    }
+
+    /// How different two lights are: a doubling of brightness counts 1, 1500 K counts 1.
+    public func distance(to o: MapLight) -> Double {
+        abs(log2(max(intensity, 1) / max(o.intensity, 1))) + abs(temperature - o.temperature) / 1500
+    }
+}
+
 public struct MapPiece: Codable, Sendable, Identifiable {
     public var id: UUID
     public var created: Date
@@ -47,6 +67,8 @@ public struct MapPiece: Codable, Sendable, Identifiable {
     /// Roughly where on earth the piece was mapped: tells another home or building apart, not
     /// rooms. nil in older pieces, and without location access.
     public var location: GeoPoint?
+    /// The light it was mapped in (nil in older pieces).
+    public var light: MapLight?
 
     public init(id: UUID = UUID(), created: Date = Date()) {
         self.id = id
@@ -58,7 +80,7 @@ public struct MapPiece: Codable, Sendable, Identifiable {
 
     // The surfaces are not in the JSON (hundreds of thousands of points): they go in a compact
     // binary file of their own (`surfaceData`). Older pieces with points in the JSON still load.
-    enum CodingKeys: String, CodingKey { case id, created, updated, points, normals, classes, keyframes, location }
+    enum CodingKeys: String, CodingKey { case id, created, updated, points, normals, classes, keyframes, location, light }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -70,6 +92,7 @@ public struct MapPiece: Codable, Sendable, Identifiable {
         classes = try c.decodeIfPresent([UInt8].self, forKey: .classes)
         keyframes = try c.decode([MapKeyframe].self, forKey: .keyframes)
         location = try c.decodeIfPresent(GeoPoint.self, forKey: .location)
+        light = try c.decodeIfPresent(MapLight.self, forKey: .light)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -79,6 +102,7 @@ public struct MapPiece: Codable, Sendable, Identifiable {
         try c.encode(updated, forKey: .updated)
         try c.encode(keyframes, forKey: .keyframes)
         try c.encodeIfPresent(location, forKey: .location)
+        try c.encodeIfPresent(light, forKey: .light)
     }
 
     /// 16 bytes a point: position (3 × Float32), normal (3 × Int8, ×127), class (UInt8).

@@ -593,8 +593,22 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// Called for every camera frame (reading mode uses it to take pages).
     var onFrame: ((ARFrame) -> Void)?
 
+    /// ARKit's light estimates of the last few seconds (intensity, colour temperature).
+    private var lightSamples: [(intensity: Double, temperature: Double)] = []
+
+    /// The light now: the median of the last few seconds of ARKit's estimates.
+    var currentLight: MapLight? {
+        guard lightSamples.count >= 10 else { return nil }
+        let i = lightSamples.map(\.intensity).sorted(), t = lightSamples.map(\.temperature).sorted()
+        return MapLight(intensity: i[i.count / 2], temperature: t[t.count / 2])
+    }
+
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         onFrame?(frame)
+        if let light = frame.lightEstimate, Int(frame.timestamp * 60) % 6 == 0 {
+            lightSamples.append((Double(light.ambientIntensity), Double(light.ambientColorTemperature)))
+            if lightSamples.count > 50 { lightSamples.removeFirst(lightSamples.count - 50) }
+        }
         if awaitingFirstRelocalisation, case .limited(.relocalizing) = frame.camera.trackingState { lastRecognisingCamera = frame.camera.transform }
         followObjects(frame)
         edgeSpike.frame(frame, viewSize: arView.bounds.size, markExists: edgeSpike.markID.map { marks[$0] != nil } ?? false)

@@ -60,6 +60,8 @@ final class EdgeTAMSpike {
     /// Masks in a row on which the fast tracker disagreed with EdgeTAM.
     private var disagreements = 0
     private var lastFastStart: TimeInterval = 0
+    /// Masks of frames from before this were lifted into the old room coordinates.
+    private var coordinatesMovedAt: TimeInterval = 0
     private(set) var markID: Int?
     private var run = 0
     private var seeded = false
@@ -217,6 +219,8 @@ final class EdgeTAMSpike {
     /// Pip's outline follows the mask; when the object is not seen, it waits where it was, unless
     /// it was moving (then it is hidden until seen again).
     private func steer(_ id: Int, _ r: EdgeTAMWorker.Tracked, time: TimeInterval) {
+        // A frame from before the room was recognised: its outline is in the old coordinates.
+        guard r.time >= coordinatesMovedAt else { return }
         if case .reject(let d) = r.verdict {
             // A look-alike, or the object taken away faster than the masks show: not drawn there.
             rejected += 1
@@ -250,6 +254,7 @@ final class EdgeTAMSpike {
     /// The room's coordinates moved (ARKit recognised the saved room): positions kept from before
     /// are in the old ones, so the gate and the fast tracker start again from the next mask.
     func coordinatesMoved() {
+        coordinatesMovedAt = CACurrentMediaTime()
         centres = []
         smoothedVelocity = .zero
         lastDrawn = nil

@@ -97,3 +97,27 @@ private func camera(at p: simd_float3, heading: Float = 0) -> simd_float4x4 {
         #expect(found.first?.keyframe == 0)
     }
 }
+
+/// The light a room was mapped in (see MapLight).
+@Suite struct MapLightTests {
+    @Test func eveningLampsAreFarFromDaylight() {
+        let day = MapLight(intensity: 1050, temperature: 5800)
+        let lamps = MapLight(intensity: 420, temperature: 2900)
+        let cloudy = MapLight(intensity: 900, temperature: 6300)
+        #expect(day.distance(to: cloudy) < 0.8)
+        #expect(day.distance(to: lamps) > 2)
+        #expect(day.distance(to: lamps) - day.distance(to: cloudy) > 0.8)
+    }
+
+    @Test func piecesKeepTheirLightAndOldOnesStillLoad() throws {
+        var piece = MapPiece()
+        piece.light = MapLight(intensity: 980, temperature: 5600)
+        let data = try JSONEncoder().encode(piece)
+        #expect(try JSONDecoder().decode(MapPiece.self, from: data).light == piece.light)
+        // A piece saved before lights were kept.
+        var json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        json["light"] = nil
+        let old = try JSONDecoder().decode(MapPiece.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(old.light == nil)
+    }
+}

@@ -287,6 +287,11 @@ final class MapKeeper {
     /// the files are written.
     /// Where on earth this piece is being mapped (kept with it when it is saved): a better fix
     /// replaces a worse one.
+    /// The light the room is mapped in now (kept with the piece, see MapLight).
+    func setLight(_ light: MapLight) {
+        current.light = light
+    }
+
     func setLocation(_ point: GeoPoint) {
         if let old = current.location, old.accuracy <= point.accuracy, old.couldBeSamePlace(as: point) { return }
         current.location = point
