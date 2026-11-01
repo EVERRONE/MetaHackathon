@@ -213,7 +213,11 @@ extension GuideModel {
     }
 
     private func makeLock(_ p: PendingLock) async {
-        guard let first = p.keys.first?.key.boxRect else { return }
+        // Followed in the image only what sits on a device or a surface (keys, buttons: the model
+        // names what it is on): a homography is exact for a flat face. A whole object of its own
+        // (a statue, a bottle) is round in 3D, its outline would bend as the phone goes round it:
+        // EdgeTAM's mask follows it, as before.
+        guard p.on != nil, let first = p.keys.first?.key.boxRect else { return }
         let snapshot = p.snapshot
         let bounds = CGRect(x: 0, y: 0, width: snapshot.image.width, height: snapshot.image.height)
         let label = p.keys.map { String($0.id % 1000) }.joined(separator: ",")

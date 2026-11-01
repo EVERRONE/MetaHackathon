@@ -180,3 +180,39 @@ import simd
         #expect(followed == .tracking)
     }
 }
+
+@Suite struct PlanarTrackerRecoveryTests {
+    /// Lost in a fast move (frames smeared over 60 px), found again where it came to rest, far
+    /// away and turned: the error at three keys afterwards.
+    static func recover(face: GrayImage, size: CGSize, bg: GrayImage) -> (lostAt: Int?, found: Bool, error: Float) {
+        let start = PlanarTrackerTests.pose(at: SIMD2(230, 240), degrees: 0)
+        let end = PlanarTrackerTests.pose(at: SIMD2(350, 260), degrees: 35)
+        let f0 = PlanarTrackerTests.frame(face, start, background: bg, noise: 3, seed: 1)
+        var t = PlanarTracker()
+        _ = t.start(image: f0, outline: [CGPoint(x: 0, y: 0), CGPoint(x: size.width, y: 0), CGPoint(x: size.width, y: size.height), CGPoint(x: 0, y: size.height)].map { start.apply($0) })
+        var lostAt: Int?
+        // Two frames smeared along the move, then it lies still at the end.
+        let mid1 = PlanarTrackerTests.mix(start, end, 0.35), mid2 = PlanarTrackerTests.mix(start, end, 0.75)
+        let frames = [PlanarTrackerTests.frame(face, mid1, blurFrom: start, background: bg, noise: 3, seed: 2),
+                      PlanarTrackerTests.frame(face, mid2, blurFrom: mid1, background: bg, noise: 3, seed: 3),
+                      PlanarTrackerTests.frame(face, end, background: bg, noise: 3, seed: 4)]
+        var found = false
+        for (k, f) in frames.enumerated() {
+            if lostAt == nil {
+                if t.track(f) == .lost { lostAt = k }
+            } else if t.redetect(in: f) == .tracking {
+                found = true
+            }
+        }
+        if lostAt == nil { found = true }
+        let keys = [CGPoint(x: 20, y: 20), CGPoint(x: size.width / 2, y: size.height / 2), CGPoint(x: size.width - 20, y: size.height - 20)]
+        let error = keys.map { k -> Float in let a = end.apply(k), b = t.map(start.apply(k)); return Float(hypot(a.x - b.x, a.y - b.y)) }.max() ?? .infinity
+        return (lostAt, found, error)
+    }
+
+    @Test func aKeyboardRuckedAwayIsFoundAgainWhereItLies() {
+        let r = Self.recover(face: PlanarTrackerTests.keyboard(), size: CGSize(width: 360, height: 160), bg: PlanarTrackerTests.background(seed: 23))
+        #expect(r.found)
+        #expect(r.error < 1, "\(r.error) px (lost at \(r.lostAt.map { "\($0)" } ?? "never"))")
+    }
+}

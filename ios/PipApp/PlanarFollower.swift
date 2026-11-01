@@ -32,6 +32,10 @@ final class PlanarFollower {
         var lostSince: TimeInterval?
         var lostMoving = false
         var lastTry: TimeInterval = 0
+        /// The reference is still the snapshot (a live frame takes over once it is followed well).
+        var onSnapshot = true
+        /// How it was last found again: where it was, or anywhere by its corners.
+        var foundBy = ""
         /// Recent centres in the room, to tell a moving object from a still one when it is lost
         /// (in the image the phone's own motion would count too).
         var recent: [(t: TimeInterval, p: simd_float3)] = []
@@ -42,7 +46,7 @@ final class PlanarFollower {
     private var busy = false
 
     /// A mark's outline in the room, from the frame of `time` (main thread).
-    var onOutline: ((Int, [[simd_float3]]) -> Void)?
+    var onOutline: ((Int, [[simd_float3]], TimeInterval) -> Void)?
     /// Marks whose object was lost; `moving`: it moved just before (then they are hidden).
     var onLost: (([Int], Bool) -> Void)?
     var onLog: ((String) -> Void)?
@@ -71,16 +75,23 @@ final class PlanarFollower {
         var object = Object(tracker: tracker, targets: targets.mapValues { rings in rings.map { ring in ring.map { CGPoint(x: $0.x * s, y: $0.y * s) } } },
                             depth: [:], corners: corners, cornersWorld: world)
         let group = targets.keys.min() ?? 0
-        // On to the current frame: predicted from the camera's motion, aligned against the snapshot.
-        guard let image = Self.gray(frame), let predicted = Self.predict(object, camera: frame.camera),
-              object.tracker.relocate(to: image, predicted: predicted) == .tracking else {
-            object.lostSince = CACurrentMediaTime()
-            objects[group] = object
-            onLog?("follow: marks \(Self.label(targets.keys)) not found again in the live image yet")
-            return
+        // On to the current frame: predicted from the camera's motion and aligned against the
+        // snapshot; if it moved meanwhile, found again by its described corners.
+        guard let image = Self.gray(frame) else { return }
+        var how = "from the camera's motion"
+        let predicted = Self.predict(object, camera: frame.camera)
+        if predicted.map({ object.tracker.relocate(to: image, predicted: $0) }) != .tracking {
+            how = "found again by its corners"
+            if object.tracker.redetect(in: image) != .tracking {
+                object.lostSince = CACurrentMediaTime()
+                objects[group] = object
+                onLog?("follow: marks \(Self.label(targets.keys)) not found in the live image yet; looked for again")
+                return
+            }
         }
+        Self.rebase(&object, on: image)
         objects[group] = object
-        onLog?("follow: marks \(Self.label(targets.keys)) followed in the image (\(object.tracker.inliers) points)")
+        onLog?("follow: marks \(Self.label(targets.keys)) followed in the image (\(object.tracker.inliers) points, \(how))")
     }
 
     func stop(_ ids: Set<Int>) {
@@ -105,11 +116,13 @@ final class PlanarFollower {
         let objects = self.objects
         let camera = frame.camera, buffer = frame.capturedImage, depth = frame.sceneDepth?.depthMap, time = frame.timestamp
         queue.async { [weak self] in
-            var results: [(group: Int, object: Object, outlines: [Int: [[simd_float3]]], lost: [Int]?)] = []
+            var results: [(group: Int, object: Object, outlines: [Int: [[simd_float3]]], lost: [Int]?, found: String?, time: TimeInterval)] = []
             if let image = Self.gray(buffer) {
                 for (group, var object) in objects {
+                    let away = object.lostSince.map { CACurrentMediaTime() - $0 }
                     let (outlines, lost) = Self.step(&object, image: image, camera: camera, depth: depth, time: time)
-                    results.append((group, object, outlines, lost))
+                    let found = away != nil && object.lostSince == nil ? String(format: "%@ after %.1f s", object.foundBy, away!) : nil
+                    results.append((group, object, outlines, lost, found, time))
                 }
             }
             DispatchQueue.main.async {
@@ -121,7 +134,8 @@ final class PlanarFollower {
                     var object = r.object
                     object.targets = object.targets.filter { live.targets[$0.key] != nil }
                     self.objects[r.group] = object.targets.isEmpty ? nil : object
-                    for (id, rings) in r.outlines where live.targets[id] != nil { self.onOutline?(id, rings) }
+                    for (id, rings) in r.outlines where live.targets[id] != nil { self.onOutline?(id, rings, r.time) }
+                    if let found = r.found { self.onLog?("follow: marks \(Self.label(live.targets.keys)) found again \(found)") }
                     if let lost = r.lost {
                         self.onLost?(lost.filter { live.targets[$0] != nil }, object.lostMoving)
                         self.onLog?("follow: marks \(Self.label(lost)) lost\(object.lostMoving ? " while moving: hidden until found again" : "; kept where they lay, looked for there")")
@@ -135,18 +149,25 @@ final class PlanarFollower {
     private static func step(_ object: inout Object, image: GrayImage, camera: ARCamera, depth: CVPixelBuffer?, time: TimeInterval) -> ([Int: [[simd_float3]]], [Int]?) {
         let now = CACurrentMediaTime()
         if object.lostSince != nil {
-            // Looked for again where it was, a few times a second.
-            guard now - object.lastTry > 0.3, let predicted = predict(object, camera: camera) else { return ([:], nil) }
+            // Looked for again a few times a second: where it was (cheap), else anywhere in the
+            // frame by its described corners (moved far, turned).
+            guard now - object.lastTry > 0.2 else { return ([:], nil) }
             object.lastTry = now
-            guard object.tracker.relocate(to: image, predicted: predicted) == .tracking else { return ([:], nil) }
+            let predicted = predict(object, camera: camera)
+            let near = predicted.map { object.tracker.relocate(to: image, predicted: $0) } == .tracking
+            // Anywhere in the frame only when it can be there: it was moving, or where it lay is in view.
+            guard near || ((object.lostMoving || predicted != nil) && object.tracker.redetect(in: image) == .tracking) else { return ([:], nil) }
+            object.foundBy = near ? "where it was" : "by its corners"
             object.lostSince = nil
             object.recent = []
+            if object.onSnapshot { rebase(&object, on: image) }
         } else if object.tracker.track(image) == .lost {
             object.lostSince = now
             let moved = object.recent.count >= 2 ? simd_distance(object.recent.last!.p, object.recent.first!.p) : 0
             object.lostMoving = moved > 0.02
             return ([:], Array(object.targets.keys))
         }
+        if object.onSnapshot { rebase(&object, on: image) }
         let h = object.tracker.homography
         var outlines: [Int: [[simd_float3]]] = [:]
         var depths: [Float] = []
@@ -169,6 +190,16 @@ final class PlanarFollower {
         object.recent.append((time, object.cornersWorld.reduce(.zero, +) / Float(object.cornersWorld.count)))
         object.recent.removeAll { time - $0.t > 0.3 }
         return (outlines, nil)
+    }
+
+    /// A live frame becomes the reference once the object is followed well in it (sharp, many
+    /// points): the snapshot was converted to grey otherwise than camera frames are. The marks and
+    /// corners are mapped onto it.
+    private static func rebase(_ object: inout Object, on image: GrayImage) {
+        guard object.onSnapshot, object.tracker.residual < 0.8, let h = object.tracker.rebase(on: image) else { return }
+        object.targets = object.targets.mapValues { rings in rings.map { ring in ring.map { h.apply($0) } } }
+        object.corners = object.corners.map { h.apply($0) }
+        object.onSnapshot = false
     }
 
     /// Reference → this frame, from where the region's corners are in the room (the object as it

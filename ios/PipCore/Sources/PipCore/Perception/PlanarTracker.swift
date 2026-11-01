@@ -142,6 +142,8 @@ public struct PlanarTracker: Sendable {
     /// The first view (finest level): each frame's points are aligned against it too, so what
     /// motion blur shifted while they were followed from frame to frame does not stay.
     private var first: GrayImage?
+    /// Described corners of the first view, to find the object again anywhere (FeatureMatcher).
+    private var described: [FeatureMatcher.Feature] = []
     /// The object's outline on its first view (reference coordinates), where new corners may come from.
     private var outline: [SIMD2<Float>] = []
 
@@ -156,6 +158,7 @@ public struct PlanarTracker: Sendable {
         outline = ring.map { SIMD2(Float($0.x), Float($0.y)) }
         previous = Self.pyramid(image, levels: settings.levels)
         first = image
+        described = FeatureMatcher.features(in: image, inside: outline)
         homography = matrix_identity_float3x3
         current = Self.corners(in: image, inside: outline, count: settings.points, spacing: settings.spacing, avoiding: [])
         reference = current
@@ -254,7 +257,7 @@ public struct PlanarTracker: Sendable {
         var points = reference.map { r -> SIMD2<Float> in let q = predicted * simd_float3(r.x, r.y, 1); return SIMD2(q.x / q.z, q.y / q.z) }
         var h = predicted
         var settled = [Bool](repeating: false, count: points.count)
-        for level in stride(from: min(2, target.count - 1), through: 0, by: -1) {
+        for level in stride(from: min(3, target.count - 1), through: 0, by: -1) {
             let s = Float(1 << level)
             let down = simd_float3x3(diagonal: SIMD3(1 / s, 1 / s, 1)), up = simd_float3x3(diagonal: SIMD3(s, s, 1))
             let hl = down * h * up
@@ -288,6 +291,36 @@ public struct PlanarTracker: Sendable {
         previous = target
         state = .tracking
         return state
+    }
+
+    /// Finds the object again anywhere in `image` (moved far, turned, nearer or further) by its
+    /// described corners, then takes it up from there as `relocate` does (which also checks it).
+    @discardableResult
+    public mutating func redetect(in image: GrayImage) -> State {
+        guard first != nil, !described.isEmpty, let fit = FeatureMatcher.homography(from: described, to: FeatureMatcher.features(in: image)) else {
+            state = .lost
+            return state
+        }
+        return relocate(to: image, predicted: fit.h)
+    }
+
+    /// Makes `image` (a frame it is followed in now) the reference: a live frame looks like the
+    /// frames to come (the first view may be a snapshot converted otherwise). Returns the map
+    /// from the old reference to the new one, nil (nothing changed) when the frame has too
+    /// little to follow.
+    public mutating func rebase(on image: GrayImage) -> simd_float3x3? {
+        guard state == .tracking else { return nil }
+        let h = homography
+        let ring = outline.map { p -> CGPoint in let q = h * simd_float3(p.x, p.y, 1); return CGPoint(x: CGFloat(q.x / q.z), y: CGFloat(q.y / q.z)) }
+        var fresh = PlanarTracker(settings: settings)
+        guard fresh.start(image: image, outline: ring), fresh.inliers >= settings.minPoints else { return nil }
+        self = fresh
+        return h
+    }
+
+    /// The object's outline as it is now (its first view's, mapped).
+    public var outlineNow: [CGPoint] {
+        outline.map { p -> CGPoint in let q = homography * simd_float3(p.x, p.y, 1); return CGPoint(x: CGFloat(q.x / q.z), y: CGFloat(q.y / q.z)) }
     }
 
     /// Where a point of the reference view is now.

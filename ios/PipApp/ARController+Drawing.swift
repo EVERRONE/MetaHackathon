@@ -46,8 +46,13 @@ extension ARController {
                 m.glide = .zero
                 changed = true
             }
+            // A moving object followed in the image: drawn where it has got to by the frame on screen.
+            if let motion = planarMotion[id], planarFollowed.contains(id) {
+                var lead = motion.velocity * Float(min(max(0, shownFrame - motion.time), 0.1))
+                if simd_length(lead) > 0.03 { lead = simd_normalize(lead) * 0.03 }
+                if lead != m.lead { m.lead = lead; changed = true }
+            } else if let motion = steerMotion[id] {
             // A moving object steered by EdgeTAM: drawn where it has got to since its mask.
-            if let motion = steerMotion[id] {
                 // Ahead by the mask's age at the shown frame, and by the time the drawn outline
                 // takes to follow it.
                 var lead = motion.velocity * Float(min(max(0, shownFrame - motion.time) + Self.followMoving, Self.maxLead))
@@ -75,8 +80,9 @@ extension ARController {
             marks[id] = m
         }
         // Also for a face an image lock holds: EdgeTAM's check of the lock compares with it.
-        for id in steered.union(lockHeld) {
-            guard let m = marks[id], lockHeld.contains(id) || !steerHidden.contains(id) else { continue }
+        // And for one followed in the image: EdgeTAM, still following it, measures what is drawn.
+        for id in steered.union(lockHeld).union(planarFollowed) {
+            guard let m = marks[id], lockHeld.contains(id) || (planarFollowed.contains(id) ? !planarHidden.contains(id) : !steerHidden.contains(id)) else { continue }
             var h = drawnHistory[id] ?? []
             if h.last?.t != shownFrame { h.append((shownFrame, m.centroid)) }
             if h.count > 90 { h.removeFirst(h.count - 90) }

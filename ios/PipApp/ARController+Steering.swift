@@ -74,8 +74,8 @@ extension ARController {
         planar.follow(targets, region: region, snapshot: snapshot, surface: { p in surfaces.lazy.compactMap { $0.surfacePoint(p) }.first }, frame: frame)
     }
 
-    /// The planar follower drew a mark's outline (in the room, from this frame).
-    func planarOutline(_ id: Int, _ rings: [[simd_float3]]) {
+    /// The planar follower drew a mark's outline (in the room, from the frame of `time`).
+    func planarOutline(_ id: Int, _ rings: [[simd_float3]], time: TimeInterval) {
         guard marks[id] != nil else { return }
         if planarFollowed.insert(id).inserted {
             // From now on it is drawn from the image: not from a room anchor, EdgeTAM, a lock or the box follower.
@@ -89,9 +89,20 @@ extension ARController {
             steerHidden.remove(id)
             drawnHistory[id] = nil
             riders[id] = nil
-            if edgeTAM.markID == id { edgeTAM.stop(reason: "followed in the image") }
+            // EdgeTAM goes on following it, only to measure what is drawn (its log: "edgetam shown").
         }
         planarHidden.remove(id)
+        let points = rings.flatMap { $0 }
+        guard !points.isEmpty else { return }
+        let centre = points.reduce(.zero, +) / Float(points.count)
+        var velocity = simd_float3.zero
+        if let last = planarMotion[id], time - last.time > 0.005, time - last.time < 0.3 {
+            let v = (centre - last.centre) / Float(time - last.time)
+            // Below 5 cm/s it is the depth's noise, not motion.
+            velocity = 0.5 * last.velocity + 0.5 * v
+            if simd_length(velocity) < 0.05 { velocity = .zero }
+        }
+        planarMotion[id] = (centre, velocity, time)
         marks[id] = AnchoredMark(id: id, world: rings)
     }
 

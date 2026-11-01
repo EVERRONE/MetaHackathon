@@ -47,6 +47,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     let planar = PlanarFollower()
     var planarFollowed = Set<Int>()
     var planarHidden = Set<Int>()
+    /// A followed mark's centre in the room, its velocity and the frame they are from: drawn ahead
+    /// by the time from that frame to the one on screen (the tracker is a frame or two behind).
+    var planarMotion: [Int: (centre: simd_float3, velocity: simd_float3, time: TimeInterval)] = [:]
     /// Each mark as first measured, on the surface it was found on (to start following it).
     var measured: [Int: AnchoredMark] = [:]
 
@@ -157,7 +160,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         edgeTAM.onOutline = { [weak self] id, world, velocity, time in self?.steer(id, world: world, velocity: velocity, at: time) }
         edgeTAM.onLost = { [weak self] id, moving in self?.steerLost(id, moving: moving) }
         edgeTAM.onStopped = { [weak self] id in self?.unsteer(id) }
-        planar.onOutline = { [weak self] id, rings in self?.planarOutline(id, rings) }
+        planar.onOutline = { [weak self] id, rings, time in self?.planarOutline(id, rings, time: time) }
         planar.onLost = { [weak self] ids, moving in self?.planarLost(ids, moving: moving) }
         planar.onLog = { [weak self] s in self?.onLockLog?(s) }
         edgeTAM.lockHeld = { [weak self] id in
@@ -355,6 +358,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             riders[id] = nil
             planarFollowed.remove(id)
             planarHidden.remove(id)
+            planarMotion[id] = nil
             measured[id] = nil
         }
         if !planar.isEmpty { planar.stop(removed) }
