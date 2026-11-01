@@ -301,8 +301,10 @@ extension GuideModel {
         }
     }
 
-    func rememberPlace(name: String, mark: Int) {
-        guard var place = ar.rememberPlace(name: name, mark: mark) else { return }
+    /// Returns whether the place was made (the mark is there to anchor it on).
+    @discardableResult
+    func rememberPlace(name: String, mark: Int) -> Bool {
+        guard var place = ar.rememberPlace(name: name, mark: mark) else { return false }
         place.piece = mapKeeper.current.id
         log("remembered place: \(name)")
         switch memory.consent {
@@ -315,6 +317,7 @@ extension GuideModel {
         case false?:
             break
         }
+        return true
     }
 
     func rememberLongTerm(_ key: String, _ value: String, source: String) {

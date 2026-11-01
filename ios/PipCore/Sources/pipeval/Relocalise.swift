@@ -93,7 +93,7 @@ func relocalise(_ args: [String]) {
     print("piece A \(args[2]): \(a.count) snapshots; piece B \(args[3]): \(b.count)")
     let links = viewLinks(a, b, settings: SessionLink.Settings())
     for l in links.sorted(by: { $0.inliers > $1.inliers }).prefix(30) {
-        print(String(format: "A%03d ↔ B%03d: %3d agree (median %.1f cm, spread %.0f cm): %@", l.from, l.to, l.inliers, l.residual * 100, l.spread * 100, l.transform.description))
+        print(String(format: "A%03d ↔ B%03d: %3d agree (median %.1f cm, spread %.0f cm, reach %.0f cm): %@", l.from, l.to, l.inliers, l.residual * 100, l.spread * 100, l.reach * 100, l.transform.description))
     }
     if let group = SessionLink.consensus(links) {
         print("session link: \(Set(group.map(\.to)).count) views agree, \(group.reduce(0) { $0 + $1.inliers }) matches; \(links.count - group.count) view links disagree")

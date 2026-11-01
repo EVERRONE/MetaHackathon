@@ -127,10 +127,12 @@ public struct ViewLink: Sendable, Equatable {
     /// Matches that agree with it in 3D, and their median distance after it (metres).
     public var inliers: Int
     public var residual: Float
-    /// Where the evidence is, in the first session's room (the agreeing points' centre), and how
-    /// far it spreads (the points' standard distance from that centre, metres).
+    /// Where the evidence is, in the first session's room (the agreeing points' centre), how far it
+    /// spreads (the points' standard distance from that centre) and how far it reaches (the distance
+    /// from the centre within which 90 % of them lie), metres.
     public var centre: SIMD3<Float>
     public var spread: Float
+    public var reach: Float = 0
     /// Which snapshots (ids given by the caller).
     public var from: Int
     public var to: Int
@@ -207,7 +209,9 @@ public enum SessionLink {
         let pts = best.map { pa[$0] }
         let centre = pts.reduce(.zero, +) / Float(pts.count)
         let spread = sqrt(pts.map { simd_distance_squared($0, centre) }.reduce(0, +) / Float(pts.count))
-        let link = ViewLink(transform: m, inliers: best.count, residual: residuals[residuals.count / 2], centre: centre, spread: spread, from: from, to: to)
+        let distances = pts.map { simd_distance($0, centre) }.sorted()
+        let reach = distances[min(distances.count - 1, distances.count * 9 / 10)]
+        let link = ViewLink(transform: m, inliers: best.count, residual: residuals[residuals.count / 2], centre: centre, spread: spread, reach: reach, from: from, to: to)
         guard link.inliers >= settings.minInliers, link.residual <= settings.maxResidual, link.spread >= settings.minSpread else { return nil }
         return link
     }
@@ -239,12 +243,15 @@ public enum SessionLink {
     }
 
     /// How much of the room view links' evidence spans: the widest distance between their evidence,
-    /// each reaching as far as it spreads.
+    /// each reaching as far as 90 % of its points (its `reach`; links made before reach was kept: 1.6
+    /// times their spread, about that for points spread evenly). The standard distance alone said
+    /// 0.7 m for a 1.2 m table, and a whole session was refused (1 Nov, the statues).
     public static func extent(_ links: [ViewLink]) -> Float {
+        func reach(_ l: ViewLink) -> Float { l.reach > 0 ? l.reach : 1.6 * l.spread }
         var widest: Float = 0
         for x in links {
-            widest = max(widest, 2 * x.spread)
-            for y in links { widest = max(widest, simd_distance(x.centre, y.centre) + x.spread + y.spread) }
+            widest = max(widest, 2 * reach(x))
+            for y in links { widest = max(widest, simd_distance(x.centre, y.centre) + reach(x) + reach(y)) }
         }
         return widest
     }

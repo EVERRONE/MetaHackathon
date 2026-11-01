@@ -461,16 +461,22 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     // MARK: Cues
 
     func show(_ cue: Cue) {
-        if replacePending, cue.isDrawn {
-            // The new answer points somewhere: earlier looks' and found objects' cues and marks give way.
-            replacePending = false
-            board.show(.clear, at: CACurrentMediaTime())
-            board.resolveDanger()
-            let current = currentOffset..<(currentOffset + 1000)
-            removeMarks { $0 < Self.placeMarkBase && !current.contains($0) }
-        }
+        if cue.isDrawn { giveWay() }
         board.show(cue, at: CACurrentMediaTime())
         renderNow()
+    }
+
+    /// The new answer points somewhere: earlier looks' and found objects' cues and marks give way,
+    /// once. Called before a found object is added (1 Nov: it was called after, with the found
+    /// object's own cue, and took the object it was about to show away with the rest; no arrow came,
+    /// and the remembered place it was to anchor was lost).
+    func giveWay() {
+        guard replacePending else { return }
+        replacePending = false
+        board.show(.clear, at: CACurrentMediaTime())
+        board.resolveDanger()
+        let current = currentOffset..<(currentOffset + 1000)
+        removeMarks { $0 < Self.placeMarkBase && !current.contains($0) }
     }
 
     /// A step was seen done: its pointing turns into a short green check.

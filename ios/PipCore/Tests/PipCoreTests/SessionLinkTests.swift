@@ -96,8 +96,9 @@ import simd
     }
 
     @Test func evidenceInOneSpotIsNotASessionLink() throws {
-        // Two agreeing views of one small thing (a moved object): too little of the room.
-        let small = ViewLink(transform: Self.truth, inliers: 100, residual: 0.005, centre: .zero, spread: 0.1, from: 1, to: 1)
+        // Two agreeing views of one small thing (a moved laptop, its points within 18 cm): too little
+        // of the room.
+        let small = ViewLink(transform: Self.truth, inliers: 100, residual: 0.005, centre: .zero, spread: 0.1, reach: 0.18, from: 1, to: 1)
         var other = small
         other.centre = SIMD3(0.1, 0, 0)
         other.to = 2
@@ -105,6 +106,11 @@ import simd
         // The same, a metre and a half apart: the room.
         other.centre = SIMD3(1.5, 0, 0)
         #expect(SessionLink.consensus([small, other]) != nil)
+        // Two views of one table top 1.2 m long (1 Nov, the statues: reach 49-59 cm): the room too.
+        let table = ViewLink(transform: Self.truth, inliers: 170, residual: 0.007, centre: .zero, spread: 0.33, reach: 0.55, from: 1, to: 1)
+        var again = table
+        again.to = 2
+        #expect(SessionLink.consensus([table, again]) != nil)
     }
 
     @Test func aPointIsCarriedByTheLinksNearIt() throws {

@@ -38,6 +38,8 @@ extension GuideModel {
             if case .found(let world, let frame, let spec) = outcome {
                 foundCount += 1
                 let id = ARController.foundMarkBase + foundCount % 90_000
+                // Earlier cues give way first: the found object is this answer's.
+                ar.giveWay()
                 ar.addFound(world: world, id: id, spec: spec)
                 ar.show(.outline(mark: id))
                 // A place remembered in another map of this room: found here, it is anchored in
@@ -128,11 +130,15 @@ extension GuideModel {
         return orphans.filter { score($0) > 0 }.max { score($0) < score($1) }
     }
 
-    /// Re-anchors a place of another map in this one, where `mark` found it.
+    /// Re-anchors a place of another map in this one, where `mark` found it. The new place replaces
+    /// the old one (same name) only once it exists: on 1 Nov the old one was removed first and the
+    /// new one could not be made, and the place was lost.
     func adopt(_ place: SpaceMemory.Place, mark: Int) {
-        log("place \(place.name): found again in this room; anchored in its map from now on")
-        memory.remove(place.id)
-        rememberPlace(name: place.name, mark: mark)
+        if rememberPlace(name: place.name, mark: mark) {
+            log("place \(place.name): found again in this room; anchored in its map from now on")
+        } else {
+            log("place \(place.name): found again, but could not be anchored here; kept as it was")
+        }
     }
 
     /// After a room is recognised (or a new one starts), places remembered in other maps of the same
