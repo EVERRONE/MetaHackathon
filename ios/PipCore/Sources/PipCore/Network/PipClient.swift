@@ -98,11 +98,6 @@ public struct PipClient: Sendable {
         }
     }
 
-    /// A non-streaming Responses API call (web search, PDFs by URL); returns the output text.
-    public func responsesText(_ body: JSONValue) async throws -> String {
-        try await responses(body).texts.joined(separator: "\n")
-    }
-
     /// What a Responses call answered: each message's text in order (with web search the model
     /// narrates between searches, and the answer comes last), the pages the search tool really
     /// opened or cited, and how many searches it made.
@@ -191,6 +186,8 @@ public struct PipClient: Sendable {
                     }
                     let decoder = ChatChunkDecoder()
                     for try await line in bytes.lines {
+                        // An error in the middle of the stream: the answer is cut off there.
+                        if let message = decoder.error(forLine: line) { throw WorkerError(status: 502, code: "stream_error", message: message) }
                         for event in decoder.events(forLine: line) { continuation.yield(event) }
                     }
                     continuation.finish()

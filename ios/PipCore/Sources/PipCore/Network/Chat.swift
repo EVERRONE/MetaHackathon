@@ -144,6 +144,18 @@ public struct ChatChunkDecoder: Sendable {
         if let usage = chunk.usage { out.append(.usage(usage)) }
         return out
     }
+
+    /// The message of an error the service sends in place of a chunk, mid-stream.
+    public func error(forLine line: String) -> String? {
+        struct Failure: Decodable {
+            struct Body: Decodable { var message: String?; var code: String? }
+            var error: Body
+        }
+        guard line.hasPrefix("data:") else { return nil }
+        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+        guard payload.hasPrefix("{"), let data = payload.data(using: .utf8), let failure = try? JSONDecoder().decode(Failure.self, from: data) else { return nil }
+        return failure.error.message ?? failure.error.code ?? "error"
+    }
 }
 
 /// A coding key for hand-written containers.

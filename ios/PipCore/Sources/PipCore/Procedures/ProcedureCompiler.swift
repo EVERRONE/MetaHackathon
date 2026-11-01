@@ -75,11 +75,9 @@ public struct ProcedureCompiler: Sendable {
             "tools": .array([.object(["type": .string("web_search")])]),
             "reasoning": .object(["effort": .string("low")]),
         ])
-        let text = try await client.responsesText(body)
+        let texts = try await client.responses(body).texts
         struct Found: Decodable { var found: Bool?; var title: String?; var publisher: String?; var pdf_url: String?; var page_url: String? }
-        guard let json = Self.firstJSONObject(in: text), let found = try? JSONDecoder().decode(Found.self, from: Data(json.utf8)) else {
-            return (nil, "no answer to read")
-        }
+        guard let found = Self.answer(Found.self, in: texts) else { return (nil, "no answer to read") }
         guard found.found == true else { return (nil, "the search found no official document") }
         var notes: [String] = []
         // Models can produce a link that looks right but does not exist, or that redirects to a
@@ -134,9 +132,8 @@ public struct ProcedureCompiler: Sendable {
         // A support page is read with the web tool; without any source the model may search.
         if Self.searches(source) { fields["tools"] = .array([.object(["type": .string("web_search")])]) }
         let body: JSONValue = .object(fields)
-        let text = try await client.responsesText(body)
-        guard let json = Self.firstJSONObject(in: text) else { throw CompilerError.unreadable(String(text.prefix(200))) }
-        let raw = try JSONDecoder().decode(RawProcedure.self, from: Data(json.utf8))
+        let texts = try await client.responses(body).texts
+        guard let raw = Self.answer(RawProcedure.self, in: texts) else { throw CompilerError.unreadable(String((texts.last ?? "").prefix(200))) }
         return try raw.compiled(goal: goal, source: source, seconds: Date().timeIntervalSince(t0), language: language)
     }
 
@@ -264,9 +261,23 @@ public struct ProcedureCompiler: Sendable {
         }
     }
 
-    /// The first complete {...} in a model's text (it may add words around the JSON).
-    static func firstJSONObject(in text: String) -> String? {
-        guard let start = text.firstIndex(of: "{") else { return nil }
+    /// The model's JSON answer: from the last message back (with web search it narrates between
+    /// searches and answers last), the first whole {...} in a message that decodes as `T`. Braces
+    /// in the narration ("searching for {model} manuals") are passed over.
+    static func answer<T: Decodable>(_ type: T.Type, in texts: [String]) -> T? {
+        for text in texts.reversed() {
+            var from = text.startIndex
+            while let start = text[from...].firstIndex(of: "{") {
+                if let json = balancedObject(in: text, from: start), let value = try? JSONDecoder().decode(T.self, from: Data(json.utf8)) { return value }
+                from = text.index(after: start)
+            }
+        }
+        return nil
+    }
+
+    /// The {...} that starts at `start`, up to its matching brace (braces inside strings do not
+    /// count); nil when it never closes.
+    static func balancedObject(in text: String, from start: String.Index) -> String? {
         var depth = 0
         var inString = false
         var escaped = false

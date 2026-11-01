@@ -117,12 +117,9 @@ public struct WebLookup: Sendable {
     /// The answer is the last message that holds the JSON (the ones before narrate the search).
     static func read(_ output: PipClient.ResponsesOutput) throws -> Answer {
         struct Raw: Decodable { var found: Bool; var answer: String; var sources: [Source] }
-        for text in output.texts.reversed() {
-            guard let json = ProcedureCompiler.firstJSONObject(in: text), let raw = try? JSONDecoder().decode(Raw.self, from: Data(json.utf8)) else { continue }
-            let answer = raw.answer.trimmingCharacters(in: .whitespacesAndNewlines)
-            return Answer(found: raw.found && !answer.isEmpty, answer: answer, sources: raw.sources, cited: output.citations)
-        }
-        throw LookupError.unreadable(String(output.texts.last?.prefix(200) ?? ""))
+        guard let raw = ProcedureCompiler.answer(Raw.self, in: output.texts) else { throw LookupError.unreadable(String(output.texts.last?.prefix(200) ?? "")) }
+        let answer = raw.answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        return Answer(found: raw.found && !answer.isEmpty, answer: answer, sources: raw.sources, cited: output.citations)
     }
 
     public enum LookupError: Error { case unreadable(String) }

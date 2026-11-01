@@ -183,8 +183,9 @@ private func gated() -> Procedure {
         #expect(try raw.compiled(goal: "fix the cooker", source: .none, seconds: 0).classification == .refused(reason: "gas"))
     }
 
-    @Test func firstJSONObjectSkipsBracesInStrings() {
-        #expect(ProcedureCompiler.firstJSONObject(in: #"Here: {"a":"}{","b":{"c":1}} done"#) == #"{"a":"}{","b":{"c":1}}"#)
+    @Test func balancedObjectSkipsBracesInStrings() {
+        let text = #"Here: {"a":"}{","b":{"c":1}} done"#
+        #expect(ProcedureCompiler.balancedObject(in: text, from: text.firstIndex(of: "{")!) == #"{"a":"}{","b":{"c":1}}"#)
     }
 }
 

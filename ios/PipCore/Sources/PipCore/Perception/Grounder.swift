@@ -249,10 +249,12 @@ public struct Grounder: Sendable {
         let bounds = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
         let pad = max(box.width, box.height) * 0.6 + 24
         let region = box.insetBy(dx: -pad, dy: -pad).intersection(bounds).integral
-        guard region.width > 16, region.height > 16 else { return nil }
+        // The box itself in the frame (a box just outside it has no pixels to prompt with).
+        let inFrame = box.intersection(bounds)
+        guard !region.isNull, !inFrame.isNull, region.width > 16, region.height > 16, inFrame.width >= 1, inFrame.height >= 1 else { return nil }
         let scale = min(2.5, 1024 / max(region.width, region.height))
         guard let crop = SetOfMarks.crop(frame, to: region, scale: scale), let jpeg = SetOfMarks.jpeg(crop, quality: 0.85) else { return nil }
-        let local = box.intersection(bounds).offsetBy(dx: -region.minX, dy: -region.minY)
+        let local = inFrame.offsetBy(dx: -region.minX, dy: -region.minY)
         let scaled = [Int(local.minX * scale), Int(local.minY * scale), Int(local.maxX * scale), Int(local.maxY * scale)]
         let prompt = SegmentObjectPrompt(id: 1, box: scaled)
         guard let seg = try? await client.segment(SegmentRequest(jpeg: jpeg, objects: [prompt], width: crop.width, height: crop.height, minConfidence: 0.3)),
@@ -273,6 +275,7 @@ public struct Grounder: Sendable {
         for fraction in [0.4, 1.0] {
             let side = max(size.width, size.height) * fraction
             let region = CGRect(x: point.x - side / 2, y: point.y - side / 2, width: side, height: side).intersection(CGRect(origin: .zero, size: size)).integral
+            guard !region.isNull, region.width > 16, region.height > 16 else { continue }
             let scale = min(2.0, 1024 / max(region.width, region.height))
             guard let crop = SetOfMarks.crop(image, to: region, scale: scale), let jpeg = SetOfMarks.jpeg(crop, quality: 0.85),
                   let seg = try? await client.segment(SegmentRequest(jpeg: jpeg, prompts: [phrase], width: crop.width, height: crop.height, minConfidence: 0.3, maxInstances: 40))

@@ -178,6 +178,8 @@ public struct LookPipeline: Sendable {
         var firstSentence: Double?
         var pending: [(sentence: SpokenSentence, completed: Date)] = []
         var chatDone = false
+        /// The stream broke off after some of the answer had come.
+        var cutOff: String?
 
         func handle(_ events: [CueStreamEvent]) {
             for e in events {
@@ -234,9 +236,16 @@ public struct LookPipeline: Sendable {
             case .chat(.finished):
                 break
             case .chatEnded(let error):
-                if let error { throw LookError.chat(error) }
-                handle(parser.finish())
-                notes.set(parser.descriptions)
+                if let error {
+                    // Cut off before a whole sentence came: the look failed. After: the sentences
+                    // that came whole are still said (with their cues), the unfinished one is not,
+                    // and then the look fails.
+                    guard firstSentence != nil || !pending.isEmpty else { throw LookError.chat(error) }
+                    cutOff = error
+                } else {
+                    handle(parser.finish())
+                    notes.set(parser.descriptions)
+                }
                 chatDone = true
             case .grounded(let id, let result):
                 resolved.insert(id)
@@ -248,6 +257,7 @@ public struct LookPipeline: Sendable {
             flush()
             if chatDone && pending.isEmpty { break }
         }
+        if let cutOff { throw LookError.chat(cutOff) }
 
         emit(.finished(LookSummary(rawText: raw, usage: usage, firstTokenSeconds: firstToken, firstSentenceSeconds: firstSentence, totalSeconds: since(t0))))
     }
