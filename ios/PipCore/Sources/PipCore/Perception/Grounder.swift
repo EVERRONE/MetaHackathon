@@ -185,6 +185,10 @@ public struct Grounder: Sendable {
         // in each disagreement it was right, while the verifier picked the first point's object
         // one time in three, the home key for the power key). No check either way.
         var zoomDecided = false
+        if debug, let z = zoomPick {
+            print(String(format: "[ground %d] typical %.0f² · first %@ area %d prompts %@ · zoom area %d prompts %@", id, typical,
+                         chosen.map { "\($0.box)" } ?? "none", chosen?.area ?? 0, chosen?.prompts.joined(separator: ",") ?? "-", z.area, z.prompts.joined(separator: ",")))
+        }
         if method != "text", let z = zoomPick {
             if let current = chosen, Self.agree(current, z) {
                 if z.area < current.area { chosen = z }
@@ -270,11 +274,30 @@ public struct Grounder: Sendable {
             }
         }
 
+        // A symbol printed on the object (found by SAM as an icon only) stands for the key or button
+        // it is on: the smallest of the named kind that holds it, unless that is outsized (a
+        // shaver's whole panel). The ring goes round the key, and the outline is big enough to
+        // follow (1 Nov: the second point landed on the ⊞ and ⏻ printed on their keys, and on the
+        // pause sign of a remote's pause button).
+        if iconLike, let pick = chosen, let holder = Self.holder(of: pick, among: concept, kind: spec.phrase, typical: typical) {
+            chosen = holder
+            method += " (the \(spec.phrase) it is on)"
+        }
         var result = chosen?.unmapped(from: region, scale: scale).renumbered(id)
         if method == "text", result != nil { result!.confidence = max(result!.confidence, 0.85) }
         if result != nil { result!.objectId = nil }
         if nearby.isEmpty && !spec.text.isEmpty && !symbol { problems.append("text not found nearby") }
         return GroundingResult(instance: result, method: method + (problems.isEmpty ? "" : " (\(problems.joined(separator: "; ")))"), seconds: Date().timeIntervalSince(t0))
+    }
+
+    /// The key or button a printed symbol is on: the smallest instance of that kind holding the
+    /// symbol's centre, not outsized (at most 2.5 times the usual size there). Nil when `pick` is of
+    /// that kind itself.
+    static func holder(of pick: SegmentInstance, among concept: [SegmentInstance], kind: String, typical: Double) -> SegmentInstance? {
+        guard !pick.prompts.contains(kind) else { return nil }
+        let c = CGPoint(x: pick.boxRect.midX, y: pick.boxRect.midY)
+        return concept.filter { $0.id != pick.id && $0.prompts.contains(kind) && $0.area > pick.area
+            && Double($0.area) <= 2.5 * typical * typical && Grounding.contains($0, c) }.min { $0.area < $1.area }
     }
 
     /// How long the second pointing may take, from the start of the grounding (SAM takes about 4 s).

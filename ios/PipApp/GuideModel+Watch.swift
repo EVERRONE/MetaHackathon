@@ -235,7 +235,9 @@ extension GuideModel {
         // is another plane), or a patch around a key on an object SAM did not find, or the target
         // itself when it is the object (a bottle, a statue).
         let keysBox = p.keys.map(\.key.boxRect).reduce(CGRect.null) { $0.union($1) }
-        let side = p.keys.map { max($0.key.boxRect.width, $0.key.boxRect.height) }.max() ?? 20
+        // At least a key's size (a twentieth of the view): round a small target (an LED, a printed
+        // symbol) a patch of a few of its own sizes holds too little to follow.
+        let side = max(p.keys.map { max($0.key.boxRect.width, $0.key.boxRect.height) }.max() ?? 20, 0.05 * bounds.width)
         let region: [CGPoint]
         if let parent, let ring = parent.outlinePoints.first {
             region = PlanarTracker.clip(ring, to: keysBox.insetBy(dx: -6 * side, dy: -6 * side).intersection(bounds))

@@ -55,6 +55,23 @@ import Testing
         #expect(!Grounder.agree(symbol, delete))
     }
 
+    @Test func aPrintedSymbolStandsForTheKeyItIsOn() {
+        func found(_ id: Int, _ box: [Int], by prompt: String) -> SegmentInstance {
+            var i = Self.outlined(id, box)
+            i.prompts = [prompt]
+            return i
+        }
+        // 1 Nov: the second point landed on the ⊞ printed on the Windows key.
+        let logo = found(1, [314, 715, 333, 734], by: "icon"), key = found(2, [291, 691, 358, 761], by: "key")
+        let alt = found(3, [370, 691, 437, 761], by: "key")
+        #expect(Grounder.holder(of: logo, among: [logo, key, alt], kind: "key", typical: 67)?.id == 2)
+        // A key is not lifted.
+        #expect(Grounder.holder(of: key, among: [logo, key, alt], kind: "key", typical: 67) == nil)
+        // A shaver's power symbol on its whole panel (outsized): the symbol stays.
+        let symbol = found(4, [455, 650, 483, 680], by: "icon"), panel = found(5, [429, 472, 575, 708], by: "button")
+        #expect(Grounder.holder(of: symbol, among: [symbol, panel], kind: "button", typical: 40) == nil)
+    }
+
     @Test func aSolidMaskIsAWholeObject() {
         // The left statue on 1 Nov: SAM sure, compact.
         #expect(Grounder.solid(Self.instance(box: [424, 656, 481, 727], area: 2900, confidence: 0.906)))
