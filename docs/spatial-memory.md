@@ -94,7 +94,11 @@ session: every session link the live session makes is kept (`Documents/memory/ho
 with the memory consent), and a thing is carried along the strongest chain of links. Each pair keeps
 its strongest link; a link that closes a loop is checked against the chain it bypasses (20 cm and 8°:
 two sessions' drift) and refused beyond; a link made afresh after the live session's tracking broke
-replaces the old one.
+replaces the old one. When that fresh link differs from the old one by more than a loop may, the break
+moved the live coordinates, and every link of the live session from before the break goes (one of
+them would refuse the fresh links as a broken loop); each comes back as its session links again.
+A session linked to the live one directly is carried by its own view links (nearest evidence), never
+by the chain: the chain is one rigid link and centimetres coarser away from its evidence.
 
 Measured on the user's four coffee-table sessions (`pipeval home`): the five session links join them,
 every loop within tolerance. The larger golden statue, outlined in the session that remembered it and
@@ -114,6 +118,12 @@ good as the measurements themselves.
 - `space: N snapshots of that session can be pointed at here; places back: …`.
 - `mark N reentry: corrected X cm`: a remembered place (or a thing found in memory) carried by a link
   and then found again on sight: X is how far the link carried it from where it really is.
+- `space: the tracking break moved this session's coordinates; its links from before it are dropped`:
+  a relink after a break that moved the live session (see the home graph).
+- `space: the link to … disagrees with the home's other links by X cm; not kept in the home graph`:
+  a refused loop (a look-alike place, or a drifted session).
+- `space: N earlier sessions are of this place after all; linked to again`: a later location fix
+  re-admitted sessions an older one had ruled out.
 
 ## Steps
 
