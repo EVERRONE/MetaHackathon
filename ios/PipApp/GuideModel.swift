@@ -80,6 +80,8 @@ final class GuideModel: ObservableObject {
     /// How well outlines hold: every re-measurement, on this iPhone, to evaluate on the Mac.
     let trackingLog = TrackingLog()
     var foundCount = 0
+    /// Places of other maps of this room are being looked for (see adoptPlacesOfThisRoom).
+    var adoptingPlaces = false
     /// When the shopping list last changed; basket checks stop after a long quiet spell.
     var listChangedAt = Date.distantPast
     struct ShoppingItem: Identifiable, Equatable {

@@ -273,6 +273,20 @@ if args.first == "lookup", args.count >= 2 {
     exit(0)
 }
 
+// pipeval recall "<what>" <img>: in one memory snapshot, where exactly (pinpoint) and its outline,
+// as Pip confirms a sighting.
+if args.first == "recall", args.count >= 3 {
+    let env = ProcessInfo.processInfo.environment
+    let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
+    guard let data = FileManager.default.contents(atPath: args[2]), let image = SetOfMarks.load(data, maxSide: 4096) else { fail("cannot read \(args[2])") }
+    let t0 = Date()
+    guard let pin = try await MemorySearch(client: client).pinpoint(args[1], in: data) else { print("not found in the snapshot"); exit(0) }
+    print(String(format: "%.1fs pinpoint %.0f,%.0f %@", Date().timeIntervalSince(t0), pin.x, pin.y, pin.noun))
+    let r = await Grounder(client: client, frameJPEG: data).ground(TargetSpec(x: pin.x, y: pin.y, phrase: pin.noun), id: 1, frame: image, describe: { args[1] })
+    print(String(format: "%.1fs %@", Date().timeIntervalSince(t0), r.method), r.instance.map { "box \($0.box) conf \($0.confidence)" } ?? "nil")
+    exit(0)
+}
+
 // pipeval find "<what>" <img> <img>…: searches snapshots (oldest first) like the visual memory.
 if args.first == "find", args.count >= 3 {
     let env = ProcessInfo.processInfo.environment

@@ -101,7 +101,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             let now = CACurrentMediaTime()
             return self?.imageLocks.values.contains { $0.markID == id && $0.seen && now - $0.lastTracked < 3 } ?? false
         }
-        edgeSpike.onShownCheck = { [weak self] id, mm, moving in self?.lockComparison(id, mm: mm, moving: moving) }
+        edgeSpike.onShownCheck = { [weak self] id, mm, moving, sure in self?.lockComparison(id, mm: mm, moving: moving, sure: sure) }
         edgeSpike.drawnAt = { [weak self] id, t in
             // The shown frame with this time (frames are 1/60 s apart).
             self?.drawnHistory[id]?.min { abs($0.t - t) < abs($1.t - t) }.flatMap { abs($0.t - t) < 0.009 ? $0.p : nil }
@@ -320,10 +320,13 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// image tracking can align a face with repeating parts (a keyboard, a remote's grid of buttons)
     /// one key or button off and hold it there (1 Nov: the reticle on alt instead of the Windows
     /// key, on ZONE SELECT instead of POWER, 21 mm off for seconds). EdgeTAM follows the target
-    /// itself from SAM's mask: when the two disagree by more than half the target's size (at least
-    /// 6 mm) on most of the recent still frames, the lock is let go and EdgeTAM draws the outline.
-    func lockComparison(_ id: Int, mm: Double, moving: Bool) {
-        guard !moving, let lock = imageLocks.values.first(where: { $0.markID == id && $0.seen && $0.tracked }), let m = marks[id] else { return }
+    /// itself from SAM's mask: when the two disagree in the image by more than half the target's
+    /// size (at least 6 mm at its distance) on 6 of the last 8 frames where the object lay still
+    /// and EdgeTAM was sure of it, the lock is let go and EdgeTAM draws the outline.
+    func lockComparison(_ id: Int, mm: Double, moving: Bool, sure: Bool) {
+        // Only EdgeTAM's sure masks count: on 1 Nov an unsure one (score 3-4) with a stray depth
+        // made Pip let go of a lock that was right.
+        guard !moving, sure, let lock = imageLocks.values.first(where: { $0.markID == id && $0.seen && $0.tracked }), let m = marks[id] else { return }
         let pts = m.polygons.flatMap { $0 }
         guard let first = pts.first else { return }
         var lo = first, hi = first
@@ -334,7 +337,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         recent.append(mm > limit)
         if recent.count > 8 { recent.removeFirst(recent.count - 8) }
         lockDisagreements[id] = recent
-        guard recent.count >= 5, recent.filter({ $0 }).count >= 5 else { return }
+        guard recent.count >= 8, recent.filter({ $0 }).count >= 6 else { return }
         imageLocks[lock.name] = nil
         lockDisagreements[id] = nil
         onLockLog?(String(format: "lock: mark %d let go: its face was aligned %.0f mm off the target (EdgeTAM agrees with itself, not with the lock); EdgeTAM draws it now", id % 1000, mm))
@@ -649,6 +652,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
                 let jump = camera.transform * simd_inverse(before)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.realign(by: jump) }
             }
+            if wasFirstRelocalisation { DispatchQueue.main.async { [weak self] in self?.onRecognised?() } }
             lastRecognisingCamera = nil
             // Back after being lost (not the first start): every object is checked again. Also
             // when the cues were shown again before ARKit had recognised the room.
@@ -732,6 +736,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     private var trackingLost = false
     /// The saved room was not recognised at start.
     var onRelocaliseGaveUp: (() -> Void)?
+    /// The saved room was recognised at start.
+    var onRecognised: (() -> Void)?
 
 
     private func renderNow() {

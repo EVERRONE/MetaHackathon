@@ -45,7 +45,10 @@ final class EdgeTAMSpike {
     var lockHeld: ((Int) -> Bool)?
     /// A comparison of the shown outline with this frame's mask, in mm, and whether the object
     /// moved (ARController checks image locks against it).
-    var onShownCheck: ((Int, Double, Bool) -> Void)?
+    var onShownCheck: ((Int, Double, Bool, Bool) -> Void)?
+    /// EdgeTAM's object score above which its mask may overrule an image lock (on 1 Nov a remote's
+    /// POWER button scored 8-10, a mask that was wrong 3.2-3.8).
+    static let sureScore: Float = 6
     /// Where the outline was drawn on the camera frame of a given time, if it was (ARController):
     /// what the user saw, to compare with where the mask of that same frame finds the object.
     var drawnAt: ((Int, TimeInterval) -> simd_float3?)?
@@ -333,11 +336,15 @@ final class EdgeTAMSpike {
                 return CGPoint(x: Double(k[2][0] + k[0][0] * q.x / -q.z), y: Double(k[2][1] - k[1][1] * q.y / -q.z))
             }
             if let sp = pixel(s), let op = pixel(oc) {
+                // In the image, as the user sees it, at the drawn outline's distance: a mask's
+                // depth can be far off (a small button held 15-40 cm away gave LiDAR 0-1 samples
+                // on 1 Nov, and its 3D place was 25 cm out while its outline was right).
                 let spx = hypot(sp.x - op.x, sp.y - op.y)
-                let smm = Double(simd_distance(s, oc)) * 1000
+                let camera = simd_float3(cam.transform.columns.3.x, cam.transform.columns.3.y, cam.transform.columns.3.z)
+                let smm = spx / Double(k[0][0]) * Double(simd_distance(camera, s)) * 1000
                 let moving = moved > 5 || simd_length(smoothedVelocity) >= Self.stillSpeed
                 shownChecks.append((smm, spx, moving))
-                onShownCheck?(id, smm, moving)
+                onShownCheck?(id, smm, moving, r.frame.objectScore >= Self.sureScore)
                 shown = String(format: "%.1f\t%.1f\t%d", spx, smm, moving ? 1 : 0)
             }
         }
@@ -515,7 +522,9 @@ private final class EdgeTAMWorker: @unchecked Sendable {
     /// The object's depth, followed over frames (on the queue): raw LiDAR jitters by millimetres
     /// to a centimetre from frame to frame; a jump of 3 cm is the object moving and is taken at once.
     private var depthFilter: Float?
+    private var depthAt: TimeInterval = 0
     static let depthJump: Float = 0.03
+    static let minDepthSamples = 5
     /// Keeps the object from jumping to a look-alike (on the queue, with every mask in order).
     private var gate = TrackGate()
     /// When EdgeTAM last did not see the object.
@@ -574,14 +583,20 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                 guard let pixels = input.image(r.buffer, orientation: .right) else { throw Failure.noInput }
                 let prep = (CACurrentMediaTime() - t0) * 1000
                 let f = try tracker.track(image: pixels)
-                let (rawWorld, samples, rawDepth) = Self.centre(f, depth: r.depth, camera: r.camera)
+                let (_, samples, measured) = Self.centre(f, depth: r.depth, camera: r.camera)
                 let depthBefore = depthFilter
-                let depth = rawDepth.map { d -> Float in
+                // A depth needs a few LiDAR samples on the object (closer than about 25 cm, or on
+                // a small dark button, there are none or one, and one can be the floor behind it);
+                // without them the last good depth holds for a second, then there is no 3D place.
+                let rawDepth = samples >= Self.minDepthSamples ? measured : nil
+                var depth = rawDepth.map { d -> Float in
                     let smooth = depthFilter.map { abs(d - $0) > Self.depthJump ? d : $0 + 0.35 * (d - $0) } ?? d
                     depthFilter = smooth
+                    depthAt = r.time
                     return smooth
                 }
-                let world = depth.flatMap { d in f.centroid.map { Self.lift([$0], depth: d, camera: r.camera)[0] } } ?? rawWorld
+                if depth == nil, let held = depthFilter, r.time - depthAt < 1 { depth = held }
+                let world = depth.flatMap { d in f.centroid.map { Self.lift([$0], depth: d, camera: r.camera)[0] } }
                 let outline = depth.map { Self.lift(f.outline, depth: $0, camera: r.camera) } ?? []
                 // A mask on a look-alike is neither shown nor remembered: EdgeTAM forgets the frame
                 // at once, before the next one, so it keeps looking for the right object.

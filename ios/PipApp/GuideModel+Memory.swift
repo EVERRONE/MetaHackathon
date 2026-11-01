@@ -57,6 +57,14 @@ extension GuideModel {
         mapKeeper.onLog = { [weak self] line in self?.log(line) }
         mapKeeper.onLink = { [weak self] piece, refined, transform in self?.linked(piece, refined: refined, transform: transform) }
         ar.onRelocaliseGaveUp = { [weak self] in self?.relocalisationGaveUp() }
+        // Recognised: places remembered in other maps of this room are looked for here, quietly,
+        // once Pip is free (see adoptPlacesOfThisRoom).
+        ar.onRecognised = { [weak self] in
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                await self?.adoptPlacesOfThisRoom()
+            }
+        }
         ar.onMovedObjectSettled = { [weak self] id, box in
             Task { @MainActor in await self?.remeasureMoved(id, screenBox: box) }
         }

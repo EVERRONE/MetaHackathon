@@ -1,6 +1,7 @@
 import Foundation
 import PipCore
 import UIKit
+import simd
 
 /// "Where did I leave my drink?" from the visual memory, and the shopping list.
 extension GuideModel {
@@ -26,52 +27,137 @@ extension GuideModel {
             batches.append(Array(rest.prefix(batchSize)).reversed())
             rest = Array(rest.dropFirst(batchSize))
         }
-        let grounder = Grounder(client: client, frameJPEG: Data())
         var elsewhere: Keyframes.Frame?
         for (n, batch) in batches.enumerated() {
             if n == 1 { say(phrases.searchingFurther) }
-            // Only snapshots that can still be read; their order is kept for the mapping back.
-            let readable = batch.compactMap { f in f.jpeg().map { (f, $0) } }
-            let t0 = Date()
-            let sightings = (try? await MemorySearch(client: client).find(what, in: readable.map(\.1))) ?? []
+            let outcome = await search(what, phrase: phrase, in: batch)
             if Task.isCancelled { return }
-            log(String(format: "memory search %.1fs over %d snapshots: %d sightings", Date().timeIntervalSince(t0), readable.count, sightings.count))
-            for s in sightings where readable.indices.contains(s.index) {
-                let frame = readable[s.index].0
-                guard frame.located else {
-                    // Seen in a room this session has not recognised yet: say when, not where.
-                    elsewhere = elsewhere ?? frame
-                    continue
-                }
-                guard let image = UIImage(data: readable[s.index].1)?.cgImage else { continue }
-                let point = CGPoint(x: s.x / 1000 * Double(frame.width), y: s.y / 1000 * Double(frame.height))
-                // Confirmation: SAM has to find that kind of object there (not just anything), with
-                // depth to place it in the room.
-                // SAM may not know the word (on 1 Nov it found no "statue" in two golden figures
-                // Wonder had seen): then a solid object of SAM's own at that point confirms it.
-                var confirmed = phrase.isEmpty ? nil : await grounder.object(named: phrase, at: point, in: image, id: 1)
-                if confirmed == nil, let atPoint = await grounder.object(at: point, in: image, id: 1), phrase.isEmpty || Grounder.solid(atPoint) {
-                    confirmed = atPoint
-                }
-                if Task.isCancelled { return }
-                guard let inst = confirmed, let depth = frame.depth(atPixel: inst.centre) ?? frame.depth(atPixel: point) else {
-                    log("sighting not confirmed")
-                    continue
-                }
-                let world = inst.regularized().outlinePoints.map { ring in ring.map { frame.worldPoint(atPixel: $0, depth: depth) } }
+            if case .found(let world, let frame) = outcome {
                 foundCount += 1
                 let id = ARController.foundMarkBase + foundCount % 90_000
                 ar.addFound(world: world, id: id)
                 ar.show(.outline(mark: id))
+                // A place remembered in another map of this room: found here, it is anchored in
+                // this room's map from now on, so it is pointed at at once next time.
+                if let orphan = orphanPlace(matching: what) { adopt(orphan, mark: id) }
                 let place = ar.describe(mark: id, dutch: language == "Dutch") ?? ""
                 say(phrases.found(what, at: frame.time, where: place.components(separatedBy: ";").first ?? place))
                 return
             }
+            if case .elsewhere(let frame) = outcome { elsewhere = elsewhere ?? frame }
         }
         if let elsewhere {
             say(phrases.foundElsewhere(what, at: elsewhere.time))
         } else {
             say(phrases.notFound(what, since: oldest.time))
+        }
+    }
+
+    enum Recall {
+        case found(world: [[simd_float3]], frame: Keyframes.Frame)
+        /// Seen, but in a room this session has not recognised (its place is unknown here).
+        case elsewhere(Keyframes.Frame)
+        case none
+    }
+
+    /// One batch of snapshots: Wonder finds the object on contact sheets; each sighting is then
+    /// pinpointed in its own snapshot at full resolution and outlined like a question's target
+    /// (the contact sheet's point can be far off: on 1 Nov on the carpet beside the statue's table),
+    /// with depth to place it in the room. Nothing is pointed at on a guess.
+    func search(_ what: String, phrase: String, in batch: [Keyframes.Frame]) async -> Recall {
+        // Only snapshots that can still be read; their order is kept for the mapping back.
+        let readable = batch.compactMap { f in f.jpeg().map { (f, $0) } }
+        let t0 = Date()
+        let sightings = (try? await MemorySearch(client: client).find(what, in: readable.map(\.1))) ?? []
+        if Task.isCancelled { return .none }
+        log(String(format: "memory search %.1fs over %d snapshots: %d sightings", Date().timeIntervalSince(t0), readable.count, sightings.count))
+        var elsewhere: Keyframes.Frame?
+        for s in sightings where readable.indices.contains(s.index) {
+            let frame = readable[s.index].0
+            guard frame.located else {
+                // Seen in a room this session has not recognised yet: say when, not where.
+                elsewhere = elsewhere ?? frame
+                continue
+            }
+            let jpeg = readable[s.index].1
+            guard let image = UIImage(data: jpeg)?.cgImage else { continue }
+            guard let pin = try? await MemorySearch(client: client).pinpoint(what, in: jpeg) else {
+                if Task.isCancelled { return .none }
+                log("sighting not confirmed (not found again in the snapshot)")
+                continue
+            }
+            let point = CGPoint(x: pin.x / 1000 * Double(frame.width), y: pin.y / 1000 * Double(frame.height))
+            let spec = TargetSpec(x: pin.x, y: pin.y, phrase: pin.noun.isEmpty ? (phrase.isEmpty ? "object" : phrase) : pin.noun)
+            let grounded = await Grounder(client: client, frameJPEG: jpeg).ground(spec, id: 1, frame: image, describe: { what })
+            if Task.isCancelled { return .none }
+            guard let inst = grounded.instance, Double(inst.area) <= 0.3 * Double(image.width * image.height),
+                  let depth = frame.depth(atPixel: inst.centre) ?? frame.depth(atPixel: point) else {
+                log("sighting not confirmed (\(grounded.method))")
+                continue
+            }
+            log("sighting confirmed (\(grounded.method))")
+            let world = inst.regularized().outlinePoints.map { ring in ring.map { frame.worldPoint(atPixel: $0, depth: depth) } }
+            return .found(world: world, frame: frame)
+        }
+        return elsewhere.map { .elsewhere($0) } ?? .none
+    }
+
+    // MARK: Places of other maps of this room
+
+    /// A remembered place of another map piece (this room mapped in another session, not linked)
+    /// that `what` names: "the user's gold statue" for "taller golden statue".
+    func orphanPlace(matching what: String) -> SpaceMemory.Place? {
+        let here = Set(ar.places.values.map(\.id))
+        let orphans = memory.places.filter { $0.piece != mapKeeper.current.id && !here.contains($0.id) }
+        func words(_ s: String) -> [String] {
+            s.lowercased().replacingOccurrences(of: "'s", with: "").split(whereSeparator: { !$0.isLetter }).map(String.init)
+                .filter { $0.count >= 3 && !["the", "user", "users", "mijn", "van", "het", "een", "your", "where"].contains($0) }
+        }
+        let wanted = words(what)
+        func score(_ p: SpaceMemory.Place) -> Int {
+            words(p.name + " " + (p.phrase ?? "")).filter { w in wanted.contains { $0.hasPrefix(w.prefix(4)) || w.hasPrefix($0.prefix(4)) } }.count
+        }
+        return orphans.filter { score($0) > 0 }.max { score($0) < score($1) }
+    }
+
+    /// Re-anchors a place of another map in this one, where `mark` found it.
+    func adopt(_ place: SpaceMemory.Place, mark: Int) {
+        log("place \(place.name): found again in this room; anchored in its map from now on")
+        memory.remove(place.id)
+        rememberPlace(name: place.name, mark: mark)
+    }
+
+    /// After a room is recognised (or a new one starts), places remembered in other maps of the same
+    /// place on earth are looked for in this room's snapshots, quietly, a few at most: each found
+    /// one is anchored here, so "where is…" is answered at once. The user's idea (1 Nov): known
+    /// things as anchor points between the maps of one room.
+    func adoptPlacesOfThisRoom() async {
+        guard memory.consent == true, !adoptingPlaces else { return }
+        adoptingPlaces = true
+        defer { adoptingPlaces = false }
+        let here = Set(ar.places.values.map(\.id))
+        let location = mapKeeper.current.location
+        let pieces = Dictionary(uniqueKeysWithValues: MapStore.loadAll().map { ($0.id, $0) })
+        let orphans = memory.places.filter { p in
+            guard p.piece != mapKeeper.current.id, !here.contains(p.id) else { return false }
+            // Of this place on earth (or of a piece without a location).
+            guard let here = location, let piece = p.piece.flatMap({ pieces[$0] }), let there = piece.location else { return true }
+            return here.couldBeSamePlace(as: there)
+        }
+        let located = keyframes.frames.filter(\.located)
+        guard !orphans.isEmpty, located.count >= 8 else { return }
+        for place in orphans.prefix(3) {
+            // Never in the user's way: only while Pip is free.
+            guard !lookActive, !Task.isCancelled else { return }
+            let batch = Array(located.suffix(MemorySearch.tilesPerSheet * 4))
+            if case .found(let world, _) = await search(place.name, phrase: place.phrase ?? "", in: batch) {
+                foundCount += 1
+                let id = ARController.foundMarkBase + foundCount % 90_000
+                ar.addFound(world: world, id: id)
+                adopt(place, mark: id)
+            } else {
+                log("place \(place.name) of another map: not seen in this room's snapshots")
+            }
         }
     }
 

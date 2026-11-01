@@ -87,6 +87,43 @@ public struct MemorySearch: Sendable {
             .sorted { $0.index > $1.index }
     }
 
+    /// Where exactly the object is in one snapshot, at its own resolution. The contact sheet's tiles
+    /// are 192×256: Wonder picks the right snapshot there, but its point within a tile can be far
+    /// off (1 Nov: on the carpet beside a table with the statue on it). nil when it is not there.
+    public struct Pinpoint: Equatable, Sendable {
+        public var x: Double
+        public var y: Double
+        /// A generic English noun for it, for SAM ("statue", "keys").
+        public var noun: String
+    }
+
+    public func pinpoint(_ what: String, in snapshot: Data) async throws -> Pinpoint? {
+        let question = """
+        Find "\(what)" in this photo from the user's phone. If it is there, give the centre of that exact object \
+        on a 0–1000 grid (x from the left, y from the top), as precisely as you can, and a generic 1–2 word English noun for it. \
+        If it is not in the photo, found is false.
+        """
+        let schema: JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "found": .object(["type": .string("boolean")]),
+                "x": .object(["type": .string("number")]),
+                "y": .object(["type": .string("number")]),
+                "noun": .object(["type": .string("string")]),
+            ]),
+            "required": .array(["found", "x", "y", "noun"].map { .string($0) }),
+            "additionalProperties": .bool(false),
+        ])
+        var request = ChatRequest(messages: [ChatMessage(role: .user, parts: [.text(question), .imageJPEG(snapshot)])], stream: false,
+                                  reasoningEffort: .minimal, responseFormat: ResponseFormat(name: "pinpoint", schema: schema))
+        request.model = model
+        let (text, _) = try await client.chat(request)
+        struct Out: Decodable { var found: Bool; var x: Double; var y: Double; var noun: String }
+        let out = try JSONDecoder().decode(Out.self, from: Data(text.utf8))
+        guard out.found, (0...1000).contains(out.x), (0...1000).contains(out.y) else { return nil }
+        return Pinpoint(x: out.x, y: out.y, noun: out.noun.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
     /// A 4×4 contact sheet of portrait tiles (192×256), each with its number in a corner.
     static func sheet(_ tiles: [Data], firstNumber: Int) -> Data? {
         let tw = 192, th = 256, cols = 4
