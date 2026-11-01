@@ -53,7 +53,9 @@ extension ARController {
                     self.onLockLog?("lock: marks \(label) not trackable as an image (\(error.localizedDescription)); following in the image instead")
                     return
                 }
-                let live = outlines.filter { self.marks[$0.key] != nil }
+                // Marks still there, and not locked already (found again after a fresh start
+                // while their first lock was being made: one picture of an object is enough).
+                let live = outlines.filter { o in self.marks[o.key] != nil && !self.imageLocks.values.contains { $0.marks[o.key] != nil } }
                 guard !live.isEmpty else { return }
                 // At most a few at once: the oldest lock gives way (by age: mark numbers wrap).
                 if self.imageLocks.count >= Self.maxImageLocks, let oldest = self.imageLocks.values.min(by: { $0.created < $1.created }) {
