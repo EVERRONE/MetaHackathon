@@ -81,6 +81,28 @@ public enum SetOfMarks {
     }
 
     /// A region of the image, enlarged by `scale`.
+    /// The image with a yellow cross (dark-rimmed) at `p` (pixels, top-left origin): where the guide
+    /// pointed, for a verifier to see.
+    public static func cross(_ image: CGImage, at p: CGPoint) -> CGImage? {
+        let w = image.width, h = image.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let q = CGPoint(x: p.x, y: CGFloat(h) - p.y)
+        let arm = max(8, CGFloat(max(w, h)) * 0.025)
+        for (color, width) in [(CGColor(red: 0, green: 0, blue: 0, alpha: 0.8), CGFloat(5)), (CGColor(red: 1, green: 0.9, blue: 0, alpha: 1), CGFloat(2.5))] {
+            ctx.setStrokeColor(color)
+            ctx.setLineWidth(width)
+            ctx.setLineCap(.round)
+            ctx.move(to: CGPoint(x: q.x - arm, y: q.y)); ctx.addLine(to: CGPoint(x: q.x - arm * 0.35, y: q.y))
+            ctx.move(to: CGPoint(x: q.x + arm * 0.35, y: q.y)); ctx.addLine(to: CGPoint(x: q.x + arm, y: q.y))
+            ctx.move(to: CGPoint(x: q.x, y: q.y - arm)); ctx.addLine(to: CGPoint(x: q.x, y: q.y - arm * 0.35))
+            ctx.move(to: CGPoint(x: q.x, y: q.y + arm * 0.35)); ctx.addLine(to: CGPoint(x: q.x, y: q.y + arm))
+            ctx.strokePath()
+        }
+        return ctx.makeImage()
+    }
+
     public static func crop(_ image: CGImage, to rect: CGRect, scale: CGFloat) -> CGImage? {
         guard let region = image.cropping(to: rect) else { return nil }
         return draw(region, width: Int((rect.width * scale).rounded()), height: Int((rect.height * scale).rounded()))

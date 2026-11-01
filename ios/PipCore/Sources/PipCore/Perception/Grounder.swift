@@ -70,13 +70,25 @@ public struct Grounder: Sendable {
         }
         let local = CGPoint(x: (p.x - region.minX) * scale, y: (p.y - region.minY) * scale)
         let object = SegmentObjectPrompt(id: 1, points: [.init(x: min(max(Int(local.x), 0), crop.width - 1), y: min(max(Int(local.y), 0), crop.height - 1))])
+        // The model's point can be a little off its object (on its edge, or in the gap beside it):
+        // SAM also segments at six points round it, in the same request, so the object itself is
+        // among the masks when the point's own mask is not (1 Nov: a sliver beside a statue).
+        let ringRadius = Double(max(crop.width, crop.height)) * (spec.small ? 0.02 : 0.035)
+        var objects = [object]
+        for k in 0..<6 {
+            let a = Double(k) / 6 * 2 * .pi
+            let x = Int(Double(local.x) + ringRadius * cos(a)), y = Int(Double(local.y) + ringRadius * sin(a))
+            guard x >= 0, y >= 0, x < crop.width, y < crop.height else { continue }
+            objects.append(SegmentObjectPrompt(id: 2 + k, points: [.init(x: x, y: y)]))
+        }
 
         // A small target may be a printed symbol (a power icon on a panel) rather than a part of
         // its own: SAM also looks for icons around it.
         // Only for targets without printed text: on keys, SAM would find the printed letters.
         let iconLike = spec.small && spec.text.isEmpty
         let prompts = iconLike && spec.phrase != "icon" ? [spec.phrase, "icon"] : [spec.phrase]
-        async let segmented = Result { try await client.segment(SegmentRequest(jpeg: jpeg, prompts: prompts, objects: [object], width: crop.width, height: crop.height, minConfidence: 0.25, maxInstances: 120)) }
+        let allObjects = objects
+        async let segmented = Result { try await client.segment(SegmentRequest(jpeg: jpeg, prompts: prompts, objects: allObjects, width: crop.width, height: crop.height, minConfidence: 0.25, maxInstances: 120)) }
         async let whole = wholeFrame.instances(for: spec.phrase)
         let debug = ProcessInfo.processInfo.environment["PIP_DEBUG_GROUND"] != nil
         // Text recognition runs alongside SAM: the fast pass always (≈0.05 s), the accurate pass
@@ -165,13 +177,38 @@ public struct Grounder: Sendable {
                     .filter { inner in !lookalikes.contains { $0.id == inner.id } }
                 lookalikes += inner.prefix(4)
             }
-            if !lookalikes.isEmpty || description != nil {
-                switch await verify(spec, description: description, candidates: [current] + lookalikes.prefix(10), in: crop) {
+            // The point's own mask is not a solid object (a sliver, unsure): the most solid mask of the
+            // points round it, nearest to the model's point, is the object. Geometry only, no model
+            // call: asking the verifier here doubled the wait (5.4 s on 1 Nov).
+            let doubtful = method == "point prompt" && !Self.solid(current)
+            if doubtful {
+                let round = instances.filter { ($0.objectId ?? 0) >= 2 && Double($0.area) < cropArea * 0.4 && Double($0.area) > cropArea * 0.0004 }
+                if let best = round.filter({ Self.solid($0) }).min(by: { a, b in
+                    let da = Grounding.distance(local, a.boxRect), db = Grounding.distance(local, b.boxRect)
+                    return da != db ? da < db : a.confidence > b.confidence
+                }), Grounding.distance(local, best.boxRect) <= 1.5 * ringRadius {
+                    chosen = best
+                    method = "point ring"
+                }
+            }
+            // Verification chooses between look-alikes. One object under the model's own point
+            // needs none: asked about it alone, the verifier (without the conversation) sometimes
+            // said no to the right object and only cost a second or two (1 Nov: both statues, which
+            // SAM found only at the model's point, were refused; the speech waited for it).
+            // The model's point deep inside one of them (a quarter of its size from every edge):
+            // that is the one it means, and the speech need not wait for a check. Points near an
+            // edge or in a gap are checked.
+            if let current = chosen, method == "point", Self.deepInside(local, current.boxRect) { lookalikes = [] }
+            if !lookalikes.isEmpty, let current = chosen {
+                switch await verify(spec, description: description, point: local, candidates: [current] + lookalikes.filter { $0.id != current.id }.prefix(10), in: crop) {
                 case .picked(let picked):
                     method = picked.id == current.id ? "verified" : "verified (moved)"
                     chosen = picked
+                case .noneOfThem where spec.text.isEmpty && !spec.small:
+                    // A whole object without printed text to check: the model's own point decides.
+                    method += " (verifier unsure; the model's point)"
                 case .noneOfThem:
-                    // Never point at a guess.
+                    // A key or button that does not show the printed text: never point at a guess.
                     method = "rejected by verification"
                     chosen = nil
                 case .failed:
@@ -185,6 +222,21 @@ public struct Grounder: Sendable {
         if result != nil { result!.objectId = nil }
         if nearby.isEmpty && !spec.text.isEmpty { problems.append("text not found nearby") }
         return GroundingResult(instance: result, method: method + (problems.isEmpty ? "" : " (\(problems.joined(separator: "; ")))"), seconds: Date().timeIntervalSince(t0))
+    }
+
+    static func deepInside(_ p: CGPoint, _ box: CGRect) -> Bool {
+        guard box.width > 0, box.height > 0, box.contains(p) else { return false }
+        let fx = min(p.x - box.minX, box.maxX - p.x) / box.width
+        let fy = min(p.y - box.minY, box.maxY - p.y) / box.height
+        return fx >= 0.25 && fy >= 0.25
+    }
+
+    /// A mask that looks like a whole object: SAM is sure of it, and it is not a sliver.
+    public static func solid(_ i: SegmentInstance) -> Bool {
+        let b = i.boxRect
+        let fill = Double(i.area) / max(1, Double(b.width * b.height))
+        let aspect = Double(min(b.width, b.height) / max(b.width, b.height, 1))
+        return i.confidence >= 0.8 && fill >= 0.35 && aspect >= 0.3
     }
 
     static let fastTextBudget: TimeInterval = 0.8
@@ -284,22 +336,31 @@ public struct Grounder: Sendable {
         return inter / (Double(a.width * a.height) + Double(b.width * b.height) - inter)
     }
 
-    func verify(_ spec: TargetSpec, description: String? = nil, candidates: [SegmentInstance], in image: CGImage) async -> Verdict {
+    /// `point`: where the model pointed (image pixels), drawn as a yellow cross: with it the verifier
+    /// can tell "the right one" of two look-alikes, which the words alone do not say.
+    func verify(_ spec: TargetSpec, description: String? = nil, point: CGPoint? = nil, candidates: [SegmentInstance], in image: CGImage) async -> Verdict {
         let numbered = candidates.enumerated().map { $0.element.renumbered($0.offset + 1) }
         var area = numbered.reduce(CGRect.null) { $0.union($1.boxRect) }
+        if let point { area = area.union(CGRect(x: point.x - 1, y: point.y - 1, width: 2, height: 2)) }
         let pad = max(area.width, area.height) * 0.25 + 12
         area = area.insetBy(dx: -pad, dy: -pad).intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height)).integral
         let zoom = min(3, 560 / max(area.width, area.height))
         guard let view = SetOfMarks.crop(image, to: area, scale: zoom),
-              let marked = SetOfMarks.render(view, instances: numbered.map { $0.mapped(into: area, scale: zoom) }),
+              let outlined = SetOfMarks.render(view, instances: numbered.map { $0.mapped(into: area, scale: zoom) }),
+              let marked = point.map({ p in SetOfMarks.cross(outlined, at: CGPoint(x: (p.x - area.minX) * zoom, y: (p.y - area.minY) * zoom)) }) ?? outlined,
               let jpeg = SetOfMarks.jpeg(marked, quality: 0.85) else { return .failed }
         let printed = spec.text.joined(separator: " / ")
+        let pointed = point == nil ? "" : " The yellow cross is where the guide pointed; it may be a little off."
         let question: String
         if let description, spec.text.isEmpty {
-            question = "The user must use \"\(description)\" (a \(spec.phrase)). Which numbered outline contains exactly that? The numbers are labels next to the outlines; look at what is inside each outline. Answer with its number, or 0 if none of them does."
+            question = "A guide pointed at a \(spec.phrase) and said: \"\(description)\".\(pointed) Which numbered outline is the \(spec.phrase) the guide means? The numbers are labels next to the outlines; look at what is inside each outline. Answer with its number, or 0 if none of them is."
+        } else if spec.text.isEmpty {
+            question = "A guide pointed at a \(spec.phrase).\(pointed) Which numbered outline is that \(spec.phrase)? Answer with its number, or 0 if none of them is."
         } else {
-            question = "Which numbered \(spec.phrase) has \(printed) printed on it? Read the printed characters on each numbered \(spec.phrase) carefully. Answer with its number, or 0 if none of them does."
+            question = "Which numbered \(spec.phrase) has \(printed) printed on it? Read the printed characters on each numbered \(spec.phrase) carefully.\(pointed) Answer with its number, or 0 if none of them does."
         }
+        // (Asking the verifier also for what it read on its pick did not help: on 1 Nov it chose
+        // the escape key for "tab" and said it read "tab", and read the pause sign as "II" or "||".)
         let schema: JSONValue = .object([
             "type": .string("object"),
             "properties": .object(["mark": .object(["type": .string("integer")])]),
