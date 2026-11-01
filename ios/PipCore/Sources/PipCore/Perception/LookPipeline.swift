@@ -116,7 +116,11 @@ public struct LookPipeline: Sendable {
         let t0 = Date()
         func since(_ t: Date) -> Double { Date().timeIntervalSince(t) }
         let frame = request.frame
-        guard let context = SetOfMarks.resize(frame, maxSide: 1280).flatMap({ SetOfMarks.jpeg($0, quality: 0.8) }) else { throw LookError.encoding }
+        guard let small = SetOfMarks.resize(frame, maxSide: 1280), let context = SetOfMarks.jpeg(small, quality: 0.8) else { throw LookError.encoding }
+        // The model sees the frame lightly sharpened (small print and symbols in dim light); SAM and
+        // the grounding work on the frame as it is.
+        let seen = ProcessInfo.processInfo.environment["PIP_LOOK_UNSHARPENED"] != nil ? context
+            : (SetOfMarks.sharpened(small).flatMap { SetOfMarks.jpeg($0, quality: 0.85) } ?? context)
 
         var marks: [Int: MarkInfo] = request.knownMarks
         var resolved = Set(request.knownMarks.keys)
@@ -136,7 +140,7 @@ public struct LookPipeline: Sendable {
             message = PipPrompt.lookMessage(goal: request.goal, step: request.step, facts: request.facts, marks: seg.instances, utterance: request.utterance, directive: request.directive, frameJPEG: context, markedJPEG: marked)
         } else {
             system = PipPrompt.system(language: language)
-            message = PipPrompt.lookMessage(goal: request.goal, step: request.step, facts: request.facts, utterance: request.utterance, directive: request.directive, frameJPEG: context)
+            message = PipPrompt.lookMessage(goal: request.goal, step: request.step, facts: request.facts, utterance: request.utterance, directive: request.directive, frameJPEG: seen)
         }
 
         var chat = ChatRequest(messages: [.system(system)] + request.history + [message], stream: true, reasoningEffort: effort,

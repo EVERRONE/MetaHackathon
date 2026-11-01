@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreImage
 import CoreText
 import Foundation
 import ImageIO
@@ -102,6 +103,21 @@ public enum SetOfMarks {
             ctx.strokePath()
         }
         return ctx.makeImage()
+    }
+
+    private static let sharpening = CIContext(options: [.useSoftwareRenderer: false])
+
+    /// The image with a light unsharp mask. A camera frame in dim light is soft: on 1 Nov the model
+    /// could not read the ⏻ on a backlit keyboard's power key and asked for another view (0 of 10);
+    /// sharpened, it pointed at the key 3 times of 4, each time grounded on it.
+    public static func sharpened(_ image: CGImage) -> CGImage? {
+        let input = CIImage(cgImage: image)
+        guard let filter = CIFilter(name: "CIUnsharpMask") else { return nil }
+        filter.setValue(input, forKey: kCIInputImageKey)
+        filter.setValue(1.5, forKey: kCIInputRadiusKey)
+        filter.setValue(0.8, forKey: kCIInputIntensityKey)
+        guard let output = filter.outputImage else { return nil }
+        return sharpening.createCGImage(output, from: input.extent)
     }
 
     public static func crop(_ image: CGImage, to rect: CGRect, scale: CGFloat) -> CGImage? {
