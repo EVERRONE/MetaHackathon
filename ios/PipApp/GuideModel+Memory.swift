@@ -99,6 +99,14 @@ extension GuideModel {
         keyframes.persist = memory.consent == true
         keyframes.currentPiece = mapKeeper.current.id
         keyframes.load(locatedPiece: continuing?.id)
+        // Earlier sessions are linked to this one by what they saw, in the background.
+        spaceLinker.onLog = { [weak self] line in
+            self?.log(line)
+            Relocalisation.log(line)
+        }
+        spaceLinker.onLinked = { [weak self] piece, link, first in self?.spaceLinked(piece, link, first: first) }
+        let current = mapKeeper.current.id
+        spaceLinker.begin(with: keyframes.frames.filter { $0.piece != nil && $0.piece != current })
         // Places of the piece ARKit is recognising come back on their own anchors.
         ar.restore(memory.places.filter { $0.piece == nil || $0.piece == continuing?.id })
         if continuing != nil { log("map: recognising the room of last time") }
@@ -137,6 +145,27 @@ extension GuideModel {
     }
 
     static let recogniseSavedRoomAtStart = false
+
+    // MARK: Earlier sessions (SpaceLinker)
+
+    /// An earlier session is linked to this one: its snapshots can be searched and pointed at in this
+    /// room (each carried by the links nearest to what it saw), and its remembered places come back
+    /// on anchors of their own, where the links carry them; they are found again on sight before
+    /// their new position is stored.
+    func spaceLinked(_ piece: UUID, _ link: SpaceLinker.Linked, first: Bool) {
+        let linker = spaceLinker
+        let n = keyframes.carry(piece) { linker.carriedPose(of: $0) }
+        let here = Set(ar.places.values.map(\.id))
+        var back: [String] = []
+        for place in memory.places where place.piece == piece && !here.contains(place.id) {
+            guard let pose = place.pose.map(ARController.matrix), let carried = linker.carry(pose: pose, of: piece) else { continue }
+            ar.restoreLinked(place, at: carried)
+            back.append(place.name)
+        }
+        if first || !back.isEmpty {
+            log("space: \(n) snapshots of that session can be pointed at here" + (back.isEmpty ? "" : "; places back: \(back.joined(separator: ", "))"))
+        }
+    }
 
     /// No more saved rooms are tried this session (`reason`: why, for the log).
     func giveUpRecognising(because reason: String) {

@@ -70,6 +70,8 @@ final class GuideModel: ObservableObject {
     // MARK: Visual memory and shopping list (see GuideModel+Find.swift)
 
     let keyframes = Keyframes()
+    /// Links this session to earlier ones by what they saw (docs/spatial-memory.md).
+    let spaceLinker = SpaceLinker()
     /// The 3D map of the home, built while Pip is used (see MapKeeper and GuideModel+Memory).
     let mapKeeper = MapKeeper()
     /// Which frames are clean enough for the map and the visual memory.
@@ -212,12 +214,14 @@ final class GuideModel: ObservableObject {
         captureGate.onTrouble = { [weak self] since in
             self?.keyframes.purge(since: since)
             self?.mapKeeper.purge(since: since)
+            self?.spaceLinker.trackingBroke()
         }
         ar.onFrame = { [weak self] frame in
             guard let self else { return }
             self.captureGate.update(frame)
             self.keyframes.consider(frame, gate: self.captureGate)
             self.mapKeeper.consider(frame, gate: self.captureGate)
+            self.spaceLinker.consider(frame, gate: self.captureGate)
             self.pageReader?.feed(frame)
             self.clipRecorder.frame(frame)
         }

@@ -52,6 +52,15 @@ extension ARController {
         restoredPlaces.append(place)
     }
 
+    /// A remembered place of an earlier session linked to this one (SpaceLinker): on an anchor of its
+    /// own where the link carries it. Not stored until found again on sight (its position here is
+    /// only as good as the link until then).
+    func restoreLinked(_ place: SpaceMemory.Place, at transform: simd_float4x4) {
+        let anchor = ARAnchor(name: "pip-place", transform: transform)
+        arView.session.add(anchor: anchor)
+        install(place, anchor: anchor)
+    }
+
     /// `measured`: just pointed at in this session. Otherwise (from storage) Pip finds it again
     /// the first time it points at it, and corrects its position.
     func install(_ place: SpaceMemory.Place, anchor: ARAnchor, measured: Bool = false) {
@@ -120,10 +129,13 @@ extension ARController {
 
     /// A found object from the visual memory, outlined in the room (not remembered across
     /// sessions). The previous found object gives way.
-    func addFound(world polygons: [[simd_float3]], id: Int, replacing: Bool = true) {
+    func addFound(world polygons: [[simd_float3]], id: Int, replacing: Bool = true, spec: TargetSpec? = nil) {
         if replacing { removeMarks { $0 >= Self.foundMarkBase && $0 < Self.placeMarkBase } }
         let m = AnchoredMark(id: id, world: polygons)
         place(m)
+        // Found in a snapshot (possibly of an earlier session): found again on sight and corrected,
+        // like a remembered place.
+        if let spec { tracks[id] = ObjectTrack(place: spec, now: CACurrentMediaTime()) }
         // The snapshots that can be searched now are of the saved room, in its coordinates.
         if awaitingFirstRelocalisation { inSavedRoomCoordinates.insert(id) }
     }

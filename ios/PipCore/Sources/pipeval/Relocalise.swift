@@ -5,13 +5,11 @@ import PipCore
 import simd
 
 // pipeval relocalise <memory/frames folder> <piece A prefix> <piece B prefix>
-//
-// Where session B is in session A's room, from their stored snapshots alone (no ARKit map): each
-// pair of snapshots that see the same things is matched by described corners (FeatureMatcher),
-// each match is lifted to the room at its LiDAR depth in both sessions, and the turn about the
-// vertical and the shift that lay A's points onto B's are fitted (gravity is shared, so four
-// unknowns), with RANSAC. If the pairs agree on one turn and shift, B's position in A's room is
-// known. Prints every pair's fit and how the fits agree.
+//   Every pair of snapshots of two sessions: the view links (SessionLink.link) and whether they
+//   make a session link (SessionLink.consensus).
+// pipeval links <memory/frames folder> [--pieces A,B,C]
+//   Every pair of sessions: the session link, if any, how many views agree and what conflicts; then
+//   every triangle of linked sessions: A→B→C against A→C (the drift and errors a chain adds).
 
 struct StoredFrame: Decodable {
     var id: String
@@ -42,122 +40,118 @@ struct StoredFrame: Decodable {
     }
 }
 
-/// B = R_y(yaw) A + t: a turn about the vertical and a shift.
-struct Upright: CustomStringConvertible {
-    var yaw: Float
-    var t: SIMD3<Float>
-    func apply(_ p: SIMD3<Float>) -> SIMD3<Float> {
-        let c = cos(yaw), s = sin(yaw)
-        return SIMD3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z) + t
-    }
-    var description: String { String(format: "turn %6.1f°, shift (%6.3f, %6.3f, %6.3f) m", yaw * 180 / .pi, t.x, t.y, t.z) }
-
-    /// Least squares from pairs: the turn from the horizontal parts about their centroids, then the shift.
-    static func fit(_ a: [SIMD3<Float>], _ b: [SIMD3<Float>]) -> Upright {
-        let ca = a.reduce(.zero, +) / Float(a.count), cb = b.reduce(.zero, +) / Float(b.count)
-        var sxx: Float = 0, sxz: Float = 0
-        for (p, q) in zip(a, b) {
-            let u = p - ca, v = q - cb
-            // R_y(θ) u ≈ v on (x, z): maximise Σ v·R u.
-            sxx += u.x * v.x + u.z * v.z
-            sxz += u.z * v.x - u.x * v.z
-        }
-        let yaw = atan2(sxz, sxx)
-        var r = Upright(yaw: yaw, t: .zero)
-        r.t = cb - r.apply(ca)
-        return r
-    }
+struct StoredView {
+    var frame: StoredFrame
+    var points: ViewPoints
 }
 
-func relocalise(_ args: [String]) {
-    guard args.count >= 4 else { fail("pipeval relocalise <memory/frames> <piece A> <piece B> [--min 25]") }
-    let dir = URL(fileURLWithPath: args[1])
+/// The stored snapshots and their described corners lifted to their sessions' rooms.
+func loadViews(_ dir: URL, pieces: Set<String>? = nil) -> [StoredView] {
     guard let data = FileManager.default.contents(atPath: dir.appendingPathComponent("index.json").path),
           let all = try? JSONDecoder().decode([StoredFrame].self, from: data) else { fail("cannot read index.json") }
-    let minMatches = args.firstIndex(of: "--min").flatMap { Int(args[$0 + 1]) } ?? 25
-    let a = all.filter { $0.piece?.hasPrefix(args[2]) == true }, b = all.filter { $0.piece?.hasPrefix(args[3]) == true }
-    print("piece A \(args[2]): \(a.count) snapshots; piece B \(args[3]): \(b.count)")
-
-    struct Loaded { var frame: StoredFrame; var features: [FeatureMatcher.Feature]; var depth: [Float] }
-    func load(_ f: StoredFrame) -> Loaded? {
+    let wanted = all.filter { f in pieces.map { set in set.contains { f.piece?.hasPrefix($0) == true } } ?? (f.piece != nil) }
+    return wanted.compactMap { f -> StoredView? in
         guard let jpeg = FileManager.default.contents(atPath: dir.appendingPathComponent("\(f.id).jpg").path),
               let image = SetOfMarks.load(jpeg, maxSide: 4096), let grey = GrayImage(image),
               let raw = FileManager.default.contents(atPath: dir.appendingPathComponent("\(f.id).depth").path),
               raw.count == f.depthW * f.depthH * 2 else { return nil }
         let depth = raw.withUnsafeBytes { Array($0.bindMemory(to: Float16.self)) }.map { Float($0) }
-        return Loaded(frame: f, features: FeatureMatcher.features(in: grey, count: 500), depth: depth)
+        func lift(_ p: SIMD2<Float>) -> SIMD3<Float>? {
+            let dx = Int(p.x / Float(f.width) * Float(f.depthW)), dy = Int(p.y / Float(f.height) * Float(f.depthH))
+            var s: [Float] = []
+            for y in max(0, dy - 1)...min(f.depthH - 1, dy + 1) {
+                for x in max(0, dx - 1)...min(f.depthW - 1, dx + 1) {
+                    let d = depth[y * f.depthW + x]
+                    if d > 0.1, d < 6 { s.append(d) }
+                }
+            }
+            // Fewer than five samples, or on a depth edge (spread over 5 cm): not trusted.
+            guard s.count >= 5 else { return nil }
+            s.sort()
+            guard s.last! - s.first! < 0.05 else { return nil }
+            return f.world(p, depth: s[s.count / 2])
+        }
+        return StoredView(frame: f, points: ViewPoints(image: grey, lift: lift))
     }
+}
+
+func pieceName(_ v: StoredView) -> String { String((v.frame.piece ?? "????").prefix(4)) }
+
+/// Every view link from the snapshots of session A to those of session B.
+func viewLinks(_ a: [StoredView], _ b: [StoredView], settings: SessionLink.Settings) -> [ViewLink] {
+    var out: [ViewLink] = []
+    for (ib, vb) in b.enumerated() {
+        for (ia, va) in a.enumerated() {
+            if let l = SessionLink.link(va.points, vb.points, from: ia, to: ib, settings: settings) { out.append(l) }
+        }
+    }
+    return out
+}
+
+func relocalise(_ args: [String]) {
+    guard args.count >= 4 else { fail("pipeval relocalise <memory/frames> <piece A> <piece B>") }
+    let dir = URL(fileURLWithPath: args[1])
+    let views = loadViews(dir, pieces: [args[2], args[3]])
+    let a = views.filter { pieceName($0).hasPrefix(args[2]) }, b = views.filter { pieceName($0).hasPrefix(args[3]) }
+    print("piece A \(args[2]): \(a.count) snapshots; piece B \(args[3]): \(b.count)")
+    let links = viewLinks(a, b, settings: SessionLink.Settings())
+    for l in links.sorted(by: { $0.inliers > $1.inliers }).prefix(30) {
+        print(String(format: "A%03d ↔ B%03d: %3d agree (median %.1f cm, spread %.0f cm): %@", l.from, l.to, l.inliers, l.residual * 100, l.spread * 100, l.transform.description))
+    }
+    if let group = SessionLink.consensus(links) {
+        print("session link: \(Set(group.map(\.to)).count) views agree, \(group.reduce(0) { $0 + $1.inliers }) matches; \(links.count - group.count) view links disagree")
+    } else {
+        print("no session link (\(links.count) view links)")
+    }
+}
+
+func linksAll(_ args: [String]) {
+    guard args.count >= 2 else { fail("pipeval links <memory/frames> [--pieces A,B,C]") }
+    let dir = URL(fileURLWithPath: args[1])
+    let only = args.firstIndex(of: "--pieces").map { Set(args[$0 + 1].split(separator: ",").map(String.init)) }
     let t0 = Date()
-    let la = a.compactMap(load), lb = b.compactMap(load)
-    print(String(format: "described in %.1f s", Date().timeIntervalSince(t0)))
-
-    func depth(_ l: Loaded, at p: SIMD2<Float>) -> Float? {
-        let f = l.frame
-        let dx = Int(p.x / Float(f.width) * Float(f.depthW)), dy = Int(p.y / Float(f.height) * Float(f.depthH))
-        var s: [Float] = []
-        for y in max(0, dy - 1)...min(f.depthH - 1, dy + 1) {
-            for x in max(0, dx - 1)...min(f.depthW - 1, dx + 1) {
-                let d = l.depth[y * f.depthW + x]
-                if d > 0.1, d < 6 { s.append(d) }
+    let views = loadViews(dir, pieces: only)
+    let byPiece = Dictionary(grouping: views, by: pieceName)
+    let names = byPiece.keys.filter { (byPiece[$0]?.count ?? 0) >= 3 }.sorted()
+    print(String(format: "%d snapshots of %d sessions described in %.1f s", views.count, names.count, Date().timeIntervalSince(t0)))
+    let settings = SessionLink.Settings()
+    struct Linked { var group: [ViewLink]; var all: [ViewLink] }
+    var linked: [String: Linked] = [:]
+    for (i, a) in names.enumerated() {
+        for b in names[(i + 1)...] {
+            let links = viewLinks(byPiece[a]!, byPiece[b]!, settings: settings)
+            guard !links.isEmpty else { continue }
+            if let group = SessionLink.consensus(links, settings: settings) {
+                let usable = SessionLink.usable(links, core: group, settings: settings)
+                let rejected = links.filter { l in !usable.contains(l) }
+                linked["\(a)→\(b)"] = Linked(group: usable, all: links)
+                let mean = group.max { $0.inliers < $1.inliers }!.transform
+                print(String(format: "%@ → %@: LINKED by %d views (%d matches), e.g. %@; %d more within drift; %d rejected (the strongest %d matches)",
+                             a, b, Set(group.map(\.to)).count, group.reduce(0) { $0 + $1.inliers }, mean.description, usable.count - group.count,
+                             rejected.count, rejected.map(\.inliers).max() ?? 0))
+            } else {
+                let best = links.max { $0.inliers < $1.inliers }!
+                print(String(format: "%@ → %@: not linked (%d view links, the best %d matches)", a, b, links.count, best.inliers))
             }
         }
-        guard s.count >= 5 else { return nil }
-        s.sort()
-        // A pixel on a depth edge (spread over 5 cm) is not trusted.
-        guard s.last! - s.first! < 0.05 else { return nil }
-        return s[s.count / 2]
     }
-
-    var rng = SystemRandomNumberGenerator()
-    var fits: [(ia: Int, ib: Int, fit: Upright, inliers: Int, matches: Int, residual: Float)] = []
-    for (ib, fb) in lb.enumerated() {
-        for (ia, fa) in la.enumerated() {
-            let pairs = FeatureMatcher.match(fa.features, fb.features)
-            guard pairs.count >= minMatches else { continue }
-            var pa: [SIMD3<Float>] = [], pb: [SIMD3<Float>] = []
-            for (i, j) in pairs {
-                let p = fa.features[i].point, q = fb.features[j].point
-                guard let da = depth(fa, at: p), let db = depth(fb, at: q) else { continue }
-                pa.append(fa.frame.world(p, depth: da))
-                pb.append(fb.frame.world(q, depth: db))
+    // Triangles: A→C directly against A→B then B→C, at A's evidence of the A→C link.
+    print("triangles:")
+    var any = false
+    for (i, a) in names.enumerated() {
+        for (j, b) in names.enumerated() where j > i {
+            for c in names[(j + 1)...] {
+                guard let ab = linked["\(a)→\(b)"], let bc = linked["\(b)→\(c)"], let ac = linked["\(a)→\(c)"] else { continue }
+                any = true
+                var worst: Float = 0
+                for l in ac.group {
+                    let p = l.centre
+                    guard let pb = SessionLink.carry(p, by: ab.group), let pc = SessionLink.carry(pb, by: bc.group), let direct = SessionLink.carry(p, by: ac.group) else { continue }
+                    worst = max(worst, simd_distance(pc, direct))
+                }
+                print(String(format: "  %@→%@→%@ against %@→%@: up to %.1f cm apart", a, b, c, a, c, worst * 100))
             }
-            guard pa.count >= 12 else { continue }
-            // RANSAC on two pairs at a time: they fix the turn (their horizontal difference) and the shift.
-            var best: [Int] = []
-            for _ in 0..<400 {
-                let i = Int.random(in: 0..<pa.count, using: &rng), j = Int.random(in: 0..<pa.count, using: &rng)
-                guard i != j else { continue }
-                let va = pa[j] - pa[i], vb = pb[j] - pb[i]
-                let ha = simd_length(SIMD2(va.x, va.z)), hb = simd_length(SIMD2(vb.x, vb.z))
-                guard ha > 0.05, abs(ha - hb) < 0.03, abs(va.y - vb.y) < 0.03 else { continue }
-                let m = Upright.fit([pa[i], pa[j]], [pb[i], pb[j]])
-                let inl = pa.indices.filter { simd_distance(m.apply(pa[$0]), pb[$0]) < 0.04 }
-                if inl.count > best.count { best = inl }
-            }
-            guard best.count >= 10 else { continue }
-            var m = Upright.fit(best.map { pa[$0] }, best.map { pb[$0] })
-            var inl = pa.indices.filter { simd_distance(m.apply(pa[$0]), pb[$0]) < 0.03 }
-            if inl.count >= 8 { m = Upright.fit(inl.map { pa[$0] }, inl.map { pb[$0] }) }
-            inl = pa.indices.filter { simd_distance(m.apply(pa[$0]), pb[$0]) < 0.03 }
-            let res = inl.map { simd_distance(m.apply(pa[$0]), pb[$0]) }.sorted()
-            fits.append((ia, ib, m, inl.count, pairs.count, res.isEmpty ? 1 : res[res.count / 2]))
         }
     }
-    print("pairs with a fit (≥ \(minMatches) matches, ≥ 10 agreeing in 3D): \(fits.count)")
-    let strong = fits.filter { $0.inliers >= (ProcessInfo.processInfo.environment["PIP_MIN_AGREE"].flatMap { Int($0) } ?? 15) }.sorted { $0.inliers > $1.inliers }
-    for f in strong.prefix(25) {
-        print(String(format: "A%03d ↔ B%03d: %3d matches, %3d agree in 3D (median %.1f cm): %@", f.ia, f.ib, f.matches, f.inliers, f.residual * 100, f.fit.description))
-    }
-    // Do the strong fits agree with each other? Each one against the best.
-    if let ref = strong.first {
-        print("against the strongest fit:")
-        for f in strong.prefix(25) {
-            let dyaw = (f.fit.yaw - ref.fit.yaw) * 180 / .pi
-            // How far a point 1 m from B's camera of the reference pair lands between the two fits.
-            let probe = lb[ref.ib].frame.world(SIMD2(Float(lb[ref.ib].frame.width) / 2, Float(lb[ref.ib].frame.height) / 2), depth: 1)
-            let inA = Upright(yaw: -ref.fit.yaw, t: .zero).apply(probe - ref.fit.t)
-            let d = simd_distance(f.fit.apply(inA), ref.fit.apply(inA))
-            print(String(format: "  A%03d ↔ B%03d: turn %+5.1f°, a point 1 m ahead %.1f cm apart", f.ia, f.ib, dyaw, d * 100))
-        }
-    }
+    if !any { print("  (no three sessions linked to each other)") }
 }

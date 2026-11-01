@@ -20,6 +20,9 @@ final class Keyframes {
         let width: Int
         let height: Int
         var cameraTransform: simd_float4x4
+        /// The pose in the coordinates of the session that took it (`cameraTransform` is in this
+        /// session's once that session is linked; see SpaceLinker).
+        var storedPose: simd_float4x4
         /// The captured image's size and intrinsics (sensor orientation), as in FrameSnapshot.
         let sensorSize: CGSize
         let intrinsics: simd_float3x3
@@ -51,15 +54,38 @@ final class Keyframes {
             return samples.isEmpty ? nil : samples.sorted()[samples.count / 2]
         }
 
+        /// The point at a pixel, in the coordinates of the session that took it: where its depth is
+        /// trustworthy (five samples or more round it, within 5 cm of each other: not on a depth
+        /// edge), as `pipeval links` measured it.
+        func storedPoint(atPixel p: CGPoint, grid: [Float16]) -> simd_float3? {
+            guard grid.count == depthW * depthH else { return nil }
+            let dx = Int(p.x / CGFloat(width) * CGFloat(depthW)), dy = Int(p.y / CGFloat(height) * CGFloat(depthH))
+            var s: [Float] = []
+            for y in max(0, dy - 1)...min(depthH - 1, max(0, dy + 1)) {
+                for x in max(0, dx - 1)...min(depthW - 1, max(0, dx + 1)) {
+                    let d = Float(grid[y * depthW + x])
+                    if d > 0.1, d < 6 { s.append(d) }
+                }
+            }
+            guard s.count >= 5 else { return nil }
+            s.sort()
+            guard s.last! - s.first! < 0.05 else { return nil }
+            return worldPoint(atPixel: p, depth: s[s.count / 2], pose: storedPose)
+        }
+
         /// The world point at a pixel of the stored image, at a given depth. Same mapping as
         /// FrameSnapshot: upright pixel → sensor pixel → camera space → world.
         func worldPoint(atPixel p: CGPoint, depth d: Float) -> simd_float3 {
+            worldPoint(atPixel: p, depth: d, pose: cameraTransform)
+        }
+
+        func worldPoint(atPixel p: CGPoint, depth d: Float, pose: simd_float4x4) -> simd_float3 {
             let s = sensorSize.width / CGFloat(height)
             let q = CGPoint(x: p.y * s, y: sensorSize.height - p.x * s)
             let fx = intrinsics[0][0], fy = intrinsics[1][1], cx = intrinsics[2][0], cy = intrinsics[2][1]
             let x = (Float(q.x) - cx) / fx * d
             let y = -(Float(q.y) - cy) / fy * d
-            let w = cameraTransform * simd_float4(x, y, -d, 1)
+            let w = pose * simd_float4(x, y, -d, 1)
             return simd_float3(w.x, w.y, w.z)
         }
     }
@@ -89,7 +115,7 @@ final class Keyframes {
         guard persist else { return }
         let stored = VisualMemoryStore.loadIndex()
         frames = stored.map { s in
-            Frame(id: s.id, time: s.time, width: s.width, height: s.height, cameraTransform: ARController.matrix(s.pose),
+            Frame(id: s.id, time: s.time, width: s.width, height: s.height, cameraTransform: ARController.matrix(s.pose), storedPose: ARController.matrix(s.pose),
                   sensorSize: CGSize(width: s.sensorWidth, height: s.sensorHeight), intrinsics: Self.matrix3(s.intrinsics),
                   depthW: s.depthW, depthH: s.depthH, piece: s.piece, located: s.piece != nil && s.piece == locatedPiece)
         }.sorted { $0.time < $1.time }
@@ -119,7 +145,7 @@ final class Keyframes {
         Task.detached(priority: .utility) { [weak self] in
             guard let jpeg = SetOfMarks.jpeg(snap.image, quality: 0.6) else { return }
             let depth = Self.depthGrid(snap)
-            let kept = Frame(id: id, time: Date(), width: snap.image.width, height: snap.image.height, cameraTransform: snap.cameraTransform,
+            let kept = Frame(id: id, time: Date(), width: snap.image.width, height: snap.image.height, cameraTransform: snap.cameraTransform, storedPose: snap.cameraTransform,
                              sensorSize: snap.sensorSize, intrinsics: snap.intrinsics, depthW: Self.depthW, depthH: Self.depthH,
                              piece: piece, located: true, jpegData: jpeg, depthData: depth)
             await self?.keep(kept, generation: generation)
@@ -155,6 +181,29 @@ final class Keyframes {
         currentPiece = piece
     }
 
+    /// Another session was linked to this one (SpaceLinker): its snapshots can be pointed at here,
+    /// each at the pose `carry` gives it (nil: not near enough to its links yet). Returns how many.
+    @discardableResult
+    func carry(_ piece: UUID, by carry: (Frame) -> simd_float4x4?) -> Int {
+        var n = 0
+        for i in frames.indices where frames[i].piece == piece && frames[i].piece != currentPiece {
+            guard let pose = carry(frames[i]) else { continue }
+            frames[i].cameraTransform = pose
+            frames[i].located = true
+            n += 1
+        }
+        return n
+    }
+
+    /// Links were found afresh (the live session's tracking broke): snapshots of other sessions
+    /// wait for their session to be linked again.
+    func uncarryAll() {
+        for i in frames.indices where frames[i].piece != currentPiece && frames[i].located {
+            frames[i].located = false
+            frames[i].cameraTransform = frames[i].storedPose
+        }
+    }
+
     /// This session started a new piece (the saved room was not recognised): snapshots of the
     /// piece it tried can no longer be pointed at until that piece is linked.
     func pieceChanged(to new: UUID) {
@@ -175,8 +224,8 @@ final class Keyframes {
                 continue
             }
             if age > Self.recentFor {
-                let p = f.cameraTransform.columns.3
-                let forward = -simd_make_float3(f.cameraTransform.columns.2)
+                let p = f.storedPose.columns.3
+                let forward = -simd_make_float3(f.storedPose.columns.2)
                 let heading = Int(((atan2(forward.x, forward.z) + .pi) / (2 * .pi) * 8).rounded(.down)) % 8
                 let key = "\(f.piece?.uuidString ?? "-")|\(Int((p.x / 0.5).rounded(.down)))|\(Int((p.z / 0.5).rounded(.down)))|\(heading)"
                 guard seen.insert(key).inserted else {
@@ -208,7 +257,8 @@ final class Keyframes {
     func saveIndex() {
         guard persist, indexDirty else { return }
         let stored = frames.map { f in
-            VisualMemoryStore.Stored(id: f.id, time: f.time, width: f.width, height: f.height, pose: ARController.values(f.cameraTransform),
+            // The pose in its own session's coordinates, never the carried one.
+            VisualMemoryStore.Stored(id: f.id, time: f.time, width: f.width, height: f.height, pose: ARController.values(f.storedPose),
                                      sensorWidth: Double(f.sensorSize.width), sensorHeight: Double(f.sensorSize.height),
                                      intrinsics: [f.intrinsics.columns.0, f.intrinsics.columns.1, f.intrinsics.columns.2].flatMap { [$0.x, $0.y, $0.z] },
                                      depthW: f.depthW, depthH: f.depthH, piece: f.piece)

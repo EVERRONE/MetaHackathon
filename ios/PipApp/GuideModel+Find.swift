@@ -35,10 +35,10 @@ extension GuideModel {
             if n == 1 { say(phrases.searchingFurther) }
             let outcome = await search(what, phrase: phrase, in: batch)
             if Task.isCancelled { return }
-            if case .found(let world, let frame) = outcome {
+            if case .found(let world, let frame, let spec) = outcome {
                 foundCount += 1
                 let id = ARController.foundMarkBase + foundCount % 90_000
-                ar.addFound(world: world, id: id)
+                ar.addFound(world: world, id: id, spec: spec)
                 ar.show(.outline(mark: id))
                 // A place remembered in another map of this room: found here, it is anchored in
                 // this room's map from now on, so it is pointed at at once next time.
@@ -62,7 +62,7 @@ extension GuideModel {
     }
 
     enum Recall {
-        case found(world: [[simd_float3]], frame: Keyframes.Frame)
+        case found(world: [[simd_float3]], frame: Keyframes.Frame, spec: TargetSpec)
         /// Seen, but in a room this session has not recognised (its place is unknown here).
         case elsewhere(Keyframes.Frame)
         case none
@@ -105,7 +105,7 @@ extension GuideModel {
             }
             log("sighting confirmed (\(grounded.method))")
             let world = inst.regularized().outlinePoints.map { ring in ring.map { frame.worldPoint(atPixel: $0, depth: depth) } }
-            return .found(world: world, frame: frame)
+            return .found(world: world, frame: frame, spec: TargetSpec(x: 500, y: 500, phrase: spec.phrase, text: spec.text))
         }
         return elsewhere.map { .elsewhere($0) } ?? .none
     }
@@ -161,7 +161,7 @@ extension GuideModel {
             let outcome = await search(place.name, phrase: place.phrase ?? "", in: batch)
             // The user started something meanwhile: later.
             guard !lookActive, !Task.isCancelled else { return }
-            if case .found(let world, _) = outcome {
+            if case .found(let world, _, _) = outcome {
                 foundCount += 1
                 let id = ARController.foundMarkBase + foundCount % 90_000
                 // Not shown, and not in place of an object the user just had found.
