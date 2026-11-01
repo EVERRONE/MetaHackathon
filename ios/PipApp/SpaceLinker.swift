@@ -37,6 +37,9 @@ final class SpaceLinker {
     private var working = false
     /// Tracking breaks seen: matching started before one is dropped.
     private var breaks = 0
+    /// Bumped by `begin`: work started before (describing, matching) is dropped when it comes back,
+    /// so a stored view's number never meets another set of stored views.
+    private var generation = 0
     private var describeTimer: Timer?
 
     // What it measured, for the log.
@@ -62,6 +65,7 @@ final class SpaceLinker {
 
     /// The stored snapshots of earlier sessions to link this one to.
     func begin(with frames: [Keyframes.Frame]) {
+        generation += 1
         stored = frames.sorted { ($0.piece?.uuidString ?? "", $0.time) < ($1.piece?.uuidString ?? "", $1.time) }
         number = Dictionary(uniqueKeysWithValues: stored.enumerated().map { ($1.id, $0) })
         book = LinkBook()
@@ -74,22 +78,36 @@ final class SpaceLinker {
         let sessions = Set(stored.compactMap(\.piece)).count
         onLog?("space: \(stored.count) snapshots of \(sessions) earlier sessions to link this one to")
         describeTimer?.invalidate()
-        guard !stored.isEmpty else { return }
+        describeTimer = nil
+        startDescribing()
+    }
+
+    /// Describes the stored snapshots not described yet, a few every half second.
+    private func startDescribing() {
+        guard describeTimer == nil, !stored.isEmpty else { return }
         describeTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.describeSome() }
         }
     }
 
     /// Only sessions mapped at this place on earth (`here` decides per session; without a location
-    /// a session stays), once the location is known.
+    /// a session stays), once the location is known. Decided afresh with every fix: the first can
+    /// be an old one from elsewhere (the phone's last fix, up to ten minutes old), and sessions it
+    /// ruled out are linked to again once a fix says they are of here.
     func keepOnly(_ here: (UUID) -> Bool) {
-        var dropped = Set<UUID>()
+        var now = Set<Int>(), dropped = Set<UUID>()
         for (i, f) in stored.enumerated() {
             guard let piece = f.piece, !here(piece) else { continue }
-            elsewhere.insert(i)
+            now.insert(i)
             dropped.insert(piece)
         }
+        let back = Set(elsewhere.subtracting(now).compactMap { stored[$0].piece })
+        elsewhere = now
         if !dropped.isEmpty { onLog?("space: \(dropped.count) earlier sessions were mapped elsewhere; not linked to") }
+        if !back.isEmpty {
+            onLog?("space: \(back.count) earlier sessions are of this place after all; linked to again")
+            startDescribing()
+        }
     }
 
     private func describeSome() {
@@ -106,6 +124,7 @@ final class SpaceLinker {
             }
             return
         }
+        let generation = self.generation
         for i in todo {
             describing.insert(i)
             let frame = stored[i]
@@ -114,7 +133,7 @@ final class SpaceLinker {
                 let described = Self.describe(frame)
                 let ms = Date().timeIntervalSince(t0) * 1000
                 DispatchQueue.main.async {
-                    guard let self else { return }
+                    guard let self, self.generation == generation else { return }
                     self.describing.remove(i)
                     self.describeMs.append(ms)
                     if let described {
@@ -148,7 +167,7 @@ final class SpaceLinker {
         lastView = frame.timestamp
         working = true
         liveViews += 1
-        let view = liveViews, breaks = self.breaks
+        let view = liveViews, breaks = self.breaks, generation = self.generation
         let prints = self.prints.filter { !elsewhere.contains($0.key) }
         queue.async { [weak self] in
             let t0 = Date()
@@ -159,7 +178,7 @@ final class SpaceLinker {
             let lookAlike = ViewPrint(snap.image)?.nearest(Self.lookAlikePerView, among: prints) ?? []
             DispatchQueue.main.async {
                 guard let self else { return }
-                guard self.breaks == breaks else { self.working = false; return }
+                guard self.breaks == breaks, self.generation == generation else { self.working = false; return }
                 self.match(live, view: view, lookAlike: lookAlike, breaks: breaks, started: t0)
             }
         }
@@ -171,7 +190,7 @@ final class SpaceLinker {
         let hot = book.hot(limit: Self.hotPerView) { v in Self.neighbours(of: v, in: all) }
         let batch = schedule.next(ready: ready, lookAlike: lookAlike, hot: hot, count: Self.comparePerView).compactMap { i in described[i].map { (i, $0) } }
         let sessions = batch.map { stored[$0.0].piece }
-        let settings = book.settings
+        let settings = book.settings, generation = self.generation
         queue.async { [weak self] in
             var links: [(Int, ViewLink)] = []
             for (k, (i, points)) in batch.enumerated() {
@@ -183,8 +202,9 @@ final class SpaceLinker {
                 self.working = false
                 self.viewMs.append(ms)
                 self.viewsSince += 1
-                // A tracking break meanwhile: this view may be in other coordinates.
-                guard self.breaks == breaks else { return }
+                // A tracking break meanwhile: this view may be in other coordinates. Or everything
+                // was forgotten: these stored views are gone.
+                guard self.breaks == breaks, self.generation == generation else { return }
                 self.viewLinksSince += links.count
                 let found = links.compactMap { k, l in sessions[k].map { (session: $0, link: l) } }
                 for (session, change) in self.book.add(found) { self.report(session, change) }
@@ -245,9 +265,13 @@ final class SpaceLinker {
         book.linked.isEmpty ? "space: looking (\(liveViews) views)" : "space: " + book.linked.keys.map { "\(when($0)) ✓" }.joined(separator: ", ")
     }
 
+    /// When the live session's tracking last broke (links made before may be in other coordinates).
+    private(set) var lastBreak: Date?
+
     /// The live session's tracking broke or jumped: its coordinates may have moved (LinkBook).
     func trackingBroke() {
         breaks += 1
+        lastBreak = Date()
         book.trackingBroke()
     }
 

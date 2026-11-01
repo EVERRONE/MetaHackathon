@@ -115,18 +115,12 @@ extension GuideModel {
     // MARK: Places of other maps of this room
 
     /// A remembered place of another map piece (this room mapped in another session, not linked)
-    /// that `what` names: "the user's gold statue" for "taller golden statue".
+    /// that `what` names: "the user's gold statue" for "taller golden statue", never a table for a
+    /// tablet (see PlaceName: the found object takes the place over).
     func orphanPlace(matching what: String) -> SpaceMemory.Place? {
         let here = Set(ar.places.values.map(\.id))
         let orphans = memory.places.filter { $0.piece != mapKeeper.current.id && !here.contains($0.id) }
-        func words(_ s: String) -> [String] {
-            s.lowercased().replacingOccurrences(of: "'s", with: "").split(whereSeparator: { !$0.isLetter }).map(String.init)
-                .filter { $0.count >= 3 && !["the", "user", "users", "mijn", "van", "het", "een", "your", "where"].contains($0) }
-        }
-        let wanted = words(what)
-        func score(_ p: SpaceMemory.Place) -> Int {
-            words(p.name + " " + (p.phrase ?? "")).filter { w in wanted.contains { $0.hasPrefix(w.prefix(4)) || w.hasPrefix($0.prefix(4)) } }.count
-        }
+        func score(_ p: SpaceMemory.Place) -> Int { PlaceName.score(what, names: [p.name, p.phrase ?? ""]) }
         return orphans.filter { score($0) > 0 }.max { score($0) < score($1) }
     }
 

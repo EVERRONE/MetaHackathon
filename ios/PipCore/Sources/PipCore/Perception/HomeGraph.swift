@@ -86,6 +86,17 @@ public struct HomeGraph: Codable, Sendable, Equatable {
         edges.removeAll { ($0.from == a && $0.to == b) || ($0.from == b && $0.to == a) }
     }
 
+    /// The link between two sessions, carrying points of `a` into `b`, if they have one.
+    public func link(from a: UUID, to b: UUID) -> Edge? {
+        edges.first { $0.from == a && $0.to == b } ?? edges.first { $0.from == b && $0.to == a }?.reversed
+    }
+
+    /// Drops the links of `session` made before `date` (its coordinates moved since then: the live
+    /// session's tracking broke and a link made afresh shows it moved).
+    public mutating func removeLinks(of session: UUID, madeBefore date: Date) {
+        edges.removeAll { ($0.from == session || $0.to == session) && $0.made < date }
+    }
+
     /// The sessions joined to `session` (itself included).
     public func component(of session: UUID) -> Set<UUID> {
         var seen: Set<UUID> = [session]

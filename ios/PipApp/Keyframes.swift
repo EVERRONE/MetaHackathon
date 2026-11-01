@@ -103,6 +103,9 @@ final class Keyframes {
     private var kept = 0
     /// Bumped by `forgetAll`, so snapshots still being encoded are dropped.
     private var generation = 0
+    /// The last purge: what was taken from `since` on was dropped when it ran (`at`). A snapshot of
+    /// that time still being encoded then is dropped when it comes in.
+    private var lastPurge: (since: Date, at: Date)?
 
     /// Loads the week's snapshots: each can be pointed at once its session is linked (`carry`).
     func load() {
@@ -132,14 +135,14 @@ final class Keyframes {
         lastTime = t
         lastPose = frame.camera.transform
         guard let snap = FrameSnapshot(frame: frame, maxSide: 768) else { return }
-        let id = UUID()
+        let id = UUID(), taken = Date()
         let generation = self.generation
         let piece = currentPiece
         // Encoding and depth sampling happen off the main thread; it is written once kept.
         Task.detached(priority: .utility) { [weak self] in
             guard let jpeg = SetOfMarks.jpeg(snap.image, quality: 0.6) else { return }
             let depth = Self.depthGrid(snap)
-            let kept = Frame(id: id, time: Date(), width: snap.image.width, height: snap.image.height, cameraTransform: snap.cameraTransform, storedPose: snap.cameraTransform,
+            let kept = Frame(id: id, time: taken, width: snap.image.width, height: snap.image.height, cameraTransform: snap.cameraTransform, storedPose: snap.cameraTransform,
                              sensorSize: snap.sensorSize, intrinsics: snap.intrinsics, depthW: Self.depthW, depthH: Self.depthH,
                              piece: piece, located: true, jpegData: jpeg, depthData: depth)
             await self?.keep(kept, generation: generation)
@@ -149,6 +152,8 @@ final class Keyframes {
     private func keep(_ frame: Frame, generation: Int) {
         // Forgotten meanwhile: dropped. Written only if the user agrees now, not when it was taken.
         guard self.generation == generation else { return }
+        // Taken just before tracking broke, and purged while it was being encoded.
+        if let p = lastPurge, frame.time >= p.since, frame.time < p.at { return }
         if persist, let jpeg = frame.jpegData, let depth = frame.depthData { VisualMemoryStore.write(id: frame.id, jpeg: jpeg, depth: depth) }
         frames.append(frame)
         indexDirty = persist
@@ -159,6 +164,7 @@ final class Keyframes {
 
     /// Tracking broke or jumped: snapshots since `since` may carry a wrong pose.
     func purge(since: Date) {
+        lastPurge = (since, Date())
         let dropped = frames.filter { $0.time >= since && $0.located }.map(\.id)
         guard !dropped.isEmpty else { return }
         frames.removeAll { dropped.contains($0.id) }

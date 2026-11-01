@@ -92,8 +92,19 @@ extension GuideModel {
         // The link joins the two sessions in the home graph (its strongest view link), unless it
         // disagrees with a chain already joining them.
         if let link = linker.linked[piece], let best = link.core.max(by: { $0.inliers < $1.inliers }) {
-            // Linked afresh after this session's tracking broke: its coordinates may have moved.
-            if change == .relinked { homeGraph.removeLink(between: piece, and: live) }
+            // Linked afresh after this session's tracking broke: its coordinates may have moved, by
+            // about as much as the fresh link differs from the old one. When by more than a loop may
+            // disagree, every link of this session from before the break is stale, not only this
+            // pair's: one of them would refuse the fresh links as a loop that disagrees.
+            if change == .relinked {
+                if let old = homeGraph.link(from: piece, to: live), let broke = linker.lastBreak,
+                   old.transform.distance(to: best.transform, at: best.centre) > HomeGraph.loopTolerance
+                    || old.transform.turn(to: best.transform) > HomeGraph.loopTurn {
+                    homeGraph.removeLinks(of: live, madeBefore: broke)
+                    log("space: the tracking break moved this session's coordinates; its links from before it are dropped")
+                }
+                homeGraph.removeLink(between: piece, and: live)
+            }
             let edge = HomeGraph.Edge(from: piece, to: live, transform: best.transform, matches: link.matches, views: link.views, centre: best.centre)
             switch homeGraph.add(edge) {
             case .joined, .replaced:
@@ -106,9 +117,12 @@ extension GuideModel {
             }
         }
         // The linked session's snapshots, by its own links (nearest evidence); every other session
-        // joined to it in the home graph, through the strongest chain.
+        // joined to it in the home graph through the strongest chain, unless it is linked here itself:
+        // then it keeps the carry of its own links, which hold best near their evidence (one rigid
+        // chain is centimetres coarser away from the strongest view link).
         var n = keyframes.carry(piece) { linker.carriedPose(of: $0) }
-        let through = homeGraph.component(of: live).subtracting([live, piece])
+        let direct = Set(linker.linked.keys)
+        let through = homeGraph.component(of: live).subtracting([live, piece]).subtracting(direct)
         var chains: [UUID: UprightTransform] = [:]
         for q in through {
             guard let t = homeGraph.transform(from: q, to: live) else { continue }
@@ -121,7 +135,7 @@ extension GuideModel {
         var back: [String] = []
         for place in memory.places where !here.contains(place.id) {
             guard let from = place.piece, let pose = place.pose.map(ARController.matrix) else { continue }
-            let carried = from == piece ? linker.carry(anchor: pose, of: piece) : chains[from].map { $0.matrix * pose }
+            let carried = direct.contains(from) ? linker.carry(anchor: pose, of: from) : chains[from].map { $0.matrix * pose }
             guard let carried else { continue }
             ar.restoreLinked(place, at: carried)
             back.append(place.name)
@@ -224,8 +238,7 @@ extension GuideModel {
             keyframes.stopPersisting()
             pendingPlaces = []
             pendingFacts = []
-            homeGraph = HomeGraph()
-            HomeGraphStore.remove()
+            forgetEarlierSessions()
         }
     }
 
@@ -268,8 +281,11 @@ extension GuideModel {
         keyframes.saveIndex()
         let id = mapKeeper.current.id
         ar.saveMap { [weak self] map, detail in
+            // Everything was forgotten while ARKit made the map (up to 15 s): a new piece began, and
+            // the forgotten one's map is not written after all.
+            guard let self, self.mapKeeper.current.id == id else { background.done(); return }
             if let map { MapStore.saveWorldMap(map, for: id) }
-            self?.ar.relocalisation.saved(map != nil, detail: map.map { String(format: "piece %@, %d feature points, %@",
+            self.ar.relocalisation.saved(map != nil, detail: map.map { String(format: "piece %@, %d feature points, %@",
                 String(id.uuidString.prefix(4)), $0.rawFeaturePoints.points.count, detail) } ?? detail)
             background.done()
         }
@@ -297,9 +313,17 @@ extension GuideModel {
         facts = [:]
         pendingPlaces = []
         pendingFacts = []
+        forgetEarlierSessions()
+        memory.forgetAll()
+    }
+
+    /// The earlier sessions are forgotten (their snapshots and maps go with the memory): no more
+    /// linking to them, and no home graph, which a link made after this would write again.
+    private func forgetEarlierSessions() {
+        spaceLinker.begin(with: [])
+        lastCarried = [:]
         homeGraph = HomeGraph()
         HomeGraphStore.remove()
-        memory.forgetAll()
     }
 }
 

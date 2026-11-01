@@ -78,6 +78,28 @@ import simd
         #expect(simd_distance(moved, Self.truth(Self.s1, Self.s2).apply(.zero) + SIMD3(0.2, 0, 0)) < 1e-4)
     }
 
+    @Test func aTrackingBreakThatMovedTheLiveSessionDropsItsOlderLinks() throws {
+        // 1 and 2 linked to the live session (4) before its tracking broke, and to each other.
+        let before = Date(timeIntervalSince1970: 1000), broke = Date(timeIntervalSince1970: 2000)
+        var graph = HomeGraph()
+        for (a, b) in [(Self.s1, Self.s4), (Self.s2, Self.s4), (Self.s1, Self.s2)] {
+            var e = Self.edge(a, b)
+            e.made = before
+            graph.add(e)
+        }
+        // The link of a pair, either way round.
+        let back = try #require(graph.link(from: Self.s4, to: Self.s1))
+        #expect(simd_distance(back.transform.apply(.zero), Self.truth(Self.s4, Self.s1).apply(.zero)) < 1e-4)
+        // The break moved the live session 30 cm: 1's fresh link shows it; the old links of 4 go,
+        // the one between 1 and 2 stays, and the fresh link joins without a stale loop refusing it.
+        graph.removeLinks(of: Self.s4, madeBefore: broke)
+        #expect(graph.edges.count == 1)
+        var fresh = Self.edge(Self.s1, Self.s4, error: SIMD3(0.3, 0, 0))
+        fresh.made = broke.addingTimeInterval(5)
+        #expect(graph.add(fresh) == .joined)
+        #expect(graph.component(of: Self.s4) == [Self.s1, Self.s2, Self.s4])
+    }
+
     @Test func theGraphIsStoredAndReadBack() throws {
         var graph = HomeGraph()
         graph.add(Self.edge(Self.s1, Self.s2))
