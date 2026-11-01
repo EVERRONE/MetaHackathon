@@ -96,17 +96,27 @@ public struct UprightTransform: Codable, Sendable, Equatable, CustomStringConver
 public struct ViewPoints: Sendable {
     public var features: [FeatureMatcher.Feature]
     public var world: [SIMD3<Float>?]
+    /// Where the camera was (same coordinates): how far each point was from it.
+    public var camera: SIMD3<Float>?
 
-    public init(features: [FeatureMatcher.Feature], world: [SIMD3<Float>?]) {
+    public init(features: [FeatureMatcher.Feature], world: [SIMD3<Float>?], camera: SIMD3<Float>? = nil) {
         precondition(features.count == world.count)
         self.features = features
         self.world = world
+        self.camera = camera
     }
 
     /// Described corners of `image`, lifted with `lift` (pixel → room point, or nil).
-    public init(image: GrayImage, count: Int = 500, lift: (SIMD2<Float>) -> SIMD3<Float>?) {
+    public init(image: GrayImage, count: Int = 500, camera: SIMD3<Float>? = nil, lift: (SIMD2<Float>) -> SIMD3<Float>?) {
         let f = FeatureMatcher.features(in: image, count: count)
-        self.init(features: f, world: f.map { lift($0.point) })
+        self.init(features: f, world: f.map { lift($0.point) }, camera: camera)
+    }
+
+    /// The point of feature `i` if it is far enough from the camera to belong to the room.
+    func roomPoint(_ i: Int, from minDepth: Float) -> SIMD3<Float>? {
+        guard let p = world[i] else { return nil }
+        if let camera, simd_distance(p, camera) < minDepth { return nil }
+        return p
     }
 }
 
@@ -139,6 +149,14 @@ public enum SessionLink {
         /// (A close view of a keyboard spreads over 5-10 cm: its turn is less sure, but it carries
         /// the points near it well, which is what it is used for.)
         public var minSpread: Float = 0.05
+        /// Points nearer the camera than this are left out: what is held or carried (a laptop on the
+        /// lap, a remote in the hand) moves between sessions, and matches perfectly with itself. On
+        /// 1 Nov the laptop, on the desk at 15:08 and on the lap at 17:01, gave six view links that
+        /// agreed to a few degrees: about the laptop, not the room.
+        public var minDepth: Float = 0.8
+        /// A session link: its agreeing evidence must span this much of the room (a moved object
+        /// gives evidence in one spot; a room gives it all round).
+        public var minExtent: Float = 1.0
         /// Two view links agree when they carry the points between their evidence within this.
         public var agreeDistance: Float = 0.04
         public var agreeTurn: Float = 2 * .pi / 180
@@ -159,7 +177,7 @@ public enum SessionLink {
         guard pairs.count >= settings.minMatches else { return nil }
         var pa: [SIMD3<Float>] = [], pb: [SIMD3<Float>] = []
         for (i, j) in pairs {
-            guard let p = a.world[i], let q = b.world[j] else { continue }
+            guard let p = a.roomPoint(i, from: settings.minDepth), let q = b.roomPoint(j, from: settings.minDepth) else { continue }
             pa.append(p)
             pb.append(q)
         }
@@ -216,8 +234,19 @@ public enum SessionLink {
             if score > bestScore { best = group; bestScore = score }
         }
         let views = Set(best.map(\.to)).count
-        guard views >= settings.minViews, bestScore >= settings.minTotalInliers else { return nil }
+        guard views >= settings.minViews, bestScore >= settings.minTotalInliers, extent(best) >= settings.minExtent else { return nil }
         return best
+    }
+
+    /// How much of the room view links' evidence spans: the widest distance between their evidence,
+    /// each reaching as far as it spreads.
+    public static func extent(_ links: [ViewLink]) -> Float {
+        var widest: Float = 0
+        for x in links {
+            widest = max(widest, 2 * x.spread)
+            for y in links { widest = max(widest, simd_distance(x.centre, y.centre) + x.spread + y.spread) }
+        }
+        return widest
     }
 
     /// The view links that may carry points: the agreeing core, and those that differ from it only by

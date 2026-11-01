@@ -60,17 +60,12 @@ final class Keyframes {
         func storedPoint(atPixel p: CGPoint, grid: [Float16]) -> simd_float3? {
             guard grid.count == depthW * depthH else { return nil }
             let dx = Int(p.x / CGFloat(width) * CGFloat(depthW)), dy = Int(p.y / CGFloat(height) * CGFloat(depthH))
-            var s: [Float] = []
+            var samples: [Float] = []
             for y in max(0, dy - 1)...min(depthH - 1, max(0, dy + 1)) {
-                for x in max(0, dx - 1)...min(depthW - 1, max(0, dx + 1)) {
-                    let d = Float(grid[y * depthW + x])
-                    if d > 0.1, d < 6 { s.append(d) }
-                }
+                for x in max(0, dx - 1)...min(depthW - 1, max(0, dx + 1)) { samples.append(Float(grid[y * depthW + x])) }
             }
-            guard s.count >= 5 else { return nil }
-            s.sort()
-            guard s.last! - s.first! < 0.05 else { return nil }
-            return worldPoint(atPixel: p, depth: s[s.count / 2], pose: storedPose)
+            guard let d = TrustedDepth.of(samples) else { return nil }
+            return worldPoint(atPixel: p, depth: d, pose: storedPose)
         }
 
         /// The world point at a pixel of the stored image, at a given depth. Same mapping as
@@ -193,15 +188,6 @@ final class Keyframes {
             n += 1
         }
         return n
-    }
-
-    /// Links were found afresh (the live session's tracking broke): snapshots of other sessions
-    /// wait for their session to be linked again.
-    func uncarryAll() {
-        for i in frames.indices where frames[i].piece != currentPiece && frames[i].located {
-            frames[i].located = false
-            frames[i].cameraTransform = frames[i].storedPose
-        }
     }
 
     /// This session started a new piece (the saved room was not recognised): snapshots of the

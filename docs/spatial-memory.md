@@ -50,6 +50,51 @@ knows where the user is. Built step by step; each step is measured before the ne
   above). Linking needs a place seen from about the same side.
 - Local light normalisation before describing corners (each pixel against the brightness and
   contrast round it): every link was lost, also in the same light. Not used.
+- Replayed through the app's code (`pipeval livelink`, each session against all others, fingerprints
+  first): the two morning sessions link to each other, at the moment their views overlap (174 s and
+  219 s in); the other four sessions tried link to nothing, and nothing links wrongly.
+- DINOv2 patches sharpened by laying LiDAR surfaces onto each other (point-to-plane, four unknowns,
+  started from DINOv2's fit): the turns pulled together to a few degrees, but on the laptop (see
+  Design): with the room rules, there was no cross-light link left in these sessions.
+
+## Design
+
+One core in PipCore decides; the app and the offline replay run it unchanged:
+
+- `SessionLink`: two views → a view link (corners matched both ways, lifted at trusted depth,
+  four-unknown RANSAC fit, at least 20 agreeing matches within 3 cm, median under 1.5 cm); several
+  view links → a session link (`consensus`: two live views that agree to 4 cm and 2°, 80 matches,
+  evidence over at least 1 m of the room) and the view links within drift that may carry points.
+- Room, not contents: only points at least 0.8 m from the camera count. On 1 Nov the laptop, on the
+  desk at 15:08 and on the lap at 17:01, gave six view links that agreed to a few degrees, perfect
+  fits of the laptop, not of the room. Held things are near the camera, and a moved thing gives its
+  evidence in one spot: the depth rule and the 1 m of evidence keep both out.
+- `TrustedDepth`: the one rule for depth at a corner (five samples or more within 5 cm, the median),
+  for stored snapshots and live views alike.
+- `LinkBook`: per live session, the evidence per earlier session since the last tracking break, the
+  links (linked, linked again after a break, strengthened) and carrying (a point by the links nearest
+  it; a view by its own link first).
+- `LinkSchedule` and `ViewPrint`: which stored views a live view is matched with. Matching costs a
+  millisecond or two per pair, so each live view tries 60 of them: first the 20 that look most like
+  it (Apple Vision's feature print), then the hot ones (stored views that linked lately and their
+  neighbours), then the rest in turn. Measured: of 13 live views that link, the stored view they link
+  to came first by fingerprint for 11, within 10 for 12, within 40 for all. Without the fingerprints,
+  replayed through the app's own code, one of the two morning sessions never linked: each live view
+  saw a fifth of the stored views.
+- App `SpaceLinker`: describes the stored snapshots in the background (corners, depth, fingerprint),
+  takes a sharp live view every 1.5 s, and reports to `GuideModel.spaceLinked` (snapshots carried,
+  places back) and to the screen (status line "space").
+
+## How to read a device test
+
+- `space: N snapshots of M earlier sessions to link this one to`, then `space: … described (X ms
+  each)`: what there is to link to, and the cost.
+- `space: linked to the session of …: K live views agree (… matches, over … m of the room)`: a link,
+  with its evidence.
+- `space: … live views in the last minute, … view links; X ms per live view`: every minute.
+- `space: N snapshots of that session can be pointed at here; places back: …`.
+- `mark N reentry: corrected X cm`: a remembered place (or a thing found in memory) carried by a link
+  and then found again on sight: X is how far the link carried it from where it really is.
 
 ## Steps
 

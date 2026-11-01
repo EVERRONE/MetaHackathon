@@ -72,6 +72,8 @@ final class GuideModel: ObservableObject {
     let keyframes = Keyframes()
     /// Links this session to earlier ones by what they saw (docs/spatial-memory.md).
     let spaceLinker = SpaceLinker()
+    /// When each linked session's snapshots were last carried into this session.
+    var lastCarried: [UUID: Date] = [:]
     /// The 3D map of the home, built while Pip is used (see MapKeeper and GuideModel+Memory).
     let mapKeeper = MapKeeper()
     /// Which frames are clean enough for the map and the visual memory.

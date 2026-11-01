@@ -24,7 +24,7 @@ import simd
     /// Two snapshots of one scene from two sessions: 120 described points seen in both (5 mm of
     /// depth noise, a few flipped bits), 60 seen only in one, and 40 matches lifted to the wrong
     /// depth (a depth edge).
-    static func views(_ t: UprightTransform, seed: UInt64, centre: SIMD3<Float> = .zero) -> (ViewPoints, ViewPoints) {
+    static func views(_ t: UprightTransform, seed: UInt64, centre: SIMD3<Float> = .zero, size: Float = 1) -> (ViewPoints, ViewPoints) {
         var rng = SplitMix64(seed: seed)
         func r() -> Float { Float(rng.next() % 2000) / 1000 - 1 }
         func bits() -> (UInt64, UInt64, UInt64, UInt64) { (rng.next(), rng.next(), rng.next(), rng.next()) }
@@ -34,7 +34,7 @@ import simd
         var fa: [FeatureMatcher.Feature] = [], wa: [SIMD3<Float>?] = []
         var fb: [FeatureMatcher.Feature] = [], wb: [SIMD3<Float>?] = []
         for k in 0..<220 {
-            let p = centre + SIMD3(r() * 0.8, r() * 0.4, r() * 0.8)
+            let p = centre + SIMD3(r() * 0.8, r() * 0.4, r() * 0.8) * size
             let d = bits()
             let pixel = SIMD2<Float>(Float(k), Float(k))
             if k < 160 {
@@ -78,6 +78,33 @@ import simd
         // Two links from the same snapshot on the second side are one view.
         l1.to = 2
         #expect(SessionLink.consensus([l1, l2]) == nil)
+    }
+
+    @Test func whatIsHeldNearTheCameraDoesNotLinkRooms() throws {
+        // A laptop-sized scene (about 30 cm) seen from 45 cm: every point within 0.8 m of both cameras.
+        let (a0, b0) = Self.views(Self.truth, seed: 31, size: 0.2)
+        var a = a0, b = b0
+        a.camera = SIMD3(0, 0, 0.45)
+        b.camera = Self.truth.apply(SIMD3(0, 0, 0.45))
+        #expect(SessionLink.link(a, b) == nil)
+        // A room-sized scene seen from 2.5 m links.
+        let (c0, d0) = Self.views(Self.truth, seed: 31)
+        var c = c0, d = d0
+        c.camera = SIMD3(0, 0, 2.5)
+        d.camera = Self.truth.apply(SIMD3(0, 0, 2.5))
+        #expect(SessionLink.link(c, d) != nil)
+    }
+
+    @Test func evidenceInOneSpotIsNotASessionLink() throws {
+        // Two agreeing views of one small thing (a moved object): too little of the room.
+        let small = ViewLink(transform: Self.truth, inliers: 100, residual: 0.005, centre: .zero, spread: 0.1, from: 1, to: 1)
+        var other = small
+        other.centre = SIMD3(0.1, 0, 0)
+        other.to = 2
+        #expect(SessionLink.consensus([small, other]) == nil)
+        // The same, a metre and a half apart: the room.
+        other.centre = SIMD3(1.5, 0, 0)
+        #expect(SessionLink.consensus([small, other]) != nil)
     }
 
     @Test func aPointIsCarriedByTheLinksNearIt() throws {

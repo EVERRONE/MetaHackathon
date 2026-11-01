@@ -4,231 +4,268 @@ import PipCore
 import UIKit
 import simd
 
-/// Links this session to the stored sessions of the same place, in the background
+/// Links this session to the earlier sessions of the same place, in the background
 /// (docs/spatial-memory.md), without ever touching the live session.
 ///
-/// Every 1.5 s a sharp live view (settled tracking) is described (FeatureMatcher) and its corners
-/// are lifted to this session's room at their LiDAR depth; it is matched with stored snapshots of
-/// other sessions, a batch at a time (SessionLink). A stored session is linked once two live views
-/// agree on where it is; more view links keep coming and carry its points better near them. A
-/// stored snapshot's pose is carried by the links nearest to what it saw (its own first): a
-/// session's own coordinates drift (1 Nov: 11-12 cm between two snapshots a few seconds apart).
+/// The decisions are PipCore's (`SessionLink`, `LinkBook`, `LinkSchedule`), the same code
+/// `pipeval livelink` replays on stored sessions. This shell reads and describes the stored
+/// snapshots, describes a sharp live view every 1.5 s, matches it with the next batch of stored
+/// views on a queue of its own, and reports what changed and what it measured.
 @MainActor
 final class SpaceLinker {
-    struct Linked {
-        /// View links that may carry the session's points: the agreeing core and those within its drift.
-        var links: [ViewLink]
-        var views: Int
-        var matches: Int
-    }
-
-    /// A stored session became linked (`first`), got more evidence, or was linked afresh after the
-    /// live session's tracking broke.
-    var onLinked: ((UUID, Linked, _ first: Bool) -> Void)?
+    /// An earlier session was linked, linked again after a tracking break, or got more evidence.
+    var onChange: ((UUID, LinkBook.Change) -> Void)?
     var onLog: ((String) -> Void)?
+    /// A line for the screen: what linking is doing.
+    var onStatus: ((String) -> Void)?
 
-    private(set) var linked: [UUID: Linked] = [:]
-
-    /// The stored snapshots that may be linked to (ViewLink.from indexes them), and their corners.
+    private(set) var book = LinkBook()
+    private var schedule = LinkSchedule()
+    /// Stored snapshots of earlier sessions, by session, then in the order they were taken: a view's
+    /// neighbours in its session sit next to it. Their numbers are ViewLink.from.
     private var stored: [Keyframes.Frame] = []
+    private var number: [UUID: Int] = [:]
     private var described: [Int: ViewPoints] = [:]
-    /// Snapshots of sessions elsewhere on earth: never matched (a look-alike shop is not the home).
-    private var excluded = Set<Int>()
+    /// Their fingerprints: which ones look like a live view.
+    private var prints: [Int: ViewPrint] = [:]
     private var describing = Set<Int>()
     private var undescribable = Set<Int>()
-    /// View links found so far, per stored session (ViewLink.to numbers the live views).
-    private var found: [UUID: [ViewLink]] = [:]
-    private var cursor = 0
+    /// Sessions mapped elsewhere on earth: never matched.
+    private var elsewhere = Set<Int>()
     private var liveViews = 0
     private var lastView: TimeInterval = 0
     private var working = false
-    /// Bumped when the live session's coordinates may have moved: work started before is dropped.
-    private var epoch = 0
-    private var timer: Timer?
+    /// Tracking breaks seen: matching started before one is dropped.
+    private var breaks = 0
+    private var describeTimer: Timer?
+
+    // What it measured, for the log.
+    private var describeMs: [Double] = []
+    private var viewMs: [Double] = []
+    private var viewLinksSince = 0
+    private var viewsSince = 0
+    private var lastSummary = Date()
 
     private let queue = DispatchQueue(label: "pip.spacelinker", qos: .utility)
-    nonisolated static let settings = SessionLink.Settings()
-    static let interval: TimeInterval = 1.5
-    /// Stored snapshots matched with each live view (about 1-2 ms each).
-    static let comparePerView = 60
-    /// Stored snapshots described per round (about 30 ms each).
-    static let describePerRound = 4
 
-    /// The stored snapshots of other sessions to link to: newest first (the room as it is now).
+    static let interval: TimeInterval = 1.5
+    /// Stored views matched with each live view (about 1-2 ms each), the hot ones first.
+    static let comparePerView = 60
+    static let hotPerView = 24
+    /// Of those, the ones that look most like the live view (fingerprint), first.
+    static let lookAlikePerView = 20
+    /// Stored snapshots described per half second at start (about 20-40 ms each).
+    static let describePerRound = 4
+    static let summaryEvery: TimeInterval = 60
+
+    var linked: [UUID: LinkBook.Linked] { book.linked }
+
+    /// The stored snapshots of earlier sessions to link this one to.
     func begin(with frames: [Keyframes.Frame]) {
-        stored = frames.sorted { $0.time > $1.time }
+        stored = frames.sorted { ($0.piece?.uuidString ?? "", $0.time) < ($1.piece?.uuidString ?? "", $1.time) }
+        number = Dictionary(uniqueKeysWithValues: stored.enumerated().map { ($1.id, $0) })
+        book = LinkBook()
+        schedule = LinkSchedule()
         described = [:]
+        prints = [:]
         describing = []
         undescribable = []
-        found = [:]
-        linked = [:]
-        cursor = 0
+        elsewhere = []
         let sessions = Set(stored.compactMap(\.piece)).count
         onLog?("space: \(stored.count) snapshots of \(sessions) earlier sessions to link this one to")
-        timer?.invalidate()
+        describeTimer?.invalidate()
         guard !stored.isEmpty else { return }
-        // The stored snapshots are described in the background, a few at a time.
-        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+        describeTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.describeSome() }
         }
     }
 
+    /// Only sessions mapped at this place on earth (`here` decides per session; without a location
+    /// a session stays), once the location is known.
+    func keepOnly(_ here: (UUID) -> Bool) {
+        var dropped = Set<UUID>()
+        for (i, f) in stored.enumerated() {
+            guard let piece = f.piece, !here(piece) else { continue }
+            elsewhere.insert(i)
+            dropped.insert(piece)
+        }
+        if !dropped.isEmpty { onLog?("space: \(dropped.count) earlier sessions were mapped elsewhere; not linked to") }
+    }
+
     private func describeSome() {
-        let todo = stored.indices.filter { described[$0] == nil && !describing.contains($0) && !undescribable.contains($0) && !excluded.contains($0) }
-            .prefix(Self.describePerRound)
+        let todo = Array(stored.indices.lazy.filter {
+            self.described[$0] == nil && !self.describing.contains($0) && !self.undescribable.contains($0) && !self.elsewhere.contains($0)
+        }.prefix(Self.describePerRound))
         guard !todo.isEmpty else {
-            if describing.isEmpty { timer?.invalidate(); timer = nil }
+            if describing.isEmpty {
+                describeTimer?.invalidate()
+                describeTimer = nil
+                let ms = describeMs.sorted()
+                onLog?(String(format: "space: %d stored snapshots described (%.0f ms each, median), %d without usable depth",
+                              described.count, ms.isEmpty ? 0 : ms[ms.count / 2], undescribable.count))
+            }
             return
         }
         for i in todo {
             describing.insert(i)
             let frame = stored[i]
             queue.async { [weak self] in
-                let points = Self.describe(frame)
+                let t0 = Date()
+                let described = Self.describe(frame)
+                let ms = Date().timeIntervalSince(t0) * 1000
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.describing.remove(i)
-                    if let points { self.described[i] = points } else { self.undescribable.insert(i) }
+                    self.describeMs.append(ms)
+                    if let described {
+                        self.described[i] = described.points
+                        self.prints[i] = described.print
+                    } else {
+                        self.undescribable.insert(i)
+                    }
                 }
             }
         }
     }
 
-    /// A stored snapshot's corners, lifted in its own session's coordinates.
-    nonisolated private static func describe(_ frame: Keyframes.Frame) -> ViewPoints? {
+    /// A stored snapshot's corners, lifted in its own session's coordinates (the pose it was taken
+    /// at), and its fingerprint.
+    nonisolated private static func describe(_ frame: Keyframes.Frame) -> (points: ViewPoints, print: ViewPrint?)? {
         guard let jpeg = frame.jpeg(), let image = UIImage(data: jpeg)?.cgImage, let grey = GrayImage(image),
               let grid = frame.depthGrid() else { return nil }
-        return ViewPoints(image: grey) { p in frame.storedPoint(atPixel: CGPoint(x: CGFloat(p.x), y: CGFloat(p.y)), grid: grid) }
+        let points = ViewPoints(image: grey, camera: simd_make_float3(frame.storedPose.columns.3)) { p in
+            frame.storedPoint(atPixel: CGPoint(x: CGFloat(p.x), y: CGFloat(p.y)), grid: grid)
+        }
+        return (points, ViewPrint(image))
     }
 
-    /// A camera frame: every 1.5 s a sharp one (settled tracking) is matched with the next batch of
-    /// stored snapshots, in the background.
+    /// A camera frame: every 1.5 s a sharp one (settled tracking) is described and fingerprinted in
+    /// the background; the stored views that look most like it, the hot ones and the next in turn
+    /// are chosen here (LinkSchedule, as `pipeval livelink` does), and matched in the background.
     func consider(_ frame: ARFrame, gate: CaptureGate) {
         guard !working, !described.isEmpty, frame.timestamp - lastView >= Self.interval else { return }
         guard case .normal = frame.camera.trackingState, gate.accepts(frame) else { return }
         lastView = frame.timestamp
         working = true
         liveViews += 1
-        let view = liveViews, epoch = self.epoch
-        // The next stored snapshots in turn (all of them come round every few seconds).
-        let ready = described.keys.filter { !excluded.contains($0) }.sorted()
-        var batch: [(Int, ViewPoints)] = []
-        for k in 0..<min(Self.comparePerView, ready.count) {
-            let i = ready[(cursor + k) % ready.count]
-            if let p = described[i] { batch.append((i, p)) }
-        }
-        cursor = (cursor + batch.count) % max(ready.count, 1)
+        let view = liveViews, breaks = self.breaks
+        let prints = self.prints.filter { !elsewhere.contains($0.key) }
         queue.async { [weak self] in
-            var links: [ViewLink] = []
-            if let snap = FrameSnapshot(frame: frame, maxSide: 768), let live = Self.liveView(snap) {
-                for (i, points) in batch {
-                    if let l = SessionLink.link(points, live, from: i, to: view, settings: Self.settings) { links.append(l) }
-                }
+            let t0 = Date()
+            guard let snap = FrameSnapshot(frame: frame, maxSide: 768), let live = Self.liveView(snap) else {
+                DispatchQueue.main.async { self?.working = false }
+                return
             }
+            let lookAlike = ViewPrint(snap.image)?.nearest(Self.lookAlikePerView, among: prints) ?? []
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard self.breaks == breaks else { self.working = false; return }
+                self.match(live, view: view, lookAlike: lookAlike, breaks: breaks, started: t0)
+            }
+        }
+    }
+
+    private func match(_ live: ViewPoints, view: Int, lookAlike: [Int], breaks: Int, started t0: Date) {
+        let ready = described.keys.filter { !elsewhere.contains($0) }.sorted()
+        let all = stored
+        let hot = book.hot(limit: Self.hotPerView) { v in Self.neighbours(of: v, in: all) }
+        let batch = schedule.next(ready: ready, lookAlike: lookAlike, hot: hot, count: Self.comparePerView).compactMap { i in described[i].map { (i, $0) } }
+        let sessions = batch.map { stored[$0.0].piece }
+        let settings = book.settings
+        queue.async { [weak self] in
+            var links: [(Int, ViewLink)] = []
+            for (k, (i, points)) in batch.enumerated() {
+                if let l = SessionLink.link(points, live, from: i, to: view, settings: settings) { links.append((k, l)) }
+            }
+            let ms = Date().timeIntervalSince(t0) * 1000
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.working = false
-                guard self.epoch == epoch else { return }
-                self.add(links)
+                self.viewMs.append(ms)
+                self.viewsSince += 1
+                // A tracking break meanwhile: this view may be in other coordinates.
+                guard self.breaks == breaks else { return }
+                self.viewLinksSince += links.count
+                let found = links.compactMap { k, l in sessions[k].map { (session: $0, link: l) } }
+                for (session, change) in self.book.add(found) { self.report(session, change) }
+                self.summariseIfDue()
             }
         }
     }
 
-    /// The live view's corners, lifted in this session's coordinates where the depth is trustworthy
-    /// (the same rule as for stored snapshots).
+    /// The live view's corners, lifted in this session's coordinates by the same depth rule as the
+    /// stored snapshots (the depth map's pixels round each corner).
     nonisolated private static func liveView(_ snap: FrameSnapshot) -> ViewPoints? {
         guard let grey = GrayImage(snap.image) else { return nil }
-        // About one depth pixel apart round the point (the depth map is 256 × 192).
+        // About one depth pixel apart (the depth map is 256 × 192).
         let step = CGFloat(snap.image.height) / 256
-        return ViewPoints(image: grey) { p in
-            var s: [Float] = []
+        return ViewPoints(image: grey, camera: simd_make_float3(snap.cameraTransform.columns.3)) { p in
+            var samples: [Float] = []
             for dy in -1...1 {
                 for dx in -1...1 {
                     let q = CGPoint(x: CGFloat(p.x) + CGFloat(dx) * step, y: CGFloat(p.y) + CGFloat(dy) * step)
-                    if let d = snap.depth(atSensor: snap.sensorPoint(q)), d > 0.1, d < 6 { s.append(d) }
+                    if let d = snap.depth(atSensor: snap.sensorPoint(q)) { samples.append(d) }
                 }
             }
-            guard s.count >= 5 else { return nil }
-            s.sort()
-            guard s.last! - s.first! < 0.05 else { return nil }
-            return snap.worldPoint(sensor: snap.sensorPoint(CGPoint(x: CGFloat(p.x), y: CGFloat(p.y))), depth: s[s.count / 2])
+            guard let d = TrustedDepth.of(samples) else { return nil }
+            return snap.worldPoint(sensor: snap.sensorPoint(CGPoint(x: CGFloat(p.x), y: CGFloat(p.y))), depth: d)
         }
     }
 
-    private func add(_ links: [ViewLink]) {
-        guard !links.isEmpty else { return }
-        var touched = Set<UUID>()
-        for l in links {
-            guard let piece = stored[l.from].piece else { continue }
-            found[piece, default: []].append(l)
-            touched.insert(piece)
-        }
-        for piece in touched {
-            let all = found[piece] ?? []
-            guard let core = SessionLink.consensus(all, settings: Self.settings) else { continue }
-            let usable = SessionLink.usable(all, core: core, settings: Self.settings)
-            let link = Linked(links: usable, views: Set(core.map(\.to)).count, matches: core.reduce(0) { $0 + $1.inliers })
-            let first = linked[piece] == nil
-            linked[piece] = link
-            if first {
-                let rejected = all.count - usable.count
-                onLog?(String(format: "space: linked to the session of %@ by %d live views (%d matches; %d view links within drift, %d rejected): %@",
-                              Self.when(piece, in: stored), link.views, link.matches, usable.count, rejected, core[0].transform.description))
-            }
-            onLinked?(piece, link, first)
-        }
+    /// A stored view's neighbours in its own session (two each way).
+    nonisolated private static func neighbours(of v: Int, in stored: [Keyframes.Frame]) -> [Int] {
+        [v - 1, v + 1, v - 2, v + 2].filter { stored.indices.contains($0) && stored[$0].piece == stored[v].piece }
     }
 
-    /// Only sessions mapped at this place on earth (`here` decides for each session; sessions without a
-    /// location stay): known once the location comes in, a second or two after start.
-    func keepOnly(_ here: (UUID) -> Bool) {
-        var dropped = Set<UUID>()
-        for (i, f) in stored.enumerated() {
-            guard let piece = f.piece, !here(piece) else { continue }
-            excluded.insert(i)
-            dropped.insert(piece)
+    private func report(_ session: UUID, _ change: LinkBook.Change) {
+        guard let l = book.linked[session] else { return }
+        if change != .strengthened, let core = l.core.max(by: { $0.inliers < $1.inliers }) {
+            onLog?(String(format: "space: %@ the session of %@: %d live views agree (%d matches, over %.1f m of the room; %d view links usable): %@",
+                          change == .linked ? "linked to" : "linked again after a tracking break to", when(session), l.views, l.matches, l.extent,
+                          l.usable.count, core.transform.description))
         }
-        for piece in dropped {
-            found[piece] = nil
-            linked[piece] = nil
-        }
-        if !dropped.isEmpty { onLog?("space: \(dropped.count) earlier sessions were mapped elsewhere; not linked to") }
+        onStatus?(status())
+        onChange?(session, change)
     }
 
-    /// The live session's tracking broke or jumped: its coordinates may have moved. Evidence is
-    /// gathered afresh; the links in use stay until new ones replace them (a brief loss usually
-    /// moves nothing, and dropping every place at each one would make them flicker).
+    private func summariseIfDue() {
+        guard Date().timeIntervalSince(lastSummary) >= Self.summaryEvery else { return }
+        lastSummary = Date()
+        let ms = viewMs.sorted()
+        let linkedNow = book.linked.isEmpty ? "none yet" : book.linked.map { "\(when($0.key)) (\($0.value.views) views)" }.joined(separator: ", ")
+        onLog?(String(format: "space: %d live views in the last minute, %d view links; %.0f ms per live view (median); linked: %@",
+                      viewsSince, viewLinksSince, ms.isEmpty ? 0 : ms[ms.count / 2], linkedNow))
+        viewsSince = 0
+        viewLinksSince = 0
+        viewMs = []
+        onStatus?(status())
+    }
+
+    private func status() -> String {
+        book.linked.isEmpty ? "space: looking (\(liveViews) views)" : "space: " + book.linked.keys.map { "\(when($0)) ✓" }.joined(separator: ", ")
+    }
+
+    /// The live session's tracking broke or jumped: its coordinates may have moved (LinkBook).
     func trackingBroke() {
-        guard !found.isEmpty else { return }
-        epoch += 1
-        found = [:]
-        if !linked.isEmpty { onLog?("space: tracking broke; the links to earlier sessions are checked afresh") }
+        breaks += 1
+        book.trackingBroke()
     }
 
-    /// A stored snapshot's pose in this session: carried by the link of that very snapshot if it has
-    /// one, else by the links nearest to what it saw. Nil when its session is not linked.
+    /// A stored snapshot's pose in this session: by its own link if it has one, else by the link
+    /// nearest what it looked at. Nil when its session is not linked.
     func carriedPose(of frame: Keyframes.Frame) -> simd_float4x4? {
-        guard let piece = frame.piece, let link = linked[piece], let index = stored.firstIndex(where: { $0.id == frame.id }) else { return nil }
-        let own = link.links.filter { $0.from == index }.max { $0.inliers < $1.inliers }
-        // What it saw: a metre ahead of the camera.
-        let ahead = simd_make_float3(frame.storedPose * SIMD4(0, 0, -1, 1))
-        guard let l = own ?? SessionLink.nearest(ahead, in: link.links) else { return nil }
-        return l.transform.matrix * frame.storedPose
+        guard let piece = frame.piece else { return nil }
+        return book.carry(pose: frame.storedPose, of: piece, view: number[frame.id], near: LinkBook.lookedAt(frame.storedPose))
     }
 
-    /// A point of a stored session in this session (a remembered place), by the links nearest it.
-    func carry(_ p: simd_float3, of piece: UUID) -> simd_float3? {
-        linked[piece].flatMap { SessionLink.carry(p, by: $0.links) }
+    /// A remembered place's anchor (its earlier session's coordinates) in this session, by the link
+    /// nearest the place.
+    func carry(anchor: simd_float4x4, of piece: UUID) -> simd_float4x4? {
+        book.carry(pose: anchor, of: piece, near: simd_make_float3(anchor.columns.3))
     }
 
-    /// A pose of a stored session in this session, turned and shifted by the link nearest its position.
-    func carry(pose: simd_float4x4, of piece: UUID) -> simd_float4x4? {
-        guard let link = linked[piece], let l = SessionLink.nearest(simd_make_float3(pose.columns.3), in: link.links) else { return nil }
-        return l.transform.matrix * pose
-    }
-
-    private static func when(_ piece: UUID, in frames: [Keyframes.Frame]) -> String {
-        guard let t = frames.filter({ $0.piece == piece }).map(\.time).min() else { return String(piece.uuidString.prefix(4)) }
+    private func when(_ piece: UUID) -> String {
+        guard let t = stored.filter({ $0.piece == piece }).map(\.time).min() else { return String(piece.uuidString.prefix(4)) }
         let f = DateFormatter()
         f.dateFormat = "d MMM HH:mm"
         return f.string(from: t) + " (" + String(piece.uuidString.prefix(4)) + ")"
