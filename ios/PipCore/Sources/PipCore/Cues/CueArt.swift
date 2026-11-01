@@ -69,8 +69,8 @@ public enum CueArt {
             let size = chipSize(label, font: font)
             let r = reticleRadius(b)
             let target = small ? CGRect(x: b.midX - r, y: b.midY - r, width: 2 * r, height: 2 * r) : b
-            let place = labelPlacement(for: target, in: view, chipHeight: size.height, topInset: topInset)
-            let edge = CGPoint(x: place.chip.x, y: place.chip.y + (place.chip.y < target.midY ? size.height / 2 : -size.height / 2))
+            let chipCentre = labelPlacement(for: target, in: view, chipHeight: size.height, topInset: topInset)
+            let edge = CGPoint(x: chipCentre.x, y: chipCentre.y + (chipCentre.y < target.midY ? size.height / 2 : -size.height / 2))
             let anchor: CGPoint
             if small {
                 let dx = edge.x - b.midX, dy = edge.y - b.midY, d = max(hypot(dx, dy), 1e-6)
@@ -78,13 +78,13 @@ public enum CueArt {
             } else {
                 // On the drawn line, which lies just outside the object's edge: straight below (or
                 // above) the label where the object is there, else the nearest point of it.
-                let above = place.chip.y < target.midY
+                let above = chipCentre.y < target.midY
                 let q = Contour.verticalHit(on: rings, x: edge.x, fromTop: above) ?? Contour.nearestPoint(on: rings, to: edge) ?? CGPoint(x: b.midX, y: b.minY)
                 let dx = edge.x - q.x, dy = edge.y - q.y, d = max(hypot(dx, dy), 1e-6)
                 anchor = CGPoint(x: q.x + dx / d * (width / 2 + 0.75), y: q.y + dy / d * (width / 2 + 0.75))
             }
             if hypot(edge.x - anchor.x, edge.y - anchor.y) > 4 { layers += leader(from: anchor, to: edge, palette: palette, opacity: appear) }
-            layers += chip(label, centre: place.chip, palette: palette, font: font, scale: scale, filled: filledLabel, opacity: appear)
+            layers += chip(label, centre: chipCentre, palette: palette, font: font, scale: scale, filled: filledLabel, opacity: appear)
         }
         return layers
     }
@@ -309,15 +309,13 @@ public enum CueArt {
     }
 
     /// Where a label goes for an object with screen bounds `b`: centred above it, or below it when
-    /// there is no room above. Returns the chip's centre and where its leader meets the object.
-    public static func labelPlacement(for b: CGRect, in view: CGRect, chipHeight: CGFloat, topInset: CGFloat) -> (chip: CGPoint, anchor: CGPoint) {
+    /// there is no room above. Returns the chip's centre (its leader is drawn from the outline).
+    public static func labelPlacement(for b: CGRect, in view: CGRect, chipHeight: CGFloat, topInset: CGFloat) -> CGPoint {
         let gap: CGFloat = 16
         let above = b.minY - gap - chipHeight / 2
         let x = min(max(b.midX, view.minX + 40), view.maxX - 40)
-        if above - chipHeight / 2 > topInset {
-            return (CGPoint(x: x, y: above), CGPoint(x: b.midX, y: b.minY - 2))
-        }
-        return (CGPoint(x: x, y: b.maxY + gap + chipHeight / 2), CGPoint(x: b.midX, y: b.maxY + 2))
+        if above - chipHeight / 2 > topInset { return CGPoint(x: x, y: above) }
+        return CGPoint(x: x, y: b.maxY + gap + chipHeight / 2)
     }
 
     // MARK: Strokes

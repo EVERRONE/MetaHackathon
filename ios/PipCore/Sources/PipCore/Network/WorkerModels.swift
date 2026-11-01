@@ -106,18 +106,17 @@ public struct WorkerError: Error, Equatable, Sendable, CustomStringConvertible {
     public var description: String { "\(status) \(code): \(message)" }
 }
 
-/// One sentence of synthesised speech.
-public struct SpokenAudio: Sendable {
-    /// 24 kHz, 16-bit, mono, little-endian.
-    public var pcm: Data
+/// When each character of a spoken sentence starts (ElevenLabs' alignment, as it streams in), so
+/// every cue fires on its word.
+public struct SpeechTiming: Sendable {
+    /// The speech itself is 24 kHz, 16-bit, mono, little-endian PCM.
+    public static let sampleRate = 24_000.0
+
     public var characters: [String]
     /// Start time of each character, in seconds from the start of the sentence.
     public var starts: [Double]
 
-    public static let sampleRate = 24_000.0
-
-    public init(pcm: Data, characters: [String], starts: [Double]) {
-        self.pcm = pcm
+    public init(characters: [String] = [], starts: [Double] = []) {
         self.characters = characters
         self.starts = starts
     }

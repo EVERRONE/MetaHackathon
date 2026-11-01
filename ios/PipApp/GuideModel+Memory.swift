@@ -47,7 +47,7 @@ extension GuideModel {
         }
         mapCandidates = order
         savedPieces = saved
-        ar.relocalisation.onStatus = { [weak self] s in self?.ar.setSpikeStatus("map", s) }
+        ar.relocalisation.onStatus = { [weak self] s in self?.ar.setStatusLine("map", s) }
         // The location can come in a second or two after start: a room from elsewhere is given up then.
         homeLocation.onUpdate = { [weak self] here in self?.locationArrived(here) }
         ar.relocalisation.onHint = { [weak self] hint in self?.mappingHint(hint) }

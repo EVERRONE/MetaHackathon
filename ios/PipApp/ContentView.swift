@@ -50,7 +50,7 @@ struct ContentView: View {
                 if let task = model.taskView { taskCard(task) }
                 if !model.shopping.isEmpty { shoppingCard }
                 if showDebug { debugPanel }
-                SpikeHUD(ar: model.ar)
+                StatusHUD(ar: model.ar)
 
                 Spacer()
 
@@ -187,11 +187,11 @@ struct ARContainer: UIViewRepresentable {
         controller.arView.translatesAutoresizingMaskIntoConstraints = false
         controller.overlay.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(controller.arView)
-        // EdgeTAM's mask (the spike) over the camera image, under Pip's own outlines.
-        container.addSubview(controller.edgeSpike.view)
+        // EdgeTAM's mask (when shown) over the camera image, under Pip's own outlines.
+        container.addSubview(controller.edgeTAM.view)
         container.addSubview(controller.overlay)
-        controller.edgeSpike.view.translatesAutoresizingMaskIntoConstraints = false
-        for v in [controller.arView, controller.edgeSpike.view, controller.overlay] as [UIView] {
+        controller.edgeTAM.view.translatesAutoresizingMaskIntoConstraints = false
+        for v in [controller.arView, controller.edgeTAM.view, controller.overlay] as [UIView] {
             NSLayoutConstraint.activate([
                 v.leadingAnchor.constraint(equalTo: container.leadingAnchor),
                 v.trailingAnchor.constraint(equalTo: container.trailingAnchor),
@@ -206,11 +206,11 @@ struct ARContainer: UIViewRepresentable {
 }
 
 /// What the running tests measure (EdgeTAM's speed, the home map's state), one line each.
-struct SpikeHUD: View {
+struct StatusHUD: View {
     @ObservedObject var ar: ARController
 
     var body: some View {
-        let lines = ar.spikeStatus.sorted { $0.key < $1.key }.map(\.value)
+        let lines = ar.statusLines.sorted { $0.key < $1.key }.map(\.value)
         if !lines.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(lines, id: \.self) { Text($0) }
@@ -266,8 +266,8 @@ struct MemorySheet: View {
     @ObservedObject var model: GuideModel
     @ObservedObject var memory: SpaceMemory
     @ObservedObject var ar: ARController
-    @AppStorage(EdgeTAMSpike.enabledKey) private var edgeTAMTest = true
-    @AppStorage(EdgeTAMSpike.maskKey) private var edgeTAMMask = false
+    @AppStorage(EdgeTAMFollower.enabledKey) private var edgeTAMTest = true
+    @AppStorage(EdgeTAMFollower.maskKey) private var edgeTAMMask = false
     @AppStorage(Diagnostics.key) private var testRecord = true
 
     var body: some View {
@@ -301,7 +301,7 @@ struct MemorySheet: View {
                     Toggle("Follow objects with EdgeTAM", isOn: $edgeTAMTest)
                     Toggle("Show EdgeTAM's mask (cyan)", isOn: $edgeTAMMask)
                     Toggle("Keep a test record", isOn: Binding(get: { testRecord }, set: { testRecord = $0; Diagnostics.setEnabled($0) }))
-                    ForEach(ar.spikeStatus.sorted { $0.key < $1.key }.map(\.value), id: \.self) { Text($0).font(.caption.monospaced()) }
+                    ForEach(ar.statusLines.sorted { $0.key < $1.key }.map(\.value), id: \.self) { Text($0).font(.caption.monospaced()) }
                 } header: {
                     Text("Tests")
                 } footer: {

@@ -92,7 +92,7 @@ final class Speaker {
                         } else {
                             carry = Data()
                         }
-                        if let b = Self.buffer(fromPCM16: pcm, rate: SpokenAudio.sampleRate) { s.buffers.append(b) }
+                        if let b = Self.buffer(fromPCM16: pcm, rate: SpeechTiming.sampleRate) { s.buffers.append(b) }
                         s.timing.characters += chunk.characters
                         s.timing.starts += chunk.starts
                         s.changed()
@@ -347,7 +347,7 @@ final class Speaker {
 final class StreamedSpeech {
     var buffers: [AVAudioPCMBuffer] = []
     /// The start time of each character received so far (no audio kept here).
-    var timing = SpokenAudio(pcm: Data(), characters: [], starts: [])
+    var timing = SpeechTiming()
     var finished = false
     var task: Task<Void, Never>?
     var onChange: (() -> Void)?

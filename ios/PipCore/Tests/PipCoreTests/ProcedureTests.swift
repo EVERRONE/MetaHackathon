@@ -34,7 +34,7 @@ private func sample(gate: String? = nil) -> Procedure {
         // Step 4 cannot be checked at all.
         #expect(r.handle(.userDone) == [.cannotCheck(step: 3, expected: "panel closed"), .stepDone(step: 3, outcome: .notVerifiable), .finished])
         #expect(r.mode == .finished)
-        #expect(r.doneCount == 4)
+        #expect(r.statuses.allSatisfy { if case .done = $0 { return true } else { return false } })
     }
 
     @Test func asksTheUserAfterTwoFailedLooks() {

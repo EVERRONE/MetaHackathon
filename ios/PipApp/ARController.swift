@@ -22,7 +22,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// Follows pointed-at objects in the image, so outlines stay on things that move (a remote in the hand).
     let follower = ImageFollower()
     /// EdgeTAM follows the latest pointed-at object; its mask draws that object's outline (see `steer`).
-    let edgeSpike = EdgeTAMSpike()
+    let edgeTAM = EdgeTAMFollower()
     /// Marks whose outline EdgeTAM's mask draws now, and those of them hidden because the object
     /// moved and is not seen.
     private var steered = Set<Int>()
@@ -51,10 +51,10 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// How recognising the saved room at start goes, and how well the room is being mapped.
     let relocalisation = Relocalisation()
     /// One line per running test, for the screen.
-    @Published private(set) var spikeStatus: [String: String] = [:]
+    @Published private(set) var statusLines: [String: String] = [:]
 
-    func setSpikeStatus(_ key: String, _ value: String) {
-        if spikeStatus[key] != (value.isEmpty ? nil : value) { spikeStatus[key] = value.isEmpty ? nil : value }
+    func setStatusLine(_ key: String, _ value: String) {
+        if statusLines[key] != (value.isEmpty ? nil : value) { statusLines[key] = value.isEmpty ? nil : value }
     }
     /// A moved object lies still again: measure it anew (its box in screen points).
     var onMovedObjectSettled: ((Int, CGRect) -> Void)?
@@ -114,21 +114,21 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         // Outlines are drawn in the same step as the camera image, so they do not lag or swim.
         renderSubscription = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in self?.renderNow() }
         follower.onSettled = { [weak self] id, box in self?.onMovedObjectSettled?(id, box) }
-        edgeSpike.onStatus = { [weak self] s in self?.setSpikeStatus("edgetam", s) }
-        edgeSpike.onLog = { [weak self] s in self?.onLockLog?(s) }
-        edgeSpike.onOutline = { [weak self] id, world, velocity, time in self?.steer(id, world: world, velocity: velocity, at: time) }
-        edgeSpike.onLost = { [weak self] id, moving in self?.steerLost(id, moving: moving) }
-        edgeSpike.onStopped = { [weak self] id in self?.unsteer(id) }
-        edgeSpike.lockHeld = { [weak self] id in
+        edgeTAM.onStatus = { [weak self] s in self?.setStatusLine("edgetam", s) }
+        edgeTAM.onLog = { [weak self] s in self?.onLockLog?(s) }
+        edgeTAM.onOutline = { [weak self] id, world, velocity, time in self?.steer(id, world: world, velocity: velocity, at: time) }
+        edgeTAM.onLost = { [weak self] id, moving in self?.steerLost(id, moving: moving) }
+        edgeTAM.onStopped = { [weak self] id in self?.unsteer(id) }
+        edgeTAM.lockHeld = { [weak self] id in
             let now = CACurrentMediaTime()
             return self?.imageLocks.values.contains { $0.markID == id && $0.seen && now - $0.lastTracked < 3 } ?? false
         }
-        edgeSpike.onShownCheck = { [weak self] id, mm, moving, sure in self?.lockComparison(id, mm: mm, moving: moving, sure: sure) }
-        edgeSpike.drawnAt = { [weak self] id, t in
+        edgeTAM.onShownCheck = { [weak self] id, mm, moving, sure in self?.lockComparison(id, mm: mm, moving: moving, sure: sure) }
+        edgeTAM.drawnAt = { [weak self] id, t in
             // The shown frame with this time (frames are 1/60 s apart).
             self?.drawnHistory[id]?.min { abs($0.t - t) < abs($1.t - t) }.flatMap { abs($0.t - t) < 0.009 ? $0.p : nil }
         }
-        if EdgeTAMSpike.enabled { edgeSpike.preload() }
+        if EdgeTAMFollower.enabled { edgeTAM.preload() }
     }
 
     static func configuration(initialMap: ARWorldMap?) -> ARWorldTrackingConfiguration {
@@ -198,7 +198,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             tracks[m.id] = ObjectTrack(observation: obs, spec: spec)
             // Found again in the live image when its cue shows, then followed there.
             follower.start(m.id, image: snapshot.image, box: inst.boxRect)
-            if EdgeTAMSpike.enabled { edgeSpike.start(markID: m.id, snapshot: snapshot, instance: inst, phrase: spec?.phrase) }
+            if EdgeTAMFollower.enabled { edgeTAM.start(markID: m.id, snapshot: snapshot, instance: inst, phrase: spec?.phrase) }
         }
         return m.method
     }
@@ -465,7 +465,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     private func realign(by jump: simd_float4x4, before: TimeInterval) {
         coordinates += 1
         jumps[coordinates] = jump
-        edgeSpike.coordinatesMoved(before: before)
+        edgeTAM.coordinatesMoved(before: before)
         let shift = simd_length(simd_float3(jump.columns.3.x, jump.columns.3.y, jump.columns.3.z))
         let angle = acos(min(1, max(-1, (jump.columns.0.x + jump.columns.1.y + jump.columns.2.z - 1) / 2))) * 180 / .pi
         // Found in the visual memory meanwhile: already in these coordinates.
@@ -632,7 +632,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             lastRecognisingTime = frame.timestamp
         }
         followObjects(frame)
-        edgeSpike.frame(frame, viewSize: arView.bounds.size, markExists: edgeSpike.markID.map { marks[$0] != nil } ?? false)
+        edgeTAM.frame(frame, viewSize: arView.bounds.size, markExists: edgeTAM.markID.map { marks[$0] != nil } ?? false)
         if case .normal = frame.camera.trackingState, (frame.lightEstimate?.ambientIntensity ?? 1000) >= 80 {} else {
             lastTrackingTrouble = CACurrentMediaTime()
         }
@@ -806,7 +806,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
                 if simd_length(lead) > 0.05 { lead = simd_normalize(lead) * 0.05 }
                 // Better, for a moving object: where the fast tracker saw it go since the mask's
                 // frame, from the mask's own place (the drawn shape's easing made up for).
-                if let live = edgeSpike.liveShift(id: id, since: motion.time, shown: shownFrame), let shape = steerShape[id] {
+                if let live = edgeTAM.liveShift(id: id, since: motion.time, shown: shownFrame), let shape = steerShape[id] {
                     let s = min(1, max(0, (live.speed - 0.03) / 0.05))
                     let w = s * s * (3 - 2 * s)
                     var tracked = live.shift + Contour.centroid(shape.target) - Contour.centroid(shape.shown)

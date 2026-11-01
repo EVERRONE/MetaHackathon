@@ -82,7 +82,6 @@ public struct ProcedureRuntime: Sendable {
     public var current: Procedure.Step? { procedure.steps.indices.contains(index) ? procedure.steps[index] : nil }
     /// Started and not yet finished or stopped.
     public var isActive: Bool { mode == .running || mode == .paused }
-    public var doneCount: Int { statuses.filter { if case .done = $0 { return true } else { return false } }.count }
     public var expectsAnswer: Bool { pendingQuestion != nil }
 
     /// The open yes/no question, to ask again when other talk came in between.

@@ -9,12 +9,12 @@ import UniformTypeIdentifiers
 /// is drawn from its mask: the mask's outline lifted into the room at the object's raw LiDAR depth,
 /// renewed about ten times a second, and moved with ARKit's camera in between (see
 /// ARController.steer). An object that moved and is no longer seen loses its outline until it is
-/// seen again. The device test (spike T1, docs/research-precision.md): EdgeTAM agreed with SAM 3.1
+/// seen again. The device test (T1 in docs/research-precision.md): EdgeTAM agreed with SAM 3.1
 /// on every kept frame about whether the object was in view, box IoU 0.87–0.94, at 9–10 fps.
 /// Per frame a line in Documents/edgetam.log; every second a frame with its mask in
 /// Documents/edgetam/<start>/, to compare with SAM 3.1 on the Mac (the test record, see
 /// Diagnostics). One object at a time.
-final class EdgeTAMSpike {
+final class EdgeTAMFollower {
     static let enabledKey = "pip.edgetamSpike"
     static var enabled: Bool {
         get { UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true }
@@ -666,7 +666,7 @@ private final class EdgeTAMWorker: @unchecked Sendable {
         let e = upright.extent
         let scaled = upright.transformed(by: CGAffineTransform(translationX: -e.minX, y: -e.minY).concatenating(CGAffineTransform(scaleX: 720 / e.width, y: 960 / e.height)))
         if let cg = context.createCGImage(scaled, from: CGRect(x: 0, y: 0, width: 720, height: 960)) {
-            EdgeTAMSpike.write(jpeg: cg, to: base.appendingPathExtension("jpg"))
+            EdgeTAMFollower.write(jpeg: cg, to: base.appendingPathExtension("jpg"))
         }
         let w = Int(f.cropRect.width), h = Int(f.cropRect.height)
         if w > 0, h > 0, f.crop.count == w * h, let provider = CGDataProvider(data: Data(f.crop.map { $0 * 255 }) as CFData),

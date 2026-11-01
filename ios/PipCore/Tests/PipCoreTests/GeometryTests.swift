@@ -27,7 +27,7 @@ import Testing
 
     @Test func speechTimingFollowsUTF16Anchors() {
         let text = "Zet één knop"
-        let audio = SpokenAudio(pcm: Data(), characters: text.map(String.init), starts: (0..<text.count).map { Double($0) / 10 })
+        let audio = SpeechTiming(characters: text.map(String.init), starts: (0..<text.count).map { Double($0) / 10 })
         let anchor = (text as NSString).range(of: "knop").location
         #expect(audio.startTime(atUTF16: anchor, in: text) == 0.8)
     }
