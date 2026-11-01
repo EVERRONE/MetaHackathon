@@ -673,6 +673,15 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
                 // takes to follow it.
                 var lead = motion.velocity * Float(min(max(0, shownFrame - motion.time) + Self.followMoving, Self.maxLead))
                 if simd_length(lead) > 0.05 { lead = simd_normalize(lead) * 0.05 }
+                // Better, for a moving object: where the fast tracker saw it go since the mask's
+                // frame, from the mask's own place (the drawn shape's easing made up for).
+                if let live = edgeSpike.liveShift(id: id, since: motion.time, shown: shownFrame), let shape = steerShape[id] {
+                    let s = min(1, max(0, (live.speed - 0.03) / 0.05))
+                    let w = s * s * (3 - 2 * s)
+                    var tracked = live.shift + Contour.centroid(shape.target) - Contour.centroid(shape.shown)
+                    if simd_length(tracked) > 0.25 { tracked = simd_normalize(tracked) * 0.25 }
+                    lead = tracked * w + lead * (1 - w)
+                }
                 if lead != m.lead { m.lead = lead; changed = true }
             }
             if changed { marks[id] = m }

@@ -49,6 +49,14 @@ final class EdgeTAMSpike {
     private var centres: [(t: TimeInterval, p: simd_float3)] = []
 
     private let worker = EdgeTAMWorker()
+    /// Follows the object between masks, for a moving object's outline (see FastFollow).
+    let fast = FastFollow()
+    /// The last mask taken: its frame's time and its outline's centre, to see whether the fast
+    /// tracker moved the same way as EdgeTAM between two masks.
+    private var lastTaken: (t: TimeInterval, p: simd_float3)?
+    /// Masks in a row on which the fast tracker disagreed with EdgeTAM.
+    private var disagreements = 0
+    private var lastFastStart: TimeInterval = 0
     private(set) var markID: Int?
     private var run = 0
     private var seeded = false
@@ -102,6 +110,9 @@ final class EdgeTAMSpike {
         checks = []
         shownChecks = []
         rejected = 0
+        fast.stop()
+        lastTaken = nil
+        disagreements = 0
         Self.pruneRuns()
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let folder = Self.documents.appendingPathComponent("edgetam/\(stamp)")
@@ -135,6 +146,7 @@ final class EdgeTAMSpike {
         guard let id = markID else { return }
         run += 1
         markID = nil
+        fast.stop()
         seeded = false
         busy = false
         maskLayer.contents = nil
@@ -159,6 +171,7 @@ final class EdgeTAMSpike {
         guard let id = markID else { return }
         guard markExists else { stop(reason: "outline gone"); return }
         guard CACurrentMediaTime() - startedAt < Self.followFor else { stop(reason: "time"); return }
+        if seeded { fast.frame(frame) }
         guard seeded, !busy, viewSize.width > 0 else { return }
         busy = true
         let me = run
@@ -222,11 +235,39 @@ final class EdgeTAMSpike {
             check(id, r, now: c)
             centres.append((r.time, c))
             centres.removeAll { r.time - $0.t > 0.6 }
-            onOutline?(id, [r.outline], velocity(), r.time)
+            let v = velocity()
+            follow(r, velocity: v, restart: r.verdict == .moved, time: time)
+            onOutline?(id, [r.outline], v, r.time)
         } else {
             let moving = centres.count >= 2 && simd_distance(centres.first!.p, centres.last!.p) > Self.movingDistance
             onLost?(id, moving)
         }
+    }
+
+    // MARK: Between masks
+
+    /// Keeps the fast tracker on the object EdgeTAM sees: started at the first mask, and again
+    /// when it lost the object or moved differently from EdgeTAM between two masks twice in a row.
+    private func follow(_ r: EdgeTAMWorker.Tracked, velocity v: simd_float3, restart: Bool, time: TimeInterval) {
+        if let d = r.depth { fast.depth = d }
+        let centre = Contour.centroid(r.outline)
+        if let prev = lastTaken, fast.running, let a = fast.position(at: prev.t), let b = fast.position(at: r.time) {
+            let tracked = b - a, seen = centre - prev.p
+            if simd_length(tracked - seen) > max(0.015, 0.5 * simd_length(seen)) { disagreements += 1 } else { disagreements = 0 }
+        }
+        lastTaken = (r.time, centre)
+        if restart || !fast.running || disagreements >= 2, time - lastFastStart >= 0.5 {
+            fast.start(outline: r.outline, velocity: v, time: r.time)
+            lastFastStart = time
+            disagreements = 0
+        }
+    }
+
+    /// How far a steered object moved from its mask's frame (`since`) to the frame shown, as the
+    /// fast tracker saw it, and how fast it moves; nil when the tracker cannot be trusted now.
+    func liveShift(id: Int, since: TimeInterval, shown: TimeInterval) -> (shift: simd_float3, speed: Float)? {
+        guard markID == id, disagreements == 0 else { return nil }
+        return fast.shift(since: since, to: shown)
     }
 
     // MARK: How well the outline holds
@@ -293,7 +334,7 @@ final class EdgeTAMSpike {
         }
         if !shownChecks.isEmpty {
             log("edgetam shown mark \(id % 1000): outline on screen vs the object — still: " + summary(shownChecks.filter { !$0.moving }.map(\.mm))
-                + "; moving: " + summary(shownChecks.filter(\.moving).map(\.mm)))
+                + "; moving: " + summary(shownChecks.filter(\.moving).map(\.mm)) + "; fast tracker: " + fast.summary)
         }
         checks = []
         shownChecks = []
