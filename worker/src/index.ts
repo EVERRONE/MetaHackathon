@@ -1,8 +1,8 @@
 import { Hono, type Context, type Next } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
-import { relayAsr, transcribe } from "./asr";
-import { chat } from "./chat";
+import { relayAsr, transcribe, wavDurationSeconds } from "./asr";
+import { chat, type Reserve } from "./chat";
 import { asrCost, samCost } from "./cost";
 import { HttpError } from "./http";
 import { meter } from "./meter";
@@ -33,6 +33,23 @@ async function validToken(given: string, expected: string): Promise<boolean> {
 
 function charger(c: Context<AppEnv>) {
   return (usd: number, calls = 1) => c.executionCtx.waitUntil(meter(c.env).add(usd, calls));
+}
+
+/**
+ * Reserves the most a call can cost before it is made (refused at the cap, see Meter.reserve);
+ * the returned function settles it with the real cost, once.
+ */
+function reserver(c: Context<AppEnv>): Reserve {
+  return async (usd: number) => {
+    if (!(await meter(c.env).reserve(usd))) throw new HttpError(402, "spend_cap", "Spend cap reached");
+    let settled = false;
+    return (actual: number) => {
+      if (settled) return;
+      settled = true;
+      const delta = actual - usd;
+      if (Number.isFinite(delta) && delta !== 0) c.executionCtx.waitUntil(meter(c.env).add(delta, 0));
+    };
+  };
 }
 
 app.use("*", async (c, next) => {
@@ -88,10 +105,9 @@ app.post("/v1/chat", bodyLimit({ maxSize: 24 * MB }), async (c) => {
     throw new HttpError(400, "invalid_json", "Body must be JSON");
   }
   if (typeof body !== "object" || body === null || Array.isArray(body)) throw new HttpError(400, "invalid_json", "Body must be a JSON object");
-  // Inline images are priced per image in the fallback estimate, not as text.
-  const images = raw.match(/data:image\//g)?.length ?? 0;
+  // Inline images are priced per image in the estimates, not as text.
   const textBytes = raw.replace(/data:image\/[^"]+/g, "").length;
-  return chat(c.env.MODEL_API_KEY, body as Record<string, unknown>, textBytes, images, charger(c));
+  return chat(c.env.MODEL_API_KEY, body as Record<string, unknown>, textBytes, reserver(c));
 });
 
 app.post("/v1/segment", bodyLimit({ maxSize: 12 * MB }), async (c) => {
@@ -108,17 +124,21 @@ app.post("/v1/segment", bodyLimit({ maxSize: 12 * MB }), async (c) => {
     throw new HttpError(400, "invalid_request", "width and height (numbers) are required with objects");
   }
   if (!prompts.length && !objects.length) throw new HttpError(400, "invalid_request", "Give prompts or objects");
+  validateObjects(objects);
 
+  // One SAM call per concept prompt, one for all the objects.
+  const settle = await reserver(c)(samCost(prompts.length + (objects.length ? 1 : 0)));
   try {
-    return c.json(await segment(c.env.MODEL_API_KEY, { ...req, prompts, objects }, (calls) => charger(c)(samCost(calls))));
+    return c.json(await segment(c.env.MODEL_API_KEY, { ...req, prompts, objects }, (calls) => settle(samCost(calls))));
   } catch (err) {
+    settle(0);
     if (err instanceof ObjectPromptError) throw new HttpError(400, `invalid_objects_${err.code}`, err.message);
     throw err;
   }
 });
 
 app.post("/v1/responses", bodyLimit({ maxSize: 24 * MB }), async (c) => {
-  return responses(c.env.MODEL_API_KEY, await jsonObject<Record<string, unknown>>(c), charger(c));
+  return responses(c.env.MODEL_API_KEY, await jsonObject<Record<string, unknown>>(c), reserver(c));
 });
 
 app.post("/v1/source-check", bodyLimit({ maxSize: 4096 }), async (c) => {
@@ -129,18 +149,43 @@ app.post("/v1/source-check", bodyLimit({ maxSize: 4096 }), async (c) => {
 app.post("/v1/transcribe", bodyLimit({ maxSize: 32 * MB }), async (c) => {
   const wav = await c.req.arrayBuffer();
   const list = (q: string | undefined) => q?.split(",").map((s) => s.trim()).filter(Boolean);
-  const { json, seconds } = await transcribe(c.env.MODEL_API_KEY, wav, {
-    mode: c.req.query("mode"),
-    languageBias: list(c.req.query("languages")),
-    keywords: list(c.req.query("keywords")),
-  });
-  charger(c)(asrCost(seconds));
-  return c.json(json as object);
+  // Its length is known before the call: reserved then (a dropped request still counts).
+  const settle = await reserver(c)(asrCost(wavDurationSeconds(wav) ?? 0));
+  try {
+    const { json, seconds } = await transcribe(c.env.MODEL_API_KEY, wav, {
+      mode: c.req.query("mode"),
+      languageBias: list(c.req.query("languages")),
+      keywords: list(c.req.query("keywords")),
+    });
+    settle(asrCost(seconds));
+    return c.json(json as object);
+  } catch (err) {
+    settle(0);
+    throw err;
+  }
 });
 
 app.post("/v1/speak", bodyLimit({ maxSize: 64 * 1024 }), async (c) => {
-  return speak(c.env.ELEVENLABS_API_KEY, await jsonObject<SpeakRequest>(c), charger(c));
+  return speak(c.env.ELEVENLABS_API_KEY, await jsonObject<SpeakRequest>(c), reserver(c));
 });
+
+/** Object prompts as the app sends them: an id, a box or a few points, numbers only. */
+function validateObjects(objects: unknown[]): void {
+  const num = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+  for (const o of objects as { id?: unknown; box?: unknown; points?: unknown }[]) {
+    if (typeof o !== "object" || o === null || !Number.isInteger(o.id)) throw new HttpError(400, "invalid_request", "Each object needs an integer id");
+    if (o.box !== undefined && !(Array.isArray(o.box) && o.box.length === 4 && o.box.every(num))) {
+      throw new HttpError(400, "invalid_request", "box is [left, top, right, bottom]");
+    }
+    if (o.points !== undefined) {
+      const pts = o.points as { x?: unknown; y?: unknown; negative?: unknown }[];
+      if (!Array.isArray(pts) || pts.length > 8 || pts.some((p) => typeof p !== "object" || p === null || !num(p.x) || !num(p.y))) {
+        throw new HttpError(400, "invalid_request", "points are at most 8 {x, y}");
+      }
+    }
+    if (o.box === undefined && o.points === undefined) throw new HttpError(400, "invalid_request", "Each object needs a box or points");
+  }
+}
 
 app.get("/v1/asr", (c) => {
   if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") throw new HttpError(426, "upgrade_required", "Expected a WebSocket upgrade");
@@ -152,7 +197,18 @@ app.get("/v1/asr", (c) => {
 
 app.notFound(() => Response.json({ error: { code: "not_found", message: "No such route" } }, { status: 404 }));
 
-app.onError((err) => {
+/** Upstream error text never carries a key, and auth or server failures upstream say no more than that. */
+function upstreamMessage(err: UpstreamError, env: Env): string {
+  if (err.status === 401 || err.status === 403) return `The ${err.service} service refused the server's credentials`;
+  if (err.status >= 500) return `The ${err.service} service failed (HTTP ${err.status})`;
+  let message = err.message;
+  for (const secret of [env.MODEL_API_KEY, env.ELEVENLABS_API_KEY, env.PIP_APP_TOKEN]) {
+    if (secret && secret.length >= 8) message = message.split(secret).join("…");
+  }
+  return message.slice(0, 300);
+}
+
+app.onError((err, c) => {
   if (err instanceof HttpError) {
     return Response.json({ error: { code: err.code, message: err.message } }, { status: err.status });
   }
@@ -161,7 +217,8 @@ app.onError((err) => {
     return Response.json({ error: { code: err.status === 413 ? "too_large" : "invalid_request", message: err.message || "Request rejected" } }, { status: err.status });
   }
   if (err instanceof UpstreamError) {
-    return Response.json({ error: { code: `upstream_${err.service}`, message: err.message, upstreamStatus: err.status } }, { status: err.appStatus });
+    if (err.status === 401 || err.status === 403 || err.status >= 500) console.error(JSON.stringify({ upstream: err.service, status: err.status, error: err.message.slice(0, 300) }));
+    return Response.json({ error: { code: `upstream_${err.service}`, message: upstreamMessage(err, c.env), upstreamStatus: err.status } }, { status: err.appStatus });
   }
   console.error(JSON.stringify({ error: String(err), stack: (err as Error).stack?.slice(0, 500) }));
   return Response.json({ error: { code: "internal", message: "Internal error" } }, { status: 500 });

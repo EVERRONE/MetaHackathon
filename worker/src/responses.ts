@@ -1,3 +1,4 @@
+import type { Reserve } from "./chat";
 import { inputRate, sparkCost, type ChatUsage } from "./cost";
 import { HttpError } from "./http";
 import { META_API, UpstreamError } from "./upstream";
@@ -8,6 +9,8 @@ const ALLOWED_MODELS = new Set(["muse-spark-1.3", "muse-wonder-1.0"]);
 const ALLOWED_KEYS = new Set(["model", "input", "instructions", "tools", "tool_choice", "reasoning", "text", "max_output_tokens", "temperature", "store", "stream"]);
 const ALLOWED_EFFORTS = new Set(["minimal", "low", "medium"]);
 const MAX_OUTPUT_TOKENS = 16_000;
+const MAX_IMAGES = 16;
+const MAX_FILES = 2;
 const USD_PER_SEARCH = 2.5 / 1000;
 /** Up-front estimates, charged before the call so a dropped request still counts. */
 const TOKENS_PER_IMAGE = 1_600;
@@ -44,18 +47,27 @@ function checkInput(input: unknown): { images: number; files: number } {
           }
           counts.images += 1;
           break;
-        case "input_file":
-          // Files by public https link only, never ids of files stored in the account.
-          if (typeof part.file_url !== "string" || !part.file_url.startsWith("https://") || keys.some((k) => k !== "type" && k !== "file_url")) {
-            throw new HttpError(400, "invalid_request", "input_file takes an https file_url only");
+        case "input_file": {
+          // Files by public https link only (Meta's servers fetch it), never ids of files stored
+          // in the account.
+          let url: URL | null = null;
+          try {
+            url = typeof part.file_url === "string" ? new URL(part.file_url) : null;
+          } catch {
+            url = null;
+          }
+          if (!url || !publicHttps(url) || keys.some((k) => k !== "type" && k !== "file_url")) {
+            throw new HttpError(400, "invalid_request", "input_file takes a public https file_url only");
           }
           counts.files += 1;
           break;
+        }
         default:
           throw new HttpError(400, "invalid_request", "Allowed parts: input_text, input_image, input_file");
       }
     }
   }
+  if (counts.images > MAX_IMAGES || counts.files > MAX_FILES) throw new HttpError(400, "invalid_request", `At most ${MAX_IMAGES} images and ${MAX_FILES} files`);
   return counts;
 }
 
@@ -78,28 +90,40 @@ export function validate(body: Record<string, unknown>): { images: number; files
       throw new HttpError(400, "invalid_request", `reasoning.effort must be one of ${[...ALLOWED_EFFORTS].join(", ")}`);
     }
   }
-  if (body.max_output_tokens !== undefined) {
-    if (typeof body.max_output_tokens !== "number" || !(body.max_output_tokens > 0)) throw new HttpError(400, "invalid_request", "max_output_tokens must be a positive number");
-    body.max_output_tokens = Math.min(body.max_output_tokens, MAX_OUTPUT_TOKENS);
+  if (body.max_output_tokens !== undefined && (typeof body.max_output_tokens !== "number" || !(body.max_output_tokens > 0))) {
+    throw new HttpError(400, "invalid_request", "max_output_tokens must be a positive number");
   }
+  // Always bounded: without a limit the model's own would apply.
+  body.max_output_tokens = Math.min(Math.floor((body.max_output_tokens as number | undefined) ?? MAX_OUTPUT_TOKENS), MAX_OUTPUT_TOKENS);
   return { ...checkInput(body.input), searches: Array.isArray(body.tools) && body.tools.length > 0 };
 }
 
-export async function responses(apiKey: string, body: Record<string, unknown>, charge: (usd: number, calls?: number) => void): Promise<Response> {
+export async function responses(apiKey: string, body: Record<string, unknown>, reserve: Reserve): Promise<Response> {
   const counts = validate(body);
   body.store = false;
   const model = body.model as string;
-  // Charged before the call, corrected once the usage is known: a request the client drops
-  // still counts towards the cap.
+  // The most the call can cost (its input, its full output, an allowance of searches) is reserved
+  // first and settled once the usage is known: a request the client drops still counts.
   const text = JSON.stringify(body).replace(/data:image\/[^"]+/g, "");
-  const estimate = (text.length / 4 + counts.images * TOKENS_PER_IMAGE + counts.files * TOKENS_PER_FILE) * inputRate(model) + (counts.searches ? SEARCHES_ALLOWANCE * USD_PER_SEARCH : 0);
-  charge(estimate);
-  const res = await fetch(`${META_API}/responses`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw await UpstreamError.from(res, "responses");
+  const input = (text.length / 4 + counts.images * TOKENS_PER_IMAGE + counts.files * TOKENS_PER_FILE) * inputRate(model);
+  const searchAllowance = counts.searches ? SEARCHES_ALLOWANCE * USD_PER_SEARCH : 0;
+  const reserved = input + sparkCost({ completion_tokens: body.max_output_tokens as number }, model) + searchAllowance;
+  const settle = await reserve(reserved);
+  let res: Response;
+  try {
+    res = await fetch(`${META_API}/responses`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    settle(0);
+    throw err;
+  }
+  if (!res.ok) {
+    settle(0);
+    throw await UpstreamError.from(res, "responses");
+  }
   const json = (await res.json()) as { usage?: ResponsesUsage; output?: { type?: string }[] };
   const searches = (json.output ?? []).filter((o) => o.type === "web_search_call").length;
   if (json.usage) {
@@ -109,10 +133,10 @@ export async function responses(apiKey: string, body: Record<string, unknown>, c
       completion_tokens: u.output_tokens ?? 0,
       prompt_tokens_details: { cached_tokens: u.input_tokens_details?.cached_tokens ?? 0 },
     };
-    charge(sparkCost(usage, model) + searches * USD_PER_SEARCH - estimate, 0);
-  } else if (searches > SEARCHES_ALLOWANCE) {
-    // No usage: keep the estimate, plus the searches beyond the allowance.
-    charge((searches - SEARCHES_ALLOWANCE) * USD_PER_SEARCH, 0);
+    settle(sparkCost(usage, model) + searches * USD_PER_SEARCH);
+  } else {
+    // No usage: the reservation stands, plus the searches beyond the allowance.
+    settle(reserved + Math.max(0, searches - SEARCHES_ALLOWANCE) * USD_PER_SEARCH);
   }
   return Response.json(json);
 }
@@ -127,12 +151,16 @@ const WILDCARD_DNS = [".nip.io", ".sslip.io", ".xip.io", ".localtest.me", ".lvh.
 /** A public https site by name: no IP literals, credentials, odd ports or local names. */
 export function publicHttps(u: URL): boolean {
   if (u.protocol !== "https:" || u.username || u.password || (u.port !== "" && u.port !== "443")) return false;
-  const host = u.hostname.toLowerCase().replace(/\.$/, "");
+  const host = u.hostname.toLowerCase().replace(/\.+$/, "");
   // IPv6 literals keep their brackets in `hostname`; IPv4 ones (also written as decimal or hex)
   // are normalised to dotted form by the URL parser.
   if (host.includes("[") || host.includes(":") || /^[\d.]+$/.test(host)) return false;
   if (!host.includes(".") || host === "localhost" || host === "unveil.be") return false;
-  if (BLOCKED_SUFFIXES.some((s) => host.endsWith(s)) || WILDCARD_DNS.some((s) => host.endsWith(s))) return false;
+  // The zone itself too ("localtest.me" resolves to 127.0.0.1 like its subdomains). Names that
+  // resolve to private addresses anyway are stopped by Cloudflare: a Worker's fetch cannot reach
+  // private ranges; this filter is the first line, not the only one.
+  const inZone = (s: string) => host === s.slice(1) || host.endsWith(s);
+  if (BLOCKED_SUFFIXES.some(inZone) || WILDCARD_DNS.some(inZone)) return false;
   // A name with an address inside it ("10.0.0.1.example.com").
   if (/(^|\.)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(\.|$)/.test(host)) return false;
   return true;

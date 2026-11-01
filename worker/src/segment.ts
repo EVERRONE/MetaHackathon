@@ -20,6 +20,7 @@ import {
   type Box,
   type BoxMask,
   type Point,
+  type Ring,
 } from "./geometry";
 import { META_API, UpstreamError } from "./upstream";
 
@@ -129,6 +130,12 @@ function clampBox(b: Box, width: number, height: number) {
   return { left, top, right, bottom };
 }
 
+/** A mask's box as a ring, relative to its corner like the parser's rings. */
+function boxRing(box: Box, left: number, top: number): Ring {
+  const [l, t, r, b] = box;
+  return [[l - left - 0.5, t - top - 0.5], [r - left - 0.5, t - top - 0.5], [r - left - 0.5, b - top - 0.5], [l - left - 0.5, b - top - 0.5]];
+}
+
 export function buildObjectText(objects: ObjectPromptInput[], width: number, height: number): string {
   const prompt: PromptObject[] = objects.map((o) => ({
     id: o.id,
@@ -212,13 +219,14 @@ export function buildInstances(all: Candidate[], maxInstances: number): { instan
   const instances: Instance[] = ordered.map(({ c, centre }, i) => {
     const [left, top] = c.mask.box;
     const rings = outerRings(parseSvgPath(decodeMaskToSVGPath(c.record.mask)));
-    const polygons = rings.map((r) =>
+    const polygons = rings.map((r) => {
+      // A mask one pixel wide (a cable, a slot) simplifies to a line of two points: the app needs
+      // a ring, so it keeps the ring unsimplified, or the mask's box.
+      const simple = simplifyToBudget(r, POLYGON_EPSILON, POLYGON_MAX_POINTS);
+      const ring: Ring = simple.length >= 3 ? simple : r.length >= 3 ? r.slice(0, POLYGON_MAX_POINTS) : boxRing(c.mask.box, left, top);
       // The parser puts pixel centres on integers; outlines run along pixel edges (+0.5).
-      simplifyToBudget(r, POLYGON_EPSILON, POLYGON_MAX_POINTS).flatMap(([x, y]) => [
-        Math.round(x + left + 0.5),
-        Math.round(y + top + 0.5),
-      ]),
-    );
+      return ring.flatMap(([x, y]) => [Math.round(x + left + 0.5), Math.round(y + top + 0.5)]);
+    });
     return {
       id: i + 1,
       prompts: c.prompts,

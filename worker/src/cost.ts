@@ -51,8 +51,9 @@ const SSE_BYTES_PER_TOKEN = 150;
  * Estimate used when a response carries no usage (a stream cut short by barge-in).
  * `textBytes` excludes inline images, which are counted per image instead.
  */
-export function sparkFallbackCost(textBytes: number, responseBytes: number, images: number, model = "muse-spark-1.3"): number {
+export function sparkFallbackCost(textBytes: number, responseBytes: number, images: number, model = "muse-spark-1.3", maxOutput = 8_000): number {
   const input = textBytes / 4 + images * TOKENS_PER_IMAGE;
-  const output = Math.min(responseBytes / SSE_BYTES_PER_TOKEN, 4_000);
+  // Up to the call's own output limit (a stream cancelled just before its usage chunk).
+  const output = Math.min(responseBytes / SSE_BYTES_PER_TOKEN, maxOutput);
   return input * inputRate(model) + output * (isWonder(model) ? WONDER_OUTPUT : SPARK_OUTPUT);
 }

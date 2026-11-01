@@ -25,6 +25,20 @@ export class Meter extends DurableObject<Env> {
   }
 
   /**
+   * Reserves `usd` for a call about to be made, unless that would pass a cap: the check and the
+   * charge happen in one step here (a Durable Object runs one call at a time), so concurrent
+   * requests cannot all pass the check before any of them is charged. The caller settles the
+   * difference with the real cost afterwards (`add(actual - reserved, 0)`).
+   */
+  reserve(usd: number): boolean {
+    if (!Number.isFinite(usd) || usd < 0) return false;
+    const { today, total } = this.status();
+    if (today + usd > Number(this.env.DAILY_CAP_USD) || total + usd > Number(this.env.TOTAL_CAP_USD)) return false;
+    this.add(usd, 1);
+    return true;
+  }
+
+  /**
    * Records spend. A negative amount corrects an estimate charged before the call (calls = 0),
    * so the total never drops below what was really used. A day never goes below zero, also
    * not when the correction is the first entry of a new UTC day.

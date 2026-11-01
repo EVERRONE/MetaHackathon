@@ -50,6 +50,8 @@ export function pointInRing([x, y]: Point, ring: Ring): boolean {
   return inside;
 }
 
+const MAX_OUTER_RINGS = 8;
+
 /** Outer contours, largest first. Holes and rings below `minFraction` of the largest are dropped. */
 export function outerRings(rings: Ring[], minFraction = 0.1): Ring[] {
   const sorted = rings
@@ -62,6 +64,9 @@ export function outerRings(rings: Ring[], minFraction = 0.1): Ring[] {
     if (area < min) break;
     if (outer.some((o) => pointInRing(r[0], o))) continue; // a hole (or something inside one)
     outer.push(r);
+    // A mask of thousands of specks would make this quadratic (31 s for 40,000): the largest few
+    // are all an outline needs.
+    if (outer.length >= MAX_OUTER_RINGS) break;
   }
   return outer;
 }

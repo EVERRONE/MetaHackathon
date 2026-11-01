@@ -1,3 +1,4 @@
+import type { Reserve } from "./chat";
 import { HttpError } from "./http";
 import { UpstreamError } from "./upstream";
 
@@ -20,19 +21,33 @@ export interface SpeakRequest {
  * Streams speech for one sentence as newline-delimited JSON chunks, each with base64 PCM
  * (24 kHz, 16-bit mono) and the start time of every character, which the app uses to time cues.
  */
-export async function speak(apiKey: string, req: SpeakRequest, charge: (usd: number) => void): Promise<Response> {
+export async function speak(apiKey: string, req: SpeakRequest, reserve: Reserve): Promise<Response> {
   const text = typeof req.text === "string" ? req.text.trim() : "";
   if (!text || text.length > MAX_CHARS) throw new HttpError(400, "invalid_request", `text must be 1–${MAX_CHARS} characters`);
   if (typeof req.voice !== "string" || !VOICE_ID.test(req.voice)) throw new HttpError(400, "invalid_request", "voice must be an ElevenLabs voice id");
   const language = typeof req.language === "string" && /^[a-z]{2}$/.test(req.language) ? req.language : undefined;
 
-  const res = await fetch(`${ELEVENLABS}/${req.voice}/stream/with-timestamps?output_format=pcm_24000`, {
-    method: "POST",
-    headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
-    body: JSON.stringify({ text, model_id: MODEL, ...(language ? { language_code: language } : {}) }),
-  });
-  if (!res.ok) throw await UpstreamError.from(res, "speak");
-  if (!res.body) throw new UpstreamError(502, "speak", "empty response");
-  charge(text.length * USD_PER_CHAR);
+  // Charged before the call (the characters are known): a request the client drops still counts.
+  const settle = await reserve(text.length * USD_PER_CHAR);
+  let res: Response;
+  try {
+    res = await fetch(`${ELEVENLABS}/${req.voice}/stream/with-timestamps?output_format=pcm_24000`, {
+      method: "POST",
+      headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ text, model_id: MODEL, ...(language ? { language_code: language } : {}) }),
+    });
+  } catch (err) {
+    settle(0);
+    throw err;
+  }
+  if (!res.ok) {
+    settle(0);
+    throw await UpstreamError.from(res, "speak");
+  }
+  if (!res.body) {
+    settle(0);
+    throw new UpstreamError(502, "speak", "empty response");
+  }
+  settle(text.length * USD_PER_CHAR);
   return new Response(res.body, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" } });
 }
