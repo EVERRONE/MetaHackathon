@@ -43,6 +43,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     static let followMoving: TimeInterval = 0.04
     static let followStill: TimeInterval = 0.12
     private var lastRender: TimeInterval = 0
+    /// What the user saw while a cue was drawn, kept for judging a test (see OverlayShots).
+    private let shots = OverlayShots()
     /// How recognising the saved room at start goes, and how well the room is being mapped.
     let relocalisation = Relocalisation()
     /// One line per running test, for the screen.
@@ -682,6 +684,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             guard let c = inCamera(p) else { return nil }
             return abs(c.x) + abs(c.y) < 1e-4 ? CGVector(dx: 1, dy: 0) : CGVector(dx: CGFloat(c.x), dy: CGFloat(-c.y))
         })
+        shots.frame(now: now, cuesDrawn: board.annotations.contains { $0.cue.isDrawn && !$0.cue.marks.isEmpty }, arView: arView, overlay: overlay)
     }
 
     /// Pointed-at objects with a cue on screen, followed in the image (see ImageFollower).
