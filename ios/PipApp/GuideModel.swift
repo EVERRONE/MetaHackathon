@@ -75,8 +75,6 @@ final class GuideModel: ObservableObject {
     /// Which frames are clean enough for the map and the visual memory.
     let captureGate = CaptureGate()
     var mapSaveTimer: Timer?
-    /// Which places came from which linked piece, so they follow the drift measured against it.
-    var linkedPlaces: [UUID: Set<UUID>] = [:]
     /// How well outlines hold: every re-measurement, on this iPhone, to evaluate on the Mac.
     let trackingLog = TrackingLog()
     var foundCount = 0
@@ -281,7 +279,6 @@ final class GuideModel: ObservableObject {
     static let earlyConfirmAfter: TimeInterval = 2.5
 
     private struct EarlyTurn {
-        let text: String
         let words: [String]
         let started: Date
         let gate: TurnGate
@@ -297,7 +294,7 @@ final class GuideModel: ObservableObject {
             adoptLanguage(spoken)
         }
         let gate = TurnGate()
-        early = EarlyTurn(text: text, words: words(text), started: Date(), gate: gate)
+        early = EarlyTurn(words: words(text), started: Date(), gate: gate)
         heard = text
         log("early: looking on \"\(text)\"")
         task?.cancel()

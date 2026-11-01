@@ -55,7 +55,6 @@ extension GuideModel {
         mapKeeper.enabled = memory.consent == true
         mapKeeper.begin(continuing: continuing, others: pieces.filter { $0.id != continuing?.id })
         mapKeeper.onLog = { [weak self] line in self?.log(line) }
-        mapKeeper.onLink = { [weak self] piece, refined, transform in self?.linked(piece, refined: refined, transform: transform) }
         ar.onRelocaliseGaveUp = { [weak self] in self?.relocalisationGaveUp() }
         // Recognised: places remembered in other maps of this room are looked for here, quietly,
         // once Pip is free (see adoptPlacesOfThisRoom).
@@ -76,11 +75,6 @@ extension GuideModel {
             p.piece = self.mapKeeper.current.id
             self.memory.update([p])
             self.saveRoomSoon()
-        }
-        mapKeeper.meshNear = { [weak self] centre, radius in self?.ar.meshPoints(near: centre, radius: radius) ?? [] }
-        mapKeeper.onDrift = { [weak self] piece, delta in
-            guard let self else { return }
-            self.ar.applyDrift(delta, toPlaces: self.linkedPlaces[piece] ?? [])
         }
         ar.start(initialMap: worldMap)
         // Once ARKit has measured the light: if another saved room was mapped in light much more
@@ -206,27 +200,6 @@ extension GuideModel {
         }
     }
 
-    /// A stored piece was recognised and linked: its places come into this session, and Pip says so.
-    /// Each place lands within the link's uncertainty (logged); the first time Pip points at it, it
-    /// is found again on sight and corrected to the centimetre.
-    private func linked(_ piece: MapPiece, refined: MapLinker.Refined, transform: simd_float4x4) {
-        let moved = memory.places.filter { $0.piece == piece.id }.compactMap { place -> SpaceMemory.Place? in
-            if let pose = place.pose, pose.count == 16 {
-                let at = ARController.matrix(pose).columns.3.xyz
-                log(String(format: "map: %@ lands within ±%.1f cm", place.name, refined.uncertainty(at: at) * 100))
-            }
-            guard var p = ar.installLinked(place, transform: transform) else { return nil }
-            p.piece = mapKeeper.current.id
-            return p
-        }
-        memory.update(moved)
-        linkedPlaces[piece.id] = Set(moved.map(\.id))
-        keyframes.relink(piece: piece.id, into: mapKeeper.current.id, transform: transform)
-        let names = moved.map(\.name)
-        say(names.isEmpty ? phrases.linkedRoom : phrases.linkedRoom(with: names))
-        saveRoomSoon()
-    }
-
     /// Points at every remembered place whose name occurs in `text` and has no cue yet.
     func pointAtNamedPlaces(in text: String, alreadyShown: Set<Int>) {
         let words = " " + Utterance.words(text).joined(separator: " ") + " "
@@ -319,7 +292,7 @@ extension GuideModel {
         }
     }
 
-    /// Saves this session's map piece: the room's surfaces, the keyframes, and ARKit's own map
+    /// Saves this session's map piece: the keyframes, location and light, and ARKit's own map
     /// with the places' anchors. The 3D map grows with every session, places or not.
     func saveRoomNow() {
         guard memory.consent == true else { return }
@@ -335,7 +308,7 @@ extension GuideModel {
         // iOS gives the app a little time in the background to finish writing: until both the
         // map piece and ARKit's own map (which may wait for ARKit and retry) are written.
         let background = BackgroundWork(name: "Pip map", parts: 2)
-        mapKeeper.save(mesh: ar.meshRaw()) {
+        mapKeeper.save {
             Task { @MainActor in background.done() }
         }
         keyframes.saveIndex()

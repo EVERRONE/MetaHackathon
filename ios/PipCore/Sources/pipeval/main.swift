@@ -280,9 +280,10 @@ if args.first == "recall", args.count >= 3 {
     let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
     guard let data = FileManager.default.contents(atPath: args[2]), let image = SetOfMarks.load(data, maxSide: 4096) else { fail("cannot read \(args[2])") }
     let t0 = Date()
-    guard let pin = try await MemorySearch(client: client).pinpoint(args[1], in: data) else { print("not found in the snapshot"); exit(0) }
+    let what = args[1]
+    guard let pin = try await MemorySearch(client: client).pinpoint(what, in: data) else { print("not found in the snapshot"); exit(0) }
     print(String(format: "%.1fs pinpoint %.0f,%.0f %@", Date().timeIntervalSince(t0), pin.x, pin.y, pin.noun))
-    let r = await Grounder(client: client, frameJPEG: data).ground(TargetSpec(x: pin.x, y: pin.y, phrase: pin.noun), id: 1, frame: image, describe: { args[1] })
+    let r = await Grounder(client: client, frameJPEG: data).ground(TargetSpec(x: pin.x, y: pin.y, phrase: pin.noun), id: 1, frame: image, describe: { what })
     print(String(format: "%.1fs %@", Date().timeIntervalSince(t0), r.method), r.instance.map { "box \($0.box) conf \($0.confidence)" } ?? "nil")
     exit(0)
 }
@@ -302,10 +303,16 @@ if args.first == "find", args.count >= 3 {
     let hits = try await MemorySearch(client: client).find(args[1], in: loaded.map(\.jpeg))
     print(String(format: "%.1fs", Date().timeIntervalSince(t0)), hits.map { "snapshot \($0.index + 1) (\(paths[$0.index].split(separator: "/").last ?? "")) @\(Int($0.x)),\(Int($0.y)) conf \($0.confidence)" })
     if let first = hits.first {
-        let img = loaded[first.index].image
-        let p = CGPoint(x: first.x / 1000 * Double(img.width), y: first.y / 1000 * Double(img.height))
-        let inst = await Grounder(client: client, frameJPEG: Data()).object(at: p, in: img, id: 1)
-        print("SAM:", inst.map { "box \($0.box) conf \($0.confidence)" } ?? "nothing at that point")
+        // Confirmed as the app does it: pinpointed in that snapshot, then the question's grounding.
+        let jpeg = loaded[first.index].jpeg
+        let what = args[1]
+        if let pin = try await MemorySearch(client: client).pinpoint(what, in: jpeg) {
+            let r = await Grounder(client: client, frameJPEG: jpeg).ground(TargetSpec(x: pin.x, y: pin.y, phrase: pin.noun), id: 1,
+                                                                          frame: loaded[first.index].image, describe: { what })
+            print("pinpoint \(Int(pin.x)),\(Int(pin.y)) \(pin.noun) → \(r.method)", r.instance.map { "box \($0.box) conf \($0.confidence)" } ?? "nil")
+        } else {
+            print("not found again in that snapshot")
+        }
     }
     exit(0)
 }

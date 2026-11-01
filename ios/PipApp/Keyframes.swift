@@ -148,21 +148,6 @@ final class Keyframes {
         }
     }
 
-    /// A map piece was linked into this session: its snapshots move into this session's frame.
-    func relink(piece old: UUID, into new: UUID, transform: simd_float4x4) {
-        var changed = 0
-        for i in frames.indices where frames[i].piece == old {
-            frames[i].cameraTransform = transform * frames[i].cameraTransform
-            frames[i].piece = new
-            frames[i].located = true
-            changed += 1
-        }
-        if changed > 0 {
-            indexDirty = persist
-            saveIndex()
-        }
-    }
-
     /// ARKit is now recognising `piece` instead (another saved room): its snapshots can be pointed
     /// at, the others not.
     func locate(_ piece: UUID) {

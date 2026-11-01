@@ -119,24 +119,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
             config.frameSemantics.insert(.smoothedSceneDepth)
         }
-        // The room's surfaces as a mesh, with what each surface is (wall, floor, table, seat…):
-        // Pip's 3D map of the home is built from it.
-        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) {
-            config.sceneReconstruction = .meshWithClassification
-        } else if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
-            config.sceneReconstruction = .mesh
-        }
+        // No scene mesh: it fed only the linking of map pieces by their surfaces (removed 1 Nov),
+        // and meshing with classification costs GPU and Neural Engine time EdgeTAM needs.
         return config
-    }
-
-    /// Until ARKit tracks normally (a fresh session takes about a second), at most `seconds`.
-    @MainActor
-    func waitForTracking(seconds: TimeInterval) async {
-        let end = Date().addingTimeInterval(seconds)
-        while Date() < end {
-            if let state = arView.session.currentFrame?.camera.trackingState, case .normal = state { return }
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
     }
 
     /// The saved room was not recognised: ARKit tries another saved room's map.
@@ -161,55 +146,6 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         pendingPlaces = [:]
         clearCues()
         arView.session.run(Self.configuration(initialMap: nil), options: [.resetTracking, .removeExistingAnchors])
-    }
-
-    /// The room's surfaces ARKit has meshed so far (world space), averaged per `size` cube, with
-    /// the mesh's normals and ARKit's class of each surface; only within `radius` of `centre`
-    /// when given.
-    func meshSurface(near centre: simd_float3? = nil, radius: Float = 0, size: Float = 0.025) -> (points: [simd_float3], normals: [simd_float3], classes: [UInt8]) {
-        let raw = meshRaw(near: centre, radius: radius)
-        return VoxelIndex.average(raw.points, normals: raw.normals, classes: raw.classes, size: size)
-    }
-
-    /// Every mesh vertex (world space) with its normal and class: copied out of ARKit's buffers
-    /// here, averaged elsewhere (off the main thread when saving).
-    func meshRaw(near centre: simd_float3? = nil, radius: Float = 0) -> (points: [simd_float3], normals: [simd_float3], classes: [UInt8]) {
-        let meshes = (arView.session.currentFrame?.anchors ?? []).compactMap { $0 as? ARMeshAnchor }
-        var points: [simd_float3] = [], normals: [simd_float3] = [], classes: [UInt8] = []
-        for mesh in meshes {
-            // Mesh anchors cover about a metre each: skip those clearly out of reach.
-            if let centre, simd_distance(mesh.transform.columns.3.xyz, centre) > radius + 1.5 { continue }
-            let g = mesh.geometry
-            let t = mesh.transform
-            let vertexBase = g.vertices.buffer.contents().advanced(by: g.vertices.offset)
-            let normalBase = g.normals.buffer.contents().advanced(by: g.normals.offset)
-            // Each vertex takes the class of a face it belongs to.
-            var vertexClass = [UInt8](repeating: 0, count: g.vertices.count)
-            if let cls = g.classification, g.faces.bytesPerIndex == 4 {
-                let faceBase = g.faces.buffer.contents()
-                let clsBase = cls.buffer.contents().advanced(by: cls.offset)
-                for f in 0..<g.faces.count {
-                    let c = clsBase.advanced(by: f * cls.stride).assumingMemoryBound(to: UInt8.self).pointee
-                    let idx = faceBase.advanced(by: f * g.faces.indexCountPerPrimitive * 4).assumingMemoryBound(to: UInt32.self)
-                    for k in 0..<g.faces.indexCountPerPrimitive where Int(idx[k]) < vertexClass.count { vertexClass[Int(idx[k])] = c }
-                }
-            }
-            for i in 0..<g.vertices.count {
-                let v = vertexBase.advanced(by: i * g.vertices.stride).assumingMemoryBound(to: Float.self)
-                let p = (t * simd_float4(v[0], v[1], v[2], 1)).xyz
-                if let centre, simd_distance(p, centre) > radius { continue }
-                let n = normalBase.advanced(by: i * g.normals.stride).assumingMemoryBound(to: Float.self)
-                points.append(p)
-                normals.append((t * simd_float4(n[0], n[1], n[2], 0)).xyz)
-                classes.append(vertexClass[i])
-            }
-        }
-        return (points, normals, classes)
-    }
-
-    /// The meshed surfaces as points only (for fitting a live view).
-    func meshPoints(near centre: simd_float3? = nil, radius: Float = 0) -> [simd_float3] {
-        meshSurface(near: centre, radius: radius, size: 0.04).points
     }
 
     func snapshot() -> FrameSnapshot? {
@@ -913,20 +849,6 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         return place
     }
 
-    /// A place from a map piece that was just linked: `transform` takes its piece's frame into
-    /// this session's. It gets a new anchor here, so the next saved map holds it too.
-    func installLinked(_ place: SpaceMemory.Place, transform: simd_float4x4) -> SpaceMemory.Place? {
-        guard let values = place.pose, values.count == 16, !places.values.contains(where: { $0.id == place.id }) else { return nil }
-        let pose = transform * Self.matrix(values)
-        let anchor = ARAnchor(name: "pip-place", transform: pose)
-        arView.session.add(anchor: anchor)
-        var moved = place
-        moved.anchorID = anchor.identifier
-        moved.pose = Self.values(pose)
-        install(moved, anchor: anchor)
-        return moved
-    }
-
     static func values(_ m: simd_float4x4) -> [Float] {
         [m.columns.0, m.columns.1, m.columns.2, m.columns.3].flatMap { [$0.x, $0.y, $0.z, $0.w] }
     }
@@ -944,8 +866,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func restorePlace(_ anchor: ARAnchor) {
         guard var place = pendingPlaces.removeValue(forKey: anchor.identifier) else { return }
-        // ARKit knows where the anchor is in this map: keep that, so the place can also be
-        // brought back by linking pieces later.
+        // ARKit knows where the anchor is in this map: kept with the place.
         place.pose = Self.values(anchor.transform)
         install(place, anchor: anchor)
         restoredPlaces.append(place)
@@ -954,8 +875,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// Places ARKit restored from the saved map, with their pose now known (to store once).
     var restoredPlaces: [SpaceMemory.Place] = []
 
-    /// `measured`: just pointed at in this session. Otherwise (from storage or a linked piece)
-    /// Pip finds it again the first time it points at it, and corrects its position.
+    /// `measured`: just pointed at in this session. Otherwise (from storage) Pip finds it again
+    /// the first time it points at it, and corrects its position.
     private func install(_ place: SpaceMemory.Place, anchor: ARAnchor, measured: Bool = false) {
         let id = nextPlaceMark
         nextPlaceMark += 1
@@ -966,16 +887,6 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         places[id] = place
         if !measured, let phrase = place.phrase {
             tracks[id] = ObjectTrack(place: TargetSpec(x: 500, y: 500, phrase: phrase, text: place.text ?? []), now: CACurrentMediaTime())
-        }
-    }
-
-    /// The session drifted against the map piece these places came from: move them along.
-    func applyDrift(_ delta: simd_float4x4, toPlaces ids: Set<UUID>) {
-        for (id, stored) in places where ids.contains(stored.id) {
-            guard let m = marks[id] else { continue }
-            let before = m.centroid
-            let world = m.polygons.map { ring in ring.map { (delta * simd_float4($0 - m.glide, 1)).xyz } }
-            place(AnchoredMark(id: id, world: world), glideFrom: before)
         }
     }
 

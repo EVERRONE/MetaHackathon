@@ -64,9 +64,10 @@ public final class EdgeTAM: @unchecked Sendable {
         initializer = try load(Self.names[1], .all)
         memoryEncoder = try load(Self.names[2], .cpuAndNeuralEngine)
         propagator = try load(Self.names[3], .cpuAndNeuralEngine)
-        spatialBank = try MLMultiArray(shape: [1, 7, 512, 64], dataType: .float16)
-        spatialPositions = try MLMultiArray(shape: [1, 7, 512, 64], dataType: .float16)
-        pointerBank = try MLMultiArray(shape: [1, 16, 256], dataType: .float16)
+        let bank = [1, Self.slots, Self.tokens, Self.dim].map { NSNumber(value: $0) }
+        spatialBank = try MLMultiArray(shape: bank, dataType: .float16)
+        spatialPositions = try MLMultiArray(shape: bank, dataType: .float16)
+        pointerBank = try MLMultiArray(shape: [1, Self.pointerSlots, Self.pointerDim].map { NSNumber(value: $0) }, dataType: .float16)
         attentionBias = try MLMultiArray(shape: [1, 1, 1, 3648], dataType: .float16)
         Self.zero(attentionBias)
         loadSeconds = CACurrentMediaTime() - t0
@@ -83,7 +84,6 @@ public final class EdgeTAM: @unchecked Sendable {
         }
     }
 
-    public var isSeeded: Bool { seedMemory != nil }
 
     // MARK: Tracking
 
@@ -206,17 +206,12 @@ public final class EdgeTAM: @unchecked Sendable {
         recent.append(Memory(features: Self.copy(try array(out, "memory_features")),
                              positions: Self.copy(try array(out, "memory_positions")),
                              pointer: Self.copy(try array(out, "object_pointer"))))
-        if recent.count > 15 { recent.removeFirst(recent.count - 15) }
+        if recent.count > Self.pointerSlots - 1 { recent.removeFirst(recent.count - (Self.pointerSlots - 1)) }
         var f = try frame(out, encodeMs: encoded.encodeMs, decodeMs: (CACurrentMediaTime() - t1) * 1000)
         f.bankMs = (t2 - t1) * 1000
         f.propagateMs = (t3 - t2) * 1000
         f.readMs = (CACurrentMediaTime() - t3) * 1000
         return f
-    }
-
-    public func reset() {
-        seedMemory = nil
-        recent = []
     }
 
     /// Takes the last tracked frame out of the memory bank: its mask was on something else (see
@@ -242,14 +237,14 @@ public final class EdgeTAM: @unchecked Sendable {
                         }
                     }
                 }
-                place(seed, slot: 6, row: 6)
-                for (back, m) in recent.reversed().prefix(6).enumerated() { place(m, slot: back, row: back) }
+                place(seed, slot: Self.slots - 1, row: Self.slots - 1)
+                for (back, m) in recent.reversed().prefix(Self.slots - 1).enumerated() { place(m, slot: back, row: back) }
             }
         }
         pointerBank.withUnsafeMutableBufferPointer(ofType: Float16.self) { p, _ in
             p.initialize(repeating: 0)
             for i in 0..<Self.pointerDim { p[i] = seed.pointer[i] }
-            for (k, m) in recent.reversed().prefix(15).enumerated() {
+            for (k, m) in recent.reversed().prefix(Self.pointerSlots - 1).enumerated() {
                 for i in 0..<Self.pointerDim { p[(k + 1) * Self.pointerDim + i] = m.pointer[i] }
             }
         }
