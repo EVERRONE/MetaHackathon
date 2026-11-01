@@ -140,6 +140,8 @@ final class GuideModel: ObservableObject {
     /// The plan offer was the last thing said: a yes (or "okay") answers it. After other talk
     /// it is made again first.
     var offerFresh = false
+    /// Step checks started (see `verify`): a check cut off leaves its step to a newer one.
+    var checksStarted = 0
     /// A yes/no question from the runtime was just asked, with no other talk since.
     var questionFresh = false
     /// The plan being prepared in the background (search, read, compile), and its goal.
@@ -297,6 +299,10 @@ final class GuideModel: ObservableObject {
     }
 
     private var early: EarlyTurn?
+    /// Words an early look went on with when no final transcript came in time, and when.
+    private var confirmedEarly: (words: [String], at: Date)?
+    /// Bumped by `resetConversation`: a look cut off by it does not write the forgotten turn back.
+    private var conversation = 0
 
     private func startEarly(_ text: String) {
         guard early == nil, !busy, !muted, phase == .hearing, wouldLook(text),
@@ -317,6 +323,7 @@ final class GuideModel: ObservableObject {
             guard let self, let e = self.early, e.gate === gate else { return }
             self.log("early: no final transcript; the words stand")
             self.early = nil
+            self.confirmedEarly = (e.words, Date())
             gate.open(true)
         }
     }
@@ -398,8 +405,9 @@ final class GuideModel: ObservableObject {
                 activeLook = nil
                 phase = .hearing
             }
-            // A hazard stops Pip at once, also as a single word ("Sparks!", "Rook!").
-            if bargeInPending, wordCount(text) >= 2 || SafetyPolicy.spokenHazard(in: text) != nil {
+            // A hazard stops Pip at once, also as a single word ("Sparks!", "Rook!"). Other words,
+            // two or more, unless they are all Pip's own (its echo, too short for `isEcho`).
+            if bargeInPending, (wordCount(text) >= 2 && !saidByPip(text)) || SafetyPolicy.spokenHazard(in: text) != nil {
                 log("barge-in")
                 bargeInPending = false
                 interrupt()
@@ -420,6 +428,15 @@ final class GuideModel: ObservableObject {
                 log("barge-in: hazard")
                 interrupt()
             }
+            // The wait confirmed these words already (no final came in time): this late final only
+            // confirms them too (1 Nov review: it was taken for the user talking over Pip, and the
+            // answer was cut off and the question asked again).
+            let late = confirmedEarly
+            confirmedEarly = nil
+            if early == nil, !hazard, let late, words(text) == late.words, Date().timeIntervalSince(late.at) < 15 {
+                log("early: the final transcript came late; it confirms the words")
+                return
+            }
             // Pip already started on these words: the final transcript only confirms them.
             if let e = early {
                 early = nil
@@ -433,6 +450,7 @@ final class GuideModel: ObservableObject {
                 e.gate.open(false)
                 task?.cancel()
                 activeLook = nil
+                phase = .hearing
             }
             // The user's words while Pip speaks or looks. Said over Pip: a command ("stop", "wacht",
             // "herhaal", "klaar": too short to stop it on the partials, where a cough is one word
@@ -441,8 +459,7 @@ final class GuideModel: ObservableObject {
             // 5."): any words. Pip gives way, but not to its own echo ("zeg klaar als…").
             let command = Command.parse(text)
             let saidOver = spokeOver && (wordCount(text) >= 2 || (command != nil && command != .yes && Utterance.acknowledgement(text) == nil))
-            if busy, saidOver || beganQuiet, !hazard, !muted, text.count >= 2, !isEcho(text),
-               !Set(words(text)).isSubset(of: Set(words(self.speaker.recentText.joined(separator: " ")))),
+            if busy, saidOver || beganQuiet, !hazard, !muted, text.count >= 2, !isEcho(text), !saidByPip(text),
                acceptSpeaker(speaker, text: text) {
                 log("barge-in: \(text)")
                 interrupt()
@@ -492,6 +509,11 @@ final class GuideModel: ObservableObject {
         return Double(heardWords.intersection(spoken).count) / Double(heardWords.count) > 0.8
     }
 
+    /// Whether every word of `text` is one Pip said lately (its own voice, heard back).
+    private func saidByPip(_ text: String) -> Bool {
+        Set(words(text)).isSubset(of: Set(words(speaker.recentText.joined(separator: " "))))
+    }
+
     /// One look: Pip answers `utterance`, or carries out `directive` (give a step, check a step).
     /// `onState` receives the model's state tag, which a check uses as its evidence.
     /// `gate`: started before the final transcript (see `startEarly`); nothing is said, shown or
@@ -501,7 +523,7 @@ final class GuideModel: ObservableObject {
               lookups: Bool = true, onState: (([String: String]) -> Void)? = nil) async {
         lastModelCall = Date()
         lookCount += 1
-        let me = lookCount
+        let me = lookCount, conversation = self.conversation
         activeLook = me
         defer { if activeLook == me { activeLook = nil } }
         phase = .looking
@@ -622,10 +644,12 @@ final class GuideModel: ObservableObject {
             guard confirmed else {
                 gate?.abandon()
                 recorder?.finish(rawText: nil)
+                listenUnlessAnotherLook(me)
                 return
             }
-            // Pip's own silent turns (a false alarm while watching) are not kept.
-            if directive == nil || !spokenThisTurn.isEmpty { remember(directive == nil ? utterance : "(Pip's own turn)") }
+            // Pip's own silent turns (a false alarm while watching) are not kept, nor a turn of a
+            // conversation reset meanwhile.
+            if directive == nil || !spokenThisTurn.isEmpty, self.conversation == conversation { remember(directive == nil ? utterance : "(Pip's own turn)") }
             if !speaker.isSpeaking, phase == .looking || phase == .speaking { phase = muted ? .muted : .listening }
         } catch {
             note("error: \(error)")
@@ -633,9 +657,10 @@ final class GuideModel: ObservableObject {
             guard confirmed else {
                 gate?.abandon()
                 recorder?.finish(rawText: nil)
+                listenUnlessAnotherLook(me)
                 return
             }
-            remember(utterance)
+            if self.conversation == conversation { remember(utterance) }
             if !Task.isCancelled { phase = .failed("Look failed: \(error)") }
         }
         recorder?.finish(rawText: raw)
@@ -667,7 +692,14 @@ final class GuideModel: ObservableObject {
         if history.count > 16 { history.removeFirst(history.count - 16) }
     }
 
+    /// An early look ended unseen: Pip listens again, unless another look has the screen already.
+    private func listenUnlessAnotherLook(_ me: Int) {
+        guard activeLook == me || activeLook == nil, phase == .looking else { return }
+        phase = muted ? .muted : .listening
+    }
+
     func resetConversation() {
+        conversation += 1
         interrupt()
         cancelPreparing()
         cancelReading()

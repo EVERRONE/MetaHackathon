@@ -155,7 +155,7 @@ extension GuideModel {
     /// change nothing (the reader takes pages by itself).
     private func handleWhileReading(_ text: String, command: Command?) -> Bool {
         let words = Set(Utterance.words(text))
-        let lower = text.lowercased()
+        let lower = text.lowercased().replacingOccurrences(of: "’", with: "'")
         // A bare "stop" is a pause elsewhere; here it ends the reading. "Wacht" or "hold on"
         // (turning a page) must not throw away the pages taken so far.
         if command == .stop || (command == .pause && words.contains("stop")) || words.contains("annuleer") || words.contains("cancel") {
@@ -189,6 +189,7 @@ extension GuideModel {
     /// speaks or looks for them, but what the runtime decided is still logged, and a stop still
     /// ends the task with its warning.
     func perform(_ actions: [ProcedureRuntime.Action], heard: String? = nil) async {
+        let checks = checksStarted
         var first = true
         for action in actions {
             let cut = Task.isCancelled
@@ -198,8 +199,12 @@ extension GuideModel {
             case .instruct(let i):
                 if !cut { await instruct(i) }
             case .verify(let i):
-                // Not looked at: the step waits for the user again.
-                if cut { _ = runtime?.handle(.interrupted) } else { await verify(i) }
+                // Not looked at: the step waits for the user again (unless a newer check took it up).
+                if cut {
+                    if checksStarted == checks { _ = runtime?.handle(.interrupted) }
+                } else {
+                    await verify(i)
+                }
             case .askGate(_, let condition):
                 // Unasked, a later "yes" gets the question first (questionFresh stays false).
                 guard !cut else { break }
@@ -273,6 +278,8 @@ extension GuideModel {
     }
 
     private func verify(_ i: Int) async {
+        checksStarted += 1
+        let me = checksStarted
         guard let rt = runtime, rt.procedure.steps.indices.contains(i), let snapshot = ar.snapshot() else {
             _ = runtime?.handle(.interrupted)
             return
@@ -282,7 +289,9 @@ extension GuideModel {
         await look("(check step \(i + 1))", snapshot: snapshot, started: Date(), directive: phrases.verify(step: i + 1, expected: expected), lookups: false) { state in
             evidence = (state["step"] == "done", Double(state["conf"] ?? "") ?? 0)
         }
-        guard var current = runtime, current.index == i else { return }
+        // A newer check of the step started meanwhile (the user said "klaar" again): it decides
+        // (1 Nov review: this one, cut off, set the step back, and the newer one's "I see it" did not count).
+        guard var current = runtime, current.index == i, checksStarted == me else { return }
         guard !Task.isCancelled else {
             // Cut off: the step waits for the user again, and watching resumes.
             _ = current.handle(.interrupted)
@@ -405,9 +414,17 @@ extension GuideModel {
         sessionLog.add(.started, "\(compiled.procedure.title) · source: \(compiled.procedure.source.reference ?? "none")")
         refreshTaskView()
         if let note = compiled.mismatch { say(phrases.mismatch(note)) }
-        offering = true
-        offerFresh = true
-        say(phrases.offer(compiled.procedure.steps.count, source: compiled.procedure.source.kind))
+        // Offered once Pip is free and the user not speaking: a "ja" or "nee" begun before the offer
+        // (to Pip's question about the device) is no answer to it (1 Nov review: a "nee" said to
+        // "is this the Azur?" threw the plan away). As the memory question waits (askConsentOnce).
+        Task {
+            while speaker.isSpeaking || lookActive || phase == .hearing { try? await Task.sleep(nanoseconds: 200_000_000) }
+            // Cancelled, or started, meanwhile.
+            guard let rt = runtime, !rt.isActive, !offering else { return }
+            offering = true
+            offerFresh = true
+            say(phrases.offer(rt.procedure.steps.count, source: rt.procedure.source.kind))
+        }
     }
 
     func startTask(heard: String) async {
