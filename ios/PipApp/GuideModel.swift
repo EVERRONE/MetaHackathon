@@ -401,7 +401,7 @@ final class GuideModel: ObservableObject {
             // The service heard the user stop: Pip starts on the words at once (see `startEarly`).
             if !busy, !heard.isEmpty { startEarly(heard) }
         case .final(_, let text, let speaker):
-            let spokeOver = bargeInPending || turnBeganQuiet
+            let spokeOver = bargeInPending, beganQuiet = turnBeganQuiet
             bargeInPending = false
             turnBeganQuiet = false
             // A hazard is never dropped, also not while Pip speaks or looks, and not for being
@@ -425,11 +425,14 @@ final class GuideModel: ObservableObject {
                 task?.cancel()
                 activeLook = nil
             }
-            // The user's words while Pip speaks or looks: a command said over Pip ("stop", "wacht",
-            // "klaar": too short to stop it on the partials, where a cough is one word too), more
-            // words whose partials were one, or a turn begun before Pip started talking on its own.
-            // Pip gives way, but not to its own echo ("zeg klaar als…").
-            if busy, spokeOver, !hazard, !muted, text.count >= 2, !isEcho(text), wordCount(text) >= 2 || Command.parse(text) != nil,
+            // The user's words while Pip speaks or looks. Said over Pip: a command ("stop", "wacht",
+            // "herhaal", "klaar": too short to stop it on the partials, where a cough is one word
+            // too), or more words whose partials were one; not a "ja" or "oké" said while listening.
+            // Or a turn the user began before Pip started talking on its own (a plan offer, "Page
+            // 5."): any words. Pip gives way, but not to its own echo ("zeg klaar als…").
+            let command = Command.parse(text)
+            let saidOver = spokeOver && (wordCount(text) >= 2 || (command != nil && command != .yes && Utterance.acknowledgement(text) == nil))
+            if busy, saidOver || beganQuiet, !hazard, !muted, text.count >= 2, !isEcho(text),
                !Set(words(text)).isSubset(of: Set(words(self.speaker.recentText.joined(separator: " ")))),
                acceptSpeaker(speaker, text: text) {
                 log("barge-in: \(text)")

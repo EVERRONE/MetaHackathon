@@ -70,7 +70,8 @@ public enum Utterance {
     static let yesStarts: [[String]] = [
         ["ja"], ["jawel"], ["jazeker"], ["yes"], ["yeah"], ["yep"], ["yup"], ["zeker"], ["graag"], ["klopt"], ["correct"],
         ["let's", "go"], ["lets", "go"], ["let's", "do", "it"], ["lets", "do", "it"], ["let's", "start"], ["lets", "start"],
-        ["go", "ahead"], ["start"], ["begin"], ["doe", "maar"], ["ga", "maar"], ["ga", "je", "gang"], ["of", "course"],
+        ["go", "ahead"], ["start", "maar"], ["begin", "maar"], ["start"], ["begin"], ["doe", "maar"], ["ga", "maar"], ["ga", "je", "gang"],
+        ["of", "course"],
     ]
     /// As much "I heard you" as yes: "okay, let me check" has not answered anything yet, so after
     /// these only a plain yes ("oké, doe maar") or filler ("oké dan") may follow.

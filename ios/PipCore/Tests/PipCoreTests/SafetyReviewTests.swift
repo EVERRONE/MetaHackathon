@@ -10,7 +10,7 @@ import Testing
             #expect(!Utterance.startsWithYes(text), "\(text)")
         }
         for text in ["Yes, I'm in Settings now", "Ja, de stroom is uit", "Yeah, the breaker is down now", "Okay, doe maar",
-                     "Oké dan", "Ok, let's go", "Ja hoor, hij is uit"] {
+                     "Oké dan", "Ok, let's go", "Ja hoor, hij is uit", "Prima, begin maar", "Oké, start maar", "Yes please"] {
             #expect(Utterance.startsWithYes(text), "\(text)")
         }
     }
