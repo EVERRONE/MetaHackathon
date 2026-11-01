@@ -397,12 +397,22 @@ final class GuideModel: ObservableObject {
             // The service heard the user stop: Pip starts on the words at once (see `startEarly`).
             if !busy, !heard.isEmpty { startEarly(heard) }
         case .final(_, let text, let speaker):
+            let spokeOver = bargeInPending
             bargeInPending = false
             // A hazard is never dropped, also not while Pip speaks or looks, and not for being
             // said by someone else: it stops everything.
             let hazard = !muted && text.count >= 2 && !isEcho(text) && SafetyPolicy.spokenHazard(in: text) != nil
             if hazard, busy {
                 log("barge-in: hazard")
+                interrupt()
+            }
+            // A one-word command said over Pip ("stop", "wacht", "klaar", "ja"): too short to stop
+            // Pip on the partials, where a cough is one word too, but the final makes it a command.
+            // Not when Pip itself is saying those words ("zeg klaar als…"): that is its echo.
+            if spokeOver, busy, !hazard, !muted, text.count >= 2, !isEcho(text), Command.parse(text) != nil,
+               !Set(words(text)).isSubset(of: Set(words(self.speaker.recentText.joined(separator: " ")))),
+               acceptSpeaker(speaker, text: text) {
+                log("barge-in: \(text)")
                 interrupt()
             }
             // Pip already started on these words: the final transcript only confirms them.
@@ -511,7 +521,8 @@ final class GuideModel: ObservableObject {
         if let rt = runtime, rt.isActive, let step = rt.current {
             request.goal = rt.procedure.title
             request.step = PipPrompt.Step(index: rt.index + 1, count: rt.procedure.steps.count, instruction: step.instruction,
-                                          expected: step.check.kind == .camera ? step.check.expected : nil)
+                                          expected: step.check.kind == .camera ? step.check.expected : nil,
+                                          waitingFor: rt.statuses[rt.index] == .gated ? step.gate : nil)
         }
         var firstWord: Double?
         var raw: String?

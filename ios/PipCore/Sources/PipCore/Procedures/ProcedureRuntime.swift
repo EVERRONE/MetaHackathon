@@ -28,8 +28,6 @@ public struct ProcedureRuntime: Sendable {
 
     public enum Input: Equatable, Sendable {
         case start
-        /// The step's instruction has been spoken.
-        case instructed
         /// The user says they did it ("klaar", "done", "next").
         case userDone
         /// A verification look: whether the expected result is visible, and how sure.
@@ -123,9 +121,6 @@ public struct ProcedureRuntime: Sendable {
         guard mode == .running, current != nil else { return [] }
 
         switch input {
-        case .instructed:
-            if statuses[index] != .gated { statuses[index] = .awaitingAction }
-            return []
         case .interrupted:
             if statuses[index] == .verifying, pendingQuestion == nil { statuses[index] = .awaitingAction }
             return []
@@ -174,6 +169,12 @@ public struct ProcedureRuntime: Sendable {
         case .repeatStep:
             return repeatCurrent()
         case .skip:
+            // Skipping a step never skips its safety question: what follows needs that condition
+            // as much, so the next step asks it.
+            if statuses[index] == .gated, let gate = current?.gate, procedure.steps.indices.contains(index + 1) {
+                let own = procedure.steps[index + 1].gate
+                procedure.steps[index + 1].gate = own.map { $0 == gate ? $0 : "\(gate); \($0)" } ?? gate
+            }
             return complete(.skipped)
         default:
             return []

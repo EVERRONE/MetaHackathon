@@ -20,7 +20,6 @@ private func sample(gate: String? = nil) -> Procedure {
     @Test func walksThroughStepsOnlyWithEvidence() {
         var r = ProcedureRuntime(procedure: sample())
         #expect(r.handle(.start) == [.instruct(step: 0)])
-        _ = r.handle(.instructed)
         #expect(r.handle(.userDone) == [.verify(step: 0)])
         // Not seen clearly: no progress.
         #expect(r.handle(.verified(seen: true, confidence: 0.5)) == [])

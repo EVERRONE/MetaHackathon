@@ -183,12 +183,15 @@ public enum PipPrompt {
         public var count: Int
         public var instruction: String
         public var expected: String?
+        /// A safety condition the user has not confirmed yet: the step must not start.
+        public var waitingFor: String?
 
-        public init(index: Int, count: Int, instruction: String, expected: String? = nil) {
+        public init(index: Int, count: Int, instruction: String, expected: String? = nil, waitingFor: String? = nil) {
             self.index = index
             self.count = count
             self.instruction = instruction
             self.expected = expected
+            self.waitingFor = waitingFor
         }
     }
 
@@ -200,6 +203,9 @@ public enum PipPrompt {
             var s = "Current step \(step.index)/\(step.count): \(step.instruction)"
             if let e = step.expected { s += " Expected result: \(e)" }
             lines.append(s)
+            if let w = step.waitingFor {
+                lines.append("Not started: Pip asked the user to confirm \"\(w)\" first. Do not tell them to do the step. If they say it holds, ask them to answer yes; only that confirms it.")
+            }
         }
         if !facts.isEmpty {
             lines.append("What you know (do not ask again):")

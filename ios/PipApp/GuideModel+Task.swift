@@ -172,36 +172,42 @@ extension GuideModel {
         return true
     }
 
-    /// Carries out the runtime's actions in order.
+    /// Carries out the runtime's actions in order. Cut off (the user spoke on), Pip no longer
+    /// speaks or looks for them, but what the runtime decided is still logged, and a stop still
+    /// ends the task with its warning.
     func perform(_ actions: [ProcedureRuntime.Action], heard: String? = nil) async {
         var first = true
         for action in actions {
-            if Task.isCancelled { return }
+            let cut = Task.isCancelled
             let userWords = first ? heard : nil
             first = false
             switch action {
             case .instruct(let i):
-                await instruct(i)
+                if !cut { await instruct(i) }
             case .verify(let i):
-                await verify(i)
+                // Not looked at: the step waits for the user again.
+                if cut { _ = runtime?.handle(.interrupted) } else { await verify(i) }
             case .askGate(_, let condition):
+                // Unasked, a later "yes" gets the question first (questionFresh stays false).
+                guard !cut else { break }
                 say(phrases.gate(condition), heard: userWords)
                 questionFresh = true
             case .askResult(_, let expected):
+                guard !cut else { break }
                 say(phrases.askResult(expected), heard: userWords)
                 questionFresh = true
             case .cannotCheck(let i, let expected):
                 sessionLog.add(.notVerifiable, step: i, expected)
-                say(phrases.cannotCheck(expected), heard: userWords)
+                if !cut { say(phrases.cannotCheck(expected), heard: userWords) }
             case .stepDone(let i, let outcome):
                 switch outcome {
                 case .cameraVerified:
                     sessionLog.add(.verified, step: i, "seen on camera")
                     ar.markVerified()
-                    say(phrases.verified, heard: userWords)
+                    if !cut { say(phrases.verified, heard: userWords) }
                 case .userConfirmed:
                     sessionLog.add(.confirmed, step: i, "confirmed by the user")
-                    say(phrases.confirmed, heard: userWords)
+                    if !cut { say(phrases.confirmed, heard: userWords) }
                 case .notVerifiable:
                     break
                 case .skipped:
@@ -209,7 +215,7 @@ extension GuideModel {
                 }
             case .finished:
                 sessionLog.add(.finished, "all steps done")
-                say(phrases.finished, heard: userWords)
+                if !cut { say(phrases.finished, heard: userWords) }
             case .stopped(let reason):
                 sessionLog.add(.stopped, step: runtime?.index, reason)
                 say(SafetyPolicy.escalation(reason, language: language), heard: userWords)
@@ -222,9 +228,9 @@ extension GuideModel {
                 offering = false
                 questionFresh = false
             case .paused:
-                say(phrases.paused, heard: userWords)
+                if !cut { say(phrases.paused, heard: userWords) }
             case .resumed:
-                say(phrases.resumed, heard: userWords)
+                if !cut { say(phrases.resumed, heard: userWords) }
             }
             refreshTaskView()
         }
@@ -242,10 +248,6 @@ extension GuideModel {
         var alreadyDone = false
         await look("(step \(i + 1))", snapshot: snapshot, started: Date(), directive: phrases.instruct(step: i + 1, of: rt.procedure.steps.count, text)) { state in
             alreadyDone = state["step"] == "done" && (Double(state["conf"] ?? "") ?? 0) >= 0.8
-        }
-        if var current = runtime, current.index == i {
-            _ = current.handle(.instructed)
-            runtime = current
         }
         // Watching starts afresh for this step. When the step's result was already visible, that
         // counts as the first of the two sightings watching needs, so Pip moves on after one more.

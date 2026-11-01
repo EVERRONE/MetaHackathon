@@ -142,16 +142,34 @@ public enum SafetyPolicy {
     }
 
     /// Words in the user's speech that stop the task at once.
-    static let spokenHazards = ["rook", "vonk", "vonken", "vonkt", "brandgeur", "schroeilucht", "er is brand", "in brand", "vlammen",
-                                "gaslucht", "ruik gas", "rook gas", "gas lekt", "schok gekregen", "een schok", "elektrische schok",
+    static let spokenHazards = ["rook", "rookt", "vonk", "vonken", "vonkt", "brandgeur", "brandlucht", "schroeilucht", "er is brand",
+                                "in brand", "vlammen", "gaslucht", "gaslek", "ruik gas", "rook gas", "gas lekt", "schok gekregen",
+                                "een schok", "elektrische schok", "kreeg stroom", "krijg stroom", "stroom gekregen", "geelektrocuteerd",
                                 "ik ben gewond", "gewond", "bloed", "bloedt",
-                                "smoke", "sparks", "spark", "sparking", "burning smell", "smells burnt", "smells like burning", "on fire",
-                                "caught fire", "a fire", "flames", "smell gas", "gas leak", "got a shock", "electric shock", "shocked me",
+                                "smoke", "smoking", "sparks", "spark", "sparking", "burning smell", "smells burnt", "smells like burning",
+                                "on fire", "caught fire", "a fire", "flames", "smell gas", "gas leak", "got a shock", "electric shock",
+                                "shocked me", "got shocked", "get shocked", "getting shocked", "electrocuted",
                                 "i'm hurt", "im hurt", "i am hurt", "injured", "bleeding"]
-    /// A negation just before the hazard word ("geen rook", "no smoke", "there's no sparks").
+    /// A smell of gas or of burning, in either order within the clause: "it smells like gas", "I
+    /// smell burning", "ik ruik iets branden", "ik denk dat het naar gas ruikt".
+    static let smellWords: Set<String> = ["smell", "smells", "smelling", "smelled", "stink", "stinks", "ruik", "ruikt", "ruiken",
+                                          "riekt", "rieken", "stinkt"]
+    static let smelled: [String: String] = [
+        "gas": "gaslucht",
+        "burning": "brandgeur", "burnt": "brandgeur", "burned": "brandgeur", "burn": "brandgeur", "brand": "brandgeur",
+        "branden": "brandgeur", "brandt": "brandgeur", "verbrand": "brandgeur", "aangebrand": "brandgeur",
+        "geschroeid": "brandgeur", "schroeien": "brandgeur",
+    ]
+    /// A negation of the hazard: right before it, or with at most two of these between ("no smoke",
+    /// "there isn't any smoke", "geen enkele vonk", "I can't see any smoke", "it doesn't smell like
+    /// smoke"). Further away it is about something else: "ik weet niet waarom het vonkt".
     static let negations: Set<String> = ["geen", "niet", "niks", "niets", "no", "not", "never", "nothing", "zonder", "without"]
-    /// A negation just after it, which only Dutch word order has ("ik rook niks", "het vonkt niet").
-    /// In English a "not" after the hazard contrasts it ("smoke, not steam"): still a hazard.
+    static let negationFillers: Set<String> = ["any", "more", "a", "single", "real", "visible", "like", "see", "smell", "notice",
+                                               "hear", "feel", "enkele", "meer", "een", "echte", "zichtbare", "naar", "zie", "ruik",
+                                               "hoor", "voel"]
+    /// A negation right after it, which only Dutch word order has ("ik rook niks", "het vonkt niet").
+    /// Only the very next word: in "de rook gaat niet weg" the "niet" is about going away. In
+    /// English a "not" after the hazard contrasts it ("smoke, not steam"): still a hazard.
     static let negationsAfter: Set<String> = ["niet", "niks", "niets"]
 
     public static func spokenHazard(in utterance: String) -> String? {
@@ -169,16 +187,36 @@ public enum SafetyPolicy {
             let parts = hazard.split(separator: " ").map(String.init)
             guard parts.count <= words.count else { continue }
             for start in 0...(words.count - parts.count) where Array(words[start..<start + parts.count]) == parts {
-                // "oh no sparks" without the comma: that "no" is a cry too.
-                let negatedBefore = (max(0, start - 3)..<start).contains { i in
-                    negations.contains(words[i]) && !(words[i] == "no" && i > 0 && words[i - 1] == "oh")
-                }
-                let after = words[(start + parts.count)..<min(words.count, start + parts.count + 2)]
+                let end = start + parts.count
                 // "geen rook", "no smoke", "ik rook niks": not a hazard.
-                if negatedBefore || after.contains(where: { negationsAfter.contains($0) }) { continue }
+                if negated(words, before: start) || (end < words.count && negationsAfter.contains(words[end])) { continue }
+                return hazard
+            }
+        }
+        for (g, word) in words.enumerated() {
+            // "smells brand new" is no fire.
+            guard let hazard = smelled[word], !(word == "brand" && g + 1 < words.count && words[g + 1] == "new") else { continue }
+            for s in words.indices where smellWords.contains(words[s]) {
+                let lo = min(s, g), hi = max(s, g)
+                // "ik ruik geen gas", "it doesn't smell like gas": calm.
+                if words[lo...hi].contains(where: isNegation) || negated(words, before: lo) { continue }
                 return hazard
             }
         }
         return nil
+    }
+
+    static func isNegation(_ word: String) -> Bool { negations.contains(word) || word.hasSuffix("n't") }
+
+    /// Whether the words just before `index` negate what starts there. "Oh no" is a cry.
+    static func negated(_ words: [String], before index: Int) -> Bool {
+        var i = index - 1, between = 0
+        while i >= 0 {
+            if isNegation(words[i]) { return !(words[i] == "no" && i > 0 && words[i - 1] == "oh") }
+            guard between < 2, negationFillers.contains(words[i]) else { return false }
+            between += 1
+            i -= 1
+        }
+        return false
     }
 }
