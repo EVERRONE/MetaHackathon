@@ -105,8 +105,8 @@ extension GuideModel {
         func distance(_ p: MapPiece) -> Double { p.light.map { $0.distance(to: now) } ?? 1 }
         // Any saved room of here, not only the next ones in line; among those in the same light,
         // the one updated last.
-        let others = savedPieces.filter { $0.id != tried.id && $0.keyframes.count >= 10 }
-        guard let best = others.min(by: { distance($0) != distance($1) ? distance($0) < distance($1) : $0.updated > $1.updated }),
+        let rivals = savedPieces.filter { $0.id != tried.id && $0.keyframes.count >= 10 }
+        guard let best = rivals.min(by: { distance($0) != distance($1) ? distance($0) < distance($1) : $0.updated > $1.updated }),
               distance(best) + 0.8 < distance(tried),
               let map = usableMap(best) else {
             Relocalisation.log(String(format: "light now %.0f lm, %.0f K; trying piece %@ (its light %@)", now.intensity, now.temperature,
