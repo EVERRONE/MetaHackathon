@@ -269,6 +269,7 @@ struct MemorySheet: View {
     @AppStorage(EdgeTAMFollower.enabledKey) private var edgeTAMTest = true
     @AppStorage(EdgeTAMFollower.maskKey) private var edgeTAMMask = false
     @AppStorage(Diagnostics.key) private var testRecord = true
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -301,6 +302,8 @@ struct MemorySheet: View {
                     Toggle("Follow objects with EdgeTAM", isOn: $edgeTAMTest)
                     Toggle("Show EdgeTAM's mask (cyan)", isOn: $edgeTAMMask)
                     Toggle("Keep a test record", isOn: Binding(get: { testRecord }, set: { testRecord = $0; Diagnostics.setEnabled($0) }))
+                    Button("Record a 15 s test clip (starts after 5 s)") { model.clipRecorder.start(); dismiss() }
+                        .disabled(!testRecord)
                     ForEach(ar.statusLines.sorted { $0.key < $1.key }.map(\.value), id: \.self) { Text($0).font(.caption.monospaced()) }
                 } header: {
                     Text("Tests")

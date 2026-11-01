@@ -19,7 +19,7 @@ enum Diagnostics {
     static var documents: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
 
     /// What it writes, in Documents: a folder of runs each, and logs.
-    static let folders = ["looks", "edgetam", "overlay"]
+    static let folders = ["looks", "edgetam", "overlay", "clips"]
     static let logs = ["session.log", "map.log", "tracking.log", "edgetam.log", "relocalise.log"]
 
     /// Every file it writes goes through this queue, so lines keep their order and a deletion

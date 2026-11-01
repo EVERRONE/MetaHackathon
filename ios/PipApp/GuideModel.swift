@@ -76,6 +76,8 @@ final class GuideModel: ObservableObject {
     let captureGate = CaptureGate()
     /// How well outlines hold: every re-measurement, on this iPhone, to evaluate on the Mac.
     let trackingLog = TrackingLog()
+    /// Test clips of the camera, to replay object tracking on the Mac.
+    let clipRecorder = ClipRecorder()
     var foundCount = 0
     /// Places of other maps of this room are being looked for (see adoptPlacesOfThisRoom).
     var adoptingPlaces = false
@@ -217,7 +219,10 @@ final class GuideModel: ObservableObject {
             self.keyframes.consider(frame, gate: self.captureGate)
             self.mapKeeper.consider(frame, gate: self.captureGate)
             self.pageReader?.feed(frame)
+            self.clipRecorder.frame(frame)
         }
+        clipRecorder.onStatus = { [weak self] s in self?.ar.setStatusLine("clip", s) }
+        clipRecorder.onLog = { [weak self] s in self?.log(s) }
         // The room map is saved when the app goes to the background, so new places survive.
         NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.saveRoomNow() }
