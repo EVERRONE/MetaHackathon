@@ -119,11 +119,6 @@ public struct LinkBook: Sendable {
         return out
     }
 
-    /// A point of an earlier session in the live session, by the usable links nearest it.
-    public func carry(_ p: SIMD3<Float>, of session: UUID) -> SIMD3<Float>? {
-        linked[session].flatMap { SessionLink.carry(p, by: $0.usable) }
-    }
-
     /// A pose of an earlier session in the live session: by the strongest link of that very stored
     /// view (`view`) if it has one, else by the link whose evidence is nearest `near` (what a camera
     /// looked at, where an anchor is). Each session drifts: a link holds best near its own evidence.

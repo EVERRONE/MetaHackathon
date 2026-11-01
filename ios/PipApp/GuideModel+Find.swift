@@ -141,45 +141,6 @@ extension GuideModel {
         }
     }
 
-    /// After a room is recognised (or a new one starts), places remembered in other maps of the same
-    /// place on earth are looked for in this room's snapshots, quietly, a few at most: each found
-    /// one is anchored here, so "where is…" is answered at once. The user's idea (1 Nov): known
-    /// things as anchor points between the maps of one room.
-    func adoptPlacesOfThisRoom() async {
-        guard memory.consent == true, !adoptingPlaces else { return }
-        adoptingPlaces = true
-        defer { adoptingPlaces = false }
-        let here = Set(ar.places.values.map(\.id))
-        let location = mapKeeper.current.location
-        let pieces = Dictionary(uniqueKeysWithValues: MapStore.loadAll().map { ($0.id, $0) })
-        let orphans = memory.places.filter { p in
-            guard p.piece != mapKeeper.current.id, !here.contains(p.id) else { return false }
-            // Of this place on earth (or of a piece without a location).
-            guard let here = location, let piece = p.piece.flatMap({ pieces[$0] }), let there = piece.location else { return true }
-            return here.couldBeSamePlace(as: there)
-        }
-        let located = keyframes.frames.filter(\.located)
-        guard !orphans.isEmpty, located.count >= 8 else { return }
-        for place in orphans.prefix(3) {
-            // Never in the user's way: only while Pip is free.
-            guard !lookActive, !Task.isCancelled else { return }
-            let batch = Array(located.suffix(MemorySearch.tilesPerSheet * 4))
-            let outcome = await search(place.name, phrase: place.phrase ?? "", in: batch)
-            // The user started something meanwhile: later.
-            guard !lookActive, !Task.isCancelled else { return }
-            if case .found(let world, _, _) = outcome {
-                foundCount += 1
-                let id = ARController.foundMarkBase + foundCount % 90_000
-                // Not shown, and not in place of an object the user just had found.
-                ar.addFound(world: world, id: id, replacing: false)
-                adopt(place, mark: id)
-                ar.dropMark(id)
-            } else {
-                log("place \(place.name) of another map: not seen in this room's snapshots")
-            }
-        }
-    }
-
     // MARK: Shopping list
 
     func updateList(add: [String], got: [String], remove: [String]) {

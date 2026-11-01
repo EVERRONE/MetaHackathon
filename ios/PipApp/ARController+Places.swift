@@ -13,7 +13,6 @@ extension ARController {
         for (id, old) in places where old.name.lowercased() == name.lowercased() {
             removeMarks { $0 == id }
             places[id] = nil
-            restoredPlaces.removeAll { $0.id == old.id }
         }
         let world = m.polygons
         var t = matrix_identity_float4x4
@@ -36,20 +35,6 @@ extension ARController {
     static func matrix(_ v: [Float]) -> simd_float4x4 {
         simd_float4x4(columns: (simd_float4(v[0], v[1], v[2], v[3]), simd_float4(v[4], v[5], v[6], v[7]),
                                 simd_float4(v[8], v[9], v[10], v[11]), simd_float4(v[12], v[13], v[14], v[15])))
-    }
-
-    /// Places from memory: they appear once ARKit has restored their anchors from the room map.
-    func restore(_ saved: [SpaceMemory.Place]) {
-        for p in saved { pendingPlaces[p.anchorID] = p }
-        for anchor in arView.session.currentFrame?.anchors ?? [] { restorePlace(anchor) }
-    }
-
-    func restorePlace(_ anchor: ARAnchor) {
-        guard var place = pendingPlaces.removeValue(forKey: anchor.identifier) else { return }
-        // ARKit knows where the anchor is in this map: kept with the place.
-        place.pose = Self.values(anchor.transform)
-        install(place, anchor: anchor)
-        restoredPlaces.append(place)
     }
 
     /// A remembered place of an earlier session linked to this one (SpaceLinker): on an anchor of its
@@ -77,9 +62,6 @@ extension ARController {
     }
 
     func forgetPlace(_ placeID: UUID) {
-        pendingPlaces = pendingPlaces.filter { $0.value.id != placeID }
-        // Or the next save would write it back.
-        restoredPlaces.removeAll { $0.id == placeID }
         guard let (id, _) = places.first(where: { $0.value.id == placeID }) else { return }
         removeMarks { $0 == id }
         places[id] = nil
@@ -87,8 +69,6 @@ extension ARController {
 
     /// Every place, also the ones only known this session.
     func forgetAllPlaces() {
-        pendingPlaces = [:]
-        restoredPlaces = []
         removeMarks { $0 >= Self.placeMarkBase }
         places = [:]
     }
@@ -129,19 +109,13 @@ extension ARController {
 
     /// A found object from the visual memory, outlined in the room (not remembered across
     /// sessions). The previous found object gives way.
-    func addFound(world polygons: [[simd_float3]], id: Int, replacing: Bool = true, spec: TargetSpec? = nil) {
-        if replacing { removeMarks { $0 >= Self.foundMarkBase && $0 < Self.placeMarkBase } }
+    func addFound(world polygons: [[simd_float3]], id: Int, spec: TargetSpec? = nil) {
+        removeMarks { $0 >= Self.foundMarkBase && $0 < Self.placeMarkBase }
         let m = AnchoredMark(id: id, world: polygons)
         place(m)
         // Found in a snapshot (possibly of an earlier session): found again on sight and corrected,
         // like a remembered place.
         if let spec { tracks[id] = ObjectTrack(place: spec, now: CACurrentMediaTime()) }
-        // The snapshots that can be searched now are of the saved room, in its coordinates.
-        if awaitingFirstRelocalisation { inSavedRoomCoordinates.insert(id) }
-    }
-
-    func dropMark(_ id: Int) {
-        removeMarks { $0 == id }
     }
 
     /// Saves the room map with the places' anchors only (outline anchors are for this session).
@@ -149,9 +123,6 @@ extension ARController {
     /// gets nil when Pip gives up.
     /// `store` gets the map, or nil with the reason it was not good enough.
     func saveMap(attempt: Int = 0, _ store: @escaping (ARWorldMap?, String) -> Void) {
-        // While ARKit is still recognising the saved room, this session's map is in a frame of
-        // its own: saving it would spoil the room's map.
-        guard !awaitingFirstRelocalisation else { store(nil, "the saved room is not recognised yet"); return }
         let status = arView.session.currentFrame?.worldMappingStatus
         // Only a map ARKit itself calls good (as MultiSet keeps its maps clean), and only after a
         // while of steady tracking in enough light: in the dark or after a loss ARKit's map drifts

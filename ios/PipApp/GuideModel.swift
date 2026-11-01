@@ -53,16 +53,12 @@ final class GuideModel: ObservableObject {
     let ar = ARController()
     /// Long-term memory: the room map, places and facts, only with the user's consent.
     let memory = SpaceMemory()
-    /// Roughly where the phone is: maps from another home or building are not tried (see startMap).
+    /// Roughly where the phone is: sessions from another home or building are not linked to (see startMap).
     let homeLocation = HomeLocation()
     var awaitingConsent = false
     /// The consent question waits for Pip to be free before it is asked.
     var consentQueued = false
     var pendingPlaces: [SpaceMemory.Place] = []
-    /// Saved rooms still to try at start when ARKit does not recognise the first (see startMap).
-    var mapCandidates: [MapPiece] = []
-    /// Every saved room that can be here (with ARKit's map), for choosing by light at start.
-    var savedPieces: [MapPiece] = []
     /// When each mapping hint was last said, so Pip does not nag.
     var hintSaid: [String: Date] = [:]
     var pendingFacts: [(key: String, value: String, source: String)] = []
@@ -85,8 +81,6 @@ final class GuideModel: ObservableObject {
     /// Test clips of the camera, to replay object tracking on the Mac.
     let clipRecorder = ClipRecorder()
     var foundCount = 0
-    /// Places of other maps of this room are being looked for (see adoptPlacesOfThisRoom).
-    var adoptingPlaces = false
     /// When the shopping list last changed; basket checks stop after a long quiet spell.
     var listChangedAt = Date.distantPast
     struct ShoppingItem: Identifiable, Equatable {
@@ -460,9 +454,6 @@ final class GuideModel: ObservableObject {
             // Only real user speech chooses who Pip talks with, never its own echo.
             guard hazard || acceptSpeaker(speaker, text: text) else { return }
             heard = text
-            // While ARKit still recognises a saved room, the answer comes at once: its outlines are
-            // drawn in this session's coordinates and move along when the room is recognised
-            // (ARController.realign); a fresh start waits while they are on screen.
             // The frame the user was looking at when they finished speaking.
             guard let snapshot = ar.snapshot() else {
                 phase = muted ? .muted : .listening
@@ -571,16 +562,8 @@ final class GuideModel: ObservableObject {
                     if let inst {
                         let anchoring = ar.addMark(inst.renumbered(id + offset), snapshot: snapshot, spec: specs[id])
                         // Lock the outline to the object itself, so it stays on it when it moves.
-                        if anchoring != "assumed depth", anchoring != ARController.takenBeforeRestart {
+                        if anchoring != "assumed depth" {
                             lockToObject(id + offset, key: inst.renumbered(id + offset), on: specs[id]?.on, snapshot: snapshot)
-                        }
-                        // The frame is from before tracking started afresh: found again in the new
-                        // session, around where it was on screen, instead of dropped.
-                        if anchoring == ARController.takenBeforeRestart, var spec = specs[id] {
-                            spec.x = Double(inst.boxRect.midX) / Double(snapshot.image.width) * 1000
-                            spec.y = Double(inst.boxRect.midY) / Double(snapshot.image.height) * 1000
-                            let carried = ARController.Carried(id: id + offset, spec: spec)
-                            Task { await findAgain([carried]) }
                         }
                         recorder?.grounded(inst)
                         note(String(format: "grounded %d via %@ in %.1fs, anchored on %@", id, method, seconds, anchoring))

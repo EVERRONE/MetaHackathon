@@ -6,8 +6,7 @@ import simd
 /// its memory then follows the wrong one. On 1 Nov the Windows key's outline went to the key left of
 /// it, then two keys further, for about ten seconds. An object that lay still does not jump: a
 /// mask that puts it more than `jump` from where it lay is not taken (and EdgeTAM is made to forget
-/// that frame), unless the new place holds for `confirm` masks in a row and no image lock says the
-/// object is still where it was: then it was moved.
+/// that frame), unless the new place holds for `confirm` masks in a row: then it was moved.
 public struct TrackGate: Sendable {
     /// Further than this from where the object lay still is a jump (a key is 1.5–2 cm wide).
     public var jump: Float = 0.03
@@ -57,11 +56,10 @@ public struct TrackGate: Sendable {
     /// Masks disagree with where the object lay: better to show nothing than the wrong place.
     public var uncertain: Bool { pending.count >= 2 }
 
-    /// `lockHeld`: an image lock saw the object's face recently, where it lay. `recentlyLost`:
-    /// EdgeTAM did not see the object a moment ago (a fast turn): then a new place needs twice the
+    /// `recentlyLost`: EdgeTAM did not see the object a moment ago (a fast turn): then a new place needs twice the
     /// confirmation, and a path away from where it lay does not count (on 1 Nov the wrong mask
     /// slid steadily along the neighbouring keys).
-    public mutating func judge(time t: Double, position p: SIMD3<Float>, area: Float? = nil, lockHeld: Bool, recentlyLost: Bool = false) -> Verdict {
+    public mutating func judge(time t: Double, position p: SIMD3<Float>, area: Float? = nil, recentlyLost: Bool = false) -> Verdict {
         // A sudden change of size is a different thing (the whole remote for one of its buttons),
         // unless masks keep agreeing on the new size (the user came closer).
         if let area, area > 0, areas.count >= 3 {
@@ -77,7 +75,7 @@ public struct TrackGate: Sendable {
                 oddAreas = []
             }
         }
-        let verdict = position(t, p, lockHeld: lockHeld, recentlyLost: recentlyLost)
+        let verdict = position(t, p, recentlyLost: recentlyLost)
         if verdict.taken, let area, area > 0 {
             areas.append(area)
             if areas.count > 9 { areas.removeFirst(areas.count - 9) }
@@ -85,7 +83,7 @@ public struct TrackGate: Sendable {
         return verdict
     }
 
-    private mutating func position(_ t: Double, _ p: SIMD3<Float>, lockHeld: Bool, recentlyLost: Bool) -> Verdict {
+    private mutating func position(_ t: Double, _ p: SIMD3<Float>, recentlyLost: Bool) -> Verdict {
         if let a = anchor {
             let d = simd_distance(p, a)
             if d <= jump {
@@ -96,7 +94,7 @@ public struct TrackGate: Sendable {
             let needed = recentlyLost ? 2 * confirm : confirm
             pending.append((t, p))
             if pending.count > needed { pending.removeFirst(pending.count - needed) }
-            if !lockHeld, pending.count >= needed {
+            if pending.count >= needed {
                 let mean = pending.reduce(SIMD3<Float>(), { $0 + $1.p }) / Float(pending.count)
                 if pending.allSatisfy({ simd_distance($0.p, mean) <= jump }) {
                     accepted = pending
@@ -106,7 +104,7 @@ public struct TrackGate: Sendable {
             }
             // Picked up faster than the masks: a steady path away from where it lay, unlike a jump
             // to a look-alike, which stays put. Followed from the third mask on.
-            if !lockHeld, !recentlyLost, Self.leaving(a, pending.suffix(3), maxSpeed: maxSpeed) {
+            if !recentlyLost, Self.leaving(a, pending.suffix(3), maxSpeed: maxSpeed) {
                 accepted = Array(pending.suffix(3))
                 pending = []
                 return .moved

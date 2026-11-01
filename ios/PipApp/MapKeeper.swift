@@ -7,15 +7,12 @@ import simd
 ///
 /// Every session keeps a map piece in its own frame: where the camera stood, every metre or so
 /// (map keyframes), with where on earth and in what light it was made. ARKit's world map of the
-/// same session is stored next to it (MapStore); a later session that ARKit recognises in it
-/// continues that piece. Places remembered in another piece of the same room are anchored again
-/// when they are found here (GuideModel.adoptPlacesOfThisRoom).
+/// same session is stored next to it (MapStore). Tracking always starts fresh, in a new piece;
+/// earlier pieces are linked to it by what their snapshots saw (SpaceLinker).
 @MainActor
 final class MapKeeper {
     /// The piece this session builds; its frame is this session's frame.
     private(set) var current = MapPiece()
-    /// Pieces from earlier sessions, other than this one.
-    private(set) var others: [MapPiece] = []
     private var lastKeyPose: simd_float4x4?
     private var lastKeyTime: TimeInterval = 0
     /// Spots and directions this piece has keyframes for (0.5 m, eight headings, three pitches).
@@ -33,19 +30,8 @@ final class MapKeeper {
     static let keyInterval: TimeInterval = 10
     static let maxKeyframes = 400
 
-    /// `piece`: the stored piece ARKit is relocalising into (its frame becomes this session's).
-    func begin(continuing piece: MapPiece?, others: [MapPiece]) {
-        current = piece ?? MapPiece()
-        coverage = Set(current.keyframes.map { Self.bin($0.pose) })
-        self.others = others
-        lastKeyPose = nil
-        dirty = false
-    }
-
-    /// ARKit did not recognise the room of the piece it tried: that piece stays one of the
-    /// others, and this session starts a piece of its own.
-    func startNewPiece() {
-        if !current.keyframes.isEmpty { others.append(current) }
+    /// A new piece for this session (at start, and after everything was forgotten).
+    func begin() {
         current = MapPiece()
         coverage = []
         lastKeyPose = nil

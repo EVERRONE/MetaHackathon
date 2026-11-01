@@ -19,18 +19,6 @@ public struct GrayImage: Sendable {
         self.init(width: width, height: height, pixels: [Float](repeating: fill, count: width * height))
     }
 
-    /// From 8-bit luminance (a camera's Y plane), `rowBytes` apart.
-    public init(luma: UnsafeRawPointer, width: Int, height: Int, rowBytes: Int) {
-        var px = [Float](repeating: 0, count: width * height)
-        px.withUnsafeMutableBufferPointer { out in
-            for y in 0..<height {
-                let row = luma.advanced(by: y * rowBytes).assumingMemoryBound(to: UInt8.self)
-                vDSP_vfltu8(row, 1, out.baseAddress! + y * width, 1, vDSP_Length(width))
-            }
-        }
-        self.init(width: width, height: height, pixels: px)
-    }
-
     /// From a CGImage, as luminance 0–255.
     public init?(_ image: CGImage) {
         let w = image.width, h = image.height
@@ -213,7 +201,7 @@ public struct PlanarTracker: Sendable {
         // really is now, whatever it drifted while followed from frame to frame. Then the fit again.
         if let first {
             let idx = fit.inliers.map { followed[$0] }
-            let refined = Self.alignToFirst(first, next[0], h: homography, refs: idx.map { reference[$0] }, at: idx.map { measured[$0]! }, settings: settings)
+            let refined = Self.alignToFirst(first, next[0], h: homography, at: idx.map { measured[$0]! }, settings: settings)
             for (k, i) in idx.enumerated() { if let r = refined[k] { measured[i] = r } }
             if let refit = Self.ransacHomography(from: idx.map { reference[$0] }, to: idx.map { measured[$0]! }, threshold: settings.inlierDistance),
                refit.inliers.count >= settings.minInliers {
@@ -272,7 +260,7 @@ public struct PlanarTracker: Sendable {
             let s = Float(1 << level)
             let down = simd_float3x3(diagonal: SIMD3(1 / s, 1 / s, 1)), up = simd_float3x3(diagonal: SIMD3(s, s, 1))
             let hl = down * h * up
-            let aligned = Self.alignToFirst(firstPyramid[level], target[level], h: hl, refs: reference.map { $0 / s }, at: points.map { $0 / s }, settings: settings)
+            let aligned = Self.alignToFirst(firstPyramid[level], target[level], h: hl, at: points.map { $0 / s }, settings: settings)
             for i in points.indices {
                 if let a = aligned[i] { points[i] = a * s; settled[i] = true } else { settled[i] = false }
             }
@@ -386,11 +374,6 @@ public struct PlanarTracker: Sendable {
         guard fresh.start(image: image, outline: ring), fresh.inliers >= settings.minPoints else { return nil }
         self = fresh
         return h
-    }
-
-    /// The object's outline as it is now (its first view's, mapped).
-    public var outlineNow: [CGPoint] {
-        outline.map { p -> CGPoint in let q = homography * simd_float3(p.x, p.y, 1); return CGPoint(x: CGFloat(q.x / q.z), y: CGFloat(q.y / q.z)) }
     }
 
     /// Where a point of the reference view is now.
@@ -589,7 +572,7 @@ public struct PlanarTracker: Sendable {
     /// view sampled where `h` maps each window pixel from): the shift that makes them agree, by
     /// Lucas–Kanade with the brightness levelled; nil where the window has no texture, the
     /// alignment does not settle, or it would move the point more than a few pixels.
-    static func alignToFirst(_ first: GrayImage, _ current: GrayImage, h: simd_float3x3, refs: [SIMD2<Float>], at points: [SIMD2<Float>], settings: Settings) -> [SIMD2<Float>?] {
+    static func alignToFirst(_ first: GrayImage, _ current: GrayImage, h: simd_float3x3, at points: [SIMD2<Float>], settings: Settings) -> [SIMD2<Float>?] {
         let hw = settings.halfWindow, side = 2 * hw + 1, n = side * side
         let inverse = h.inverse
         return first.pixels.withUnsafeBufferPointer { pf in

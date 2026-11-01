@@ -40,7 +40,6 @@ struct Phrases {
     var cancelled: String { dutch ? "Oké, dan niet." : "Okay, we won't." }
     // While Pip maps the room on its own: only when the mapping needs the user's help.
     var moveSlower: String { dutch ? "Beweeg je iPhone iets trager, dan onthoud ik de kamer beter." : "Move your iPhone a little slower, so I can remember the room." }
-    var lookAround: String { dutch ? "Kijk even rustig rond, dan herken ik de kamer." : "Look around slowly for a moment, so I can recognise the room." }
     var moreFeatures: String { dutch ? "Richt even op de kamer, niet op een kale muur." : "Point at the room for a moment, not at a bare wall." }
     func gate(_ condition: String) -> String { dutch ? "Eerst dit: \(condition). Is dat zo?" : "First this: \(condition). Is that so?" }
     var waitForGate: String { dutch ? "Dan wachten we. Zeg ja zodra het zo is." : "Then we wait. Say yes as soon as it is." }

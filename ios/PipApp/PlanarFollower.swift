@@ -56,7 +56,6 @@ final class PlanarFollower {
     var onLog: ((String) -> Void)?
 
     var isEmpty: Bool { objects.isEmpty }
-    func follows(_ id: Int) -> Bool { objects.values.contains { $0.targets[id] != nil } }
 
     /// Starts following an object from the snapshot its marks were measured on: `region` its
     /// outline there (snapshot pixels), `targets` the marks on it (snapshot pixels), `surface` lays a
@@ -103,14 +102,6 @@ final class PlanarFollower {
         for (group, var object) in objects {
             object.targets = object.targets.filter { !ids.contains($0.key) }
             objects[group] = object.targets.isEmpty ? nil : object
-        }
-    }
-
-    /// The room's coordinates moved by `jump` (the saved room was recognised).
-    func coordinatesMoved(by jump: simd_float4x4) {
-        for (group, var object) in objects {
-            object.cornersWorld = object.cornersWorld.map { (jump * simd_float4($0, 1)).xyz }
-            objects[group] = object
         }
     }
 

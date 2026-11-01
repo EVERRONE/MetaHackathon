@@ -136,40 +136,6 @@ if args.first == "edgetam", args.count >= 7 {
     exit(0)
 }
 
-// pipeval face <image.jpg> <x1> <y1> <x2> <y2> <out.png>: the reference image Pip would lock a
-// key (box in the image's pixels) to, with the key's outline drawn on it for checking.
-if args.first == "face", args.count >= 7 {
-    let env = ProcessInfo.processInfo.environment
-    let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
-    guard let data = FileManager.default.contents(atPath: args[1]), let image = SetOfMarks.load(data) else { fail("cannot read \(args[1])") }
-    let box = CGRect(x: Double(args[2])!, y: Double(args[3])!, width: Double(args[4])! - Double(args[2])!, height: Double(args[5])! - Double(args[3])!)
-    let grounder = Grounder(client: client, frameJPEG: Data())
-    guard let key = await grounder.reground(box: box, id: 1, frame: image) else { fail("SAM found no key there") }
-    // With a phrase (what the key is on), SAM looks for that object; it must contain the key.
-    let centre = CGPoint(x: key.boxRect.midX, y: key.boxRect.midY)
-    let object = args.count > 7 ? await grounder.object(named: args[7], at: centre, in: image, id: 2).flatMap { Grounding.contains($0, centre) ? $0 : nil } : nil
-    print("key \(key.box), object \(object.map { "\($0.box)" } ?? "none")")
-    guard let made = ObjectFace.make(key: key, object: object, image: image, focal: 1000, distance: 0.4) else { fail("no face") }
-    // Draw the key's outline back onto the face, from its local coordinates, to check the mapping.
-    let w = made.image.width, h = made.image.height
-    let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-    ctx.draw(made.image, in: CGRect(x: 0, y: 0, width: w, height: h))
-    let pw = made.physicalWidth, ph = pw * CGFloat(h) / CGFloat(w)
-    ctx.setStrokeColor(CGColor(red: 0, green: 1, blue: 1, alpha: 1))
-    ctx.setLineWidth(3)
-    for ring in made.local {
-        let pts = ring.map { CGPoint(x: (CGFloat($0.x) / pw + 0.5) * CGFloat(w), y: CGFloat(h) - (CGFloat($0.z) / ph + 0.5) * CGFloat(h)) }
-        ctx.addLines(between: pts); ctx.closePath()
-    }
-    ctx.strokePath()
-    let url = URL(fileURLWithPath: args[6]) as CFURL
-    let dest = CGImageDestinationCreateWithURL(url, "public.png" as CFString, 1, nil)!
-    CGImageDestinationAddImage(dest, ctx.makeImage()!, nil)
-    CGImageDestinationFinalize(dest)
-    print(String(format: "face %dx%d px, %.0f mm wide at 0.4 m with f=1000", w, h, made.physicalWidth * 1000))
-    exit(0)
-}
-
 if args.first == "listen", args.count >= 2 {
     let env = ProcessInfo.processInfo.environment
     guard let wav = FileManager.default.contents(atPath: args[1]) else { fail("cannot read \(args[1])") }

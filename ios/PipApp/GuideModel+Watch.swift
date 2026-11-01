@@ -139,8 +139,6 @@ extension GuideModel {
     /// comes back into view it is found again from scratch (the full grounding, with its printed
     /// text), and the drift that shows is applied to the other objects in the room; from a new
     /// viewpoint it is re-measured and fused, so its position gets firmer with every view.
-    /// (An image lock is checked against EdgeTAM's mask of the same frame: ARController.lockComparison.
-    /// Re-segmenting where the lock draws, as before, only ever confirmed the lock.)
     private func refreshTick() async {
         guard !refreshing, !lookActive, ar.trackingNormal, ar.hasPointedMarks, let snapshot = ar.snapshot() else { return }
         let candidates = ar.remeasureCandidates(in: snapshot, taskActive: runtime?.isActive == true)

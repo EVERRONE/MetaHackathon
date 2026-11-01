@@ -12,7 +12,7 @@ import simd
         var k = 0
         while t < t0 + seconds {
             let noise = SIMD3<Float>(Float(k % 3) * 0.001, 0, Float(k % 2) * 0.001)
-            #expect(gate.judge(time: t, position: key + noise, lockHeld: false) == .accept)
+            #expect(gate.judge(time: t, position: key + noise) == .accept)
             t += 0.1
             k += 1
         }
@@ -25,22 +25,13 @@ import simd
         #expect(gate.anchor != nil)
         // 1 Nov, 12:07:03: after a fast turn the mask was on a key 5 cm away, then 15 cm.
         for p in [Self.key + SIMD3(0.04, 0, 0.05), Self.key + SIMD3(0.155, -0.013, 0.039)] {
-            if case .reject(let d) = gate.judge(time: t, position: p, lockHeld: true) { #expect(d > 0.03) } else { Issue.record("taken") }
+            if case .reject(let d) = gate.judge(time: t, position: p) { #expect(d > 0.03) } else { Issue.record("taken") }
             t += 0.1
         }
         #expect(gate.uncertain)
         // The right key again: taken, and certain again.
-        #expect(gate.judge(time: t, position: Self.key, lockHeld: true) == .accept)
+        #expect(gate.judge(time: t, position: Self.key) == .accept)
         #expect(!gate.uncertain)
-    }
-
-    @Test func aLockedObjectNeverMovesOnEdgeTAMsWord() {
-        var gate = TrackGate()
-        var t = Self.still(&gate, for: 1)
-        for _ in 0..<20 {
-            #expect(gate.judge(time: t, position: Self.key + SIMD3(0.05, 0, 0), lockHeld: true) != .moved)
-            t += 0.1
-        }
     }
 
     @Test func anObjectPutDownElsewhereIsFollowedThere() {
@@ -50,12 +41,12 @@ import simd
         let there = Self.key + SIMD3(0.2, 0, 0)
         var verdicts: [TrackGate.Verdict] = []
         for _ in 0..<5 {
-            verdicts.append(gate.judge(time: t, position: there, lockHeld: false))
+            verdicts.append(gate.judge(time: t, position: there))
             t += 0.1
         }
         #expect(verdicts.dropLast().allSatisfy { if case .reject = $0 { return true } else { return false } })
         #expect(verdicts.last == .moved)
-        #expect(gate.judge(time: t, position: there, lockHeld: false) == .accept)
+        #expect(gate.judge(time: t, position: there) == .accept)
     }
 
     @Test func anObjectMovedByHandIsFollowedAllTheWay() {
@@ -67,7 +58,7 @@ import simd
         var taken = 0
         for _ in 0..<12 {
             x += 0.025
-            if gate.judge(time: t, position: Self.key + SIMD3(x, 0, 0), lockHeld: false) == .accept { taken += 1 }
+            if gate.judge(time: t, position: Self.key + SIMD3(x, 0, 0)) == .accept { taken += 1 }
             t += 0.1
         }
         #expect(taken == 12)
@@ -80,7 +71,7 @@ import simd
         // steady path away and is taken, and from then on it is followed.
         var verdicts: [TrackGate.Verdict] = []
         for k in 1...6 {
-            verdicts.append(gate.judge(time: t, position: Self.key + SIMD3(Float(k) * 0.05, 0, 0), lockHeld: false))
+            verdicts.append(gate.judge(time: t, position: Self.key + SIMD3(Float(k) * 0.05, 0, 0)))
             t += 0.1
         }
         #expect(verdicts[0] != .accept && verdicts[1] != .accept)
@@ -93,7 +84,7 @@ import simd
         var t = Self.still(&gate, for: 1)
         // The neighbouring key, 4 cm away, mask after mask (with a millimetre of noise).
         for k in 0..<4 {
-            let v = gate.judge(time: t, position: Self.key + SIMD3(0.04 + Float(k % 2) * 0.001, 0, 0), lockHeld: false)
+            let v = gate.judge(time: t, position: Self.key + SIMD3(0.04 + Float(k % 2) * 0.001, 0, 0))
             #expect(v != .moved && v != .accept)
             t += 0.1
         }
@@ -109,7 +100,7 @@ import simd
                                       SIMD3(0.0294, -0.0877, -0.1509), SIMD3(0.0442, -0.0887, -0.1477), SIMD3(0.0411, -0.0892, -0.1562),
                                       SIMD3(0.0274, -0.0900, -0.1739), SIMD3(0.0118, -0.0877, -0.1876)]
         for p in logged {
-            let v = gate.judge(time: t, position: p, lockHeld: false, recentlyLost: true)
+            let v = gate.judge(time: t, position: p, recentlyLost: true)
             #expect(v != .accept && v != .moved)
             t += 0.15
         }
@@ -118,7 +109,7 @@ import simd
         var t2 = Self.still(&naive, for: 1)
         var taken = false
         for p in logged {
-            if naive.judge(time: t2, position: p, lockHeld: false) == .moved { taken = true }
+            if naive.judge(time: t2, position: p) == .moved { taken = true }
             t2 += 0.15
         }
         #expect(taken)
@@ -130,17 +121,17 @@ import simd
         var gate = TrackGate()
         var t = 0.0
         for _ in 0..<6 {
-            #expect(gate.judge(time: t, position: Self.key, area: 0.001, lockHeld: false) == .accept)
+            #expect(gate.judge(time: t, position: Self.key, area: 0.001) == .accept)
             t += 0.1
         }
-        if case .reject = gate.judge(time: t, position: Self.key + SIMD3(0.005, 0, 0), area: 0.05, lockHeld: false) {} else { Issue.record("taken") }
+        if case .reject = gate.judge(time: t, position: Self.key + SIMD3(0.005, 0, 0), area: 0.05) {} else { Issue.record("taken") }
         t += 0.1
-        #expect(gate.judge(time: t, position: Self.key, area: 0.0011, lockHeld: false) == .accept)
+        #expect(gate.judge(time: t, position: Self.key, area: 0.0011) == .accept)
         t += 0.1
         // Closer and closer: three times the size, mask after mask, is taken from the fifth on.
         var taken = 0
         for _ in 0..<8 {
-            if gate.judge(time: t, position: Self.key, area: 0.0033, lockHeld: false) == .accept { taken += 1 }
+            if gate.judge(time: t, position: Self.key, area: 0.0033) == .accept { taken += 1 }
             t += 0.1
         }
         #expect(taken >= 4)
@@ -150,10 +141,10 @@ import simd
         var gate = TrackGate()
         var t = 0.0
         for k in 0..<5 {
-            #expect(gate.judge(time: t, position: Self.key + SIMD3(Float(k) * 0.03, 0, 0), lockHeld: false) == .accept)
+            #expect(gate.judge(time: t, position: Self.key + SIMD3(Float(k) * 0.03, 0, 0)) == .accept)
             t += 0.1
         }
         // 60 cm in a tenth of a second.
-        if case .reject = gate.judge(time: t, position: Self.key + SIMD3(0.72, 0, 0), lockHeld: false) {} else { Issue.record("taken") }
+        if case .reject = gate.judge(time: t, position: Self.key + SIMD3(0.72, 0, 0)) {} else { Issue.record("taken") }
     }
 }

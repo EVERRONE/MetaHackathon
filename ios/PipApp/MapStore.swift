@@ -45,13 +45,6 @@ enum MapStore {
         }
     }
 
-    static func hasWorldMap(_ id: UUID) -> Bool { FileManager.default.fileExists(atPath: worldMapURL(id).path) }
-
-    static func loadWorldMap(_ id: UUID) -> ARWorldMap? {
-        guard let data = try? Data(contentsOf: worldMapURL(id)) else { return nil }
-        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data)
-    }
-
     static func removeAll() {
         io.sync { _ = try? FileManager.default.removeItem(at: dir) }
     }

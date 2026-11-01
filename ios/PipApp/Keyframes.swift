@@ -9,8 +9,8 @@ import simd
 /// The last 30 minutes are kept in full. With the user's memory consent, older snapshots stay on
 /// this iPhone for a week: the newest view of every spot (half a metre, one of eight directions),
 /// which is what "where did I leave it" needs, and bounds the storage. Each snapshot belongs to a
-/// map piece; once Pip recognises that piece in a later session, its snapshots can be pointed at
-/// again in the room.
+/// map piece (a session); once that session is linked to a later one (SpaceLinker), its snapshots
+/// can be pointed at again in the room.
 @MainActor
 final class Keyframes {
     struct Frame {
@@ -104,15 +104,14 @@ final class Keyframes {
     /// Bumped by `forgetAll`, so snapshots still being encoded are dropped.
     private var generation = 0
 
-    /// Loads the week's snapshots. Those of `locatedPiece` (the piece ARKit is recognising) can be
-    /// pointed at; the others once their piece is linked.
-    func load(locatedPiece: UUID?) {
+    /// Loads the week's snapshots: each can be pointed at once its session is linked (`carry`).
+    func load() {
         guard persist else { return }
         let stored = VisualMemoryStore.loadIndex()
         frames = stored.map { s in
             Frame(id: s.id, time: s.time, width: s.width, height: s.height, cameraTransform: ARController.matrix(s.pose), storedPose: ARController.matrix(s.pose),
                   sensorSize: CGSize(width: s.sensorWidth, height: s.sensorHeight), intrinsics: Self.matrix3(s.intrinsics),
-                  depthW: s.depthW, depthH: s.depthH, piece: s.piece, located: s.piece != nil && s.piece == locatedPiece)
+                  depthW: s.depthW, depthH: s.depthH, piece: s.piece, located: false)
         }.sorted { $0.time < $1.time }
         prune()
     }
@@ -169,13 +168,6 @@ final class Keyframes {
         }
     }
 
-    /// ARKit is now recognising `piece` instead (another saved room): its snapshots can be pointed
-    /// at, the others not.
-    func locate(_ piece: UUID) {
-        for i in frames.indices { frames[i].located = frames[i].piece == piece }
-        currentPiece = piece
-    }
-
     /// Another session was linked to this one (SpaceLinker): its snapshots can be pointed at here,
     /// each at the pose `carry` gives it (nil: not near enough to its links yet). Returns how many.
     @discardableResult
@@ -188,13 +180,6 @@ final class Keyframes {
             n += 1
         }
         return n
-    }
-
-    /// This session started a new piece (the saved room was not recognised): snapshots of the
-    /// piece it tried can no longer be pointed at until that piece is linked.
-    func pieceChanged(to new: UUID) {
-        for i in frames.indices where frames[i].piece != new { frames[i].located = false }
-        currentPiece = new
     }
 
     /// Keeps the last 30 minutes in full and, for the week before, the newest view of each spot.

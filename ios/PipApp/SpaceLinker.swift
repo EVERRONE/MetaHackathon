@@ -53,7 +53,7 @@ final class SpaceLinker {
     static let comparePerView = 60
     static let hotPerView = 24
     /// Of those, the ones that look most like the live view (fingerprint), first.
-    static let lookAlikePerView = 20
+    nonisolated static let lookAlikePerView = 20
     /// Stored snapshots described per half second at start (about 20-40 ms each).
     static let describePerRound = 4
     static let summaryEvery: TimeInterval = 60

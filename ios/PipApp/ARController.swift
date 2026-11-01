@@ -5,8 +5,9 @@ import QuartzCore
 import RealityKit
 
 /// Owns the AR session, the anchored marks and what is drawn on them each frame. Its state is
-/// here; its work by theme in ARController+Drawing (every frame), +Steering (EdgeTAM's outlines),
-/// +Locks (ARKit image locks), +Room (recognising the saved room) and +Places (remembered places).
+/// here; its work by theme in ARController+Drawing (every frame), +Steering (EdgeTAM's and the
+/// planar follower's outlines) and +Places (remembered places). Tracking always starts fresh: each
+/// session has coordinates of its own (earlier sessions are linked to it by SpaceLinker).
 final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
 
@@ -83,7 +84,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// What the user saw while a cue was drawn, kept for judging a test (see OverlayShots).
     let shots = OverlayShots()
 
-    /// How recognising the saved room at start goes, and how well the room is being mapped.
+    /// How well the room is being mapped (its log, a status line, hints to the user).
     let relocalisation = Relocalisation()
 
     /// One line per running test, for the screen.
@@ -96,11 +97,6 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// A moved object lies still again: measure it anew (its box in screen points).
     var onMovedObjectSettled: ((Int, CGRect) -> Void)?
 
-    /// Outlines locked to their object in 3D through ARKit image tracking, by reference image name.
-    var imageLocks: [String: ImageLock] = [:]
-
-    static let maxImageLocks = 4
-
     var onLockLog: ((String) -> Void)?
 
     var renderSubscription: Cancellable?
@@ -111,18 +107,6 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     var currentOffset = 0
 
     var replacePending = false
-
-    /// The room's coordinates change when ARKit recognises the saved room (by a known jump, see
-    /// `realign`) and when tracking starts afresh (no relation to before). Snapshots carry the
-    /// number of the coordinates they were taken in: an outline lifted from an older snapshot (a
-    /// look grounded while the room was recognised) is brought along, or dropped after a fresh start.
-    var coordinates = 0
-
-    var jumps: [Int: simd_float4x4] = [:]
-
-    /// Found in the visual memory while the saved room is still being recognised: outlined in that
-    /// room's coordinates, so hidden until it is recognised, and not moved by `realign`.
-    var inSavedRoomCoordinates = Set<Int>()
 
     // MARK: Mark numbers and remembered places (see ARController+Places.swift)
 
@@ -141,17 +125,12 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     @Published var places: [Int: SpaceMemory.Place] = [:]
 
-    /// Places from the saved map waiting for ARKit to restore their anchors.
-    var pendingPlaces: [UUID: SpaceMemory.Place] = [:]
-
     // MARK: The AR session
 
-    func start(initialMap: ARWorldMap? = nil) {
-        // A saved room map: ARKit recognises the room again and restores the remembered places.
-        awaitingFirstRelocalisation = initialMap != nil
+    func start() {
         arView.renderOptions.insert(.disableMotionBlur)
         arView.session.delegate = self
-        arView.session.run(Self.configuration(initialMap: initialMap))
+        arView.session.run(Self.configuration())
         // Outlines are drawn in the same step as the camera image, so they do not lag or swim.
         renderSubscription = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in self?.renderNow() }
         follower.onSettled = { [weak self] id, box in self?.onMovedObjectSettled?(id, box) }
@@ -163,11 +142,6 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         planar.onOutline = { [weak self] id, rings, time in self?.planarOutline(id, rings, time: time) }
         planar.onLost = { [weak self] ids, moving in self?.planarLost(ids, moving: moving) }
         planar.onLog = { [weak self] s in self?.onLockLog?(s) }
-        edgeTAM.lockHeld = { [weak self] id in
-            let now = CACurrentMediaTime()
-            return self?.imageLocks.values.contains { $0.marks[id] != nil && $0.seen && now - $0.lastTracked < 3 } ?? false
-        }
-        edgeTAM.onShownCheck = { [weak self] id, mm, moving, sure in self?.lockComparison(id, mm: mm, moving: moving, sure: sure) }
         edgeTAM.drawnAt = { [weak self] id, t in
             // The shown frame with this time (frames are 1/60 s apart).
             self?.drawnHistory[id]?.min { abs($0.t - t) < abs($1.t - t) }.flatMap { abs($0.t - t) < 0.009 ? $0.p : nil }
@@ -175,9 +149,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         if EdgeTAMFollower.enabled { edgeTAM.preload() }
     }
 
-    static func configuration(initialMap: ARWorldMap?) -> ARWorldTrackingConfiguration {
+    static func configuration() -> ARWorldTrackingConfiguration {
         let config = ARWorldTrackingConfiguration()
-        config.initialWorldMap = initialMap
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             config.frameSemantics.insert(.sceneDepth)
         }
@@ -190,76 +163,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         return config
     }
 
-    /// The saved room was not recognised: ARKit tries another saved room's map.
-    func restart(initialMap: ARWorldMap) {
-        restartHeld = 0
-        awaitingFirstRelocalisation = true
-        recognitionWait = Self.nextRelocaliseWait
-        relocalisingSince = nil
-        startAfresh(Self.configuration(initialMap: initialMap))
-    }
-
-    /// The saved room was not recognised (Pip is in another room): start fresh, so tracking works
-    /// at once; the room's map waits to be linked when Pip sees it.
-    func restartFresh() {
-        restartHeld = 0
-        awaitingFirstRelocalisation = false
-        relocalisingSince = nil
-        startAfresh(Self.configuration(initialMap: nil))
-    }
-
-    /// A pointed-at object on screen when tracking had to start afresh: its cue stays, and it is
-    /// found again in the new session, from what the model asked for, around where it was on
-    /// screen (GuideModel.findAgain). On 1 Nov every outline vanished in the middle of a test
-    /// when the saved room was given up.
-    struct Carried {
-        let id: Int
-        let spec: TargetSpec
-    }
-    /// Tracking started afresh with these objects on screen.
-    var onStartedAfresh: (([Carried]) -> Void)?
-
-    /// Starts tracking afresh (new coordinates, no anchors): the remembered places come back
-    /// with their room's anchors; the objects with a cue on screen are found again.
-    private func startAfresh(_ config: ARWorldTrackingConfiguration) {
-        var carried: [Carried] = []
-        if let snap = snapshot() {
-            let w = Double(snap.image.width), h = Double(snap.image.height)
-            for (id, box) in visibleMarkBoxes(in: snap) where id < Self.foundMarkBase {
-                guard var spec = tracks[id]?.spec else { continue }
-                spec.x = Double(box.midX) / w * 1000
-                spec.y = Double(box.midY) / h * 1000
-                carried.append(Carried(id: id, spec: spec))
-            }
-        }
-        removeMarks { _ in true }
-        places = [:]
-        pendingPlaces = [:]
-        board.keep(marks: Set(carried.map(\.id)))
-        board.resolveDanger()
-        renderNow()
-        coordinates += 1
-        arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
-        imagesCleared()
-        if !carried.isEmpty { onStartedAfresh?(carried) }
-    }
-
-    /// Whether the camera has a pose to place outlines with (tracking normal, or running in the
-    /// session's own coordinates while a saved room is recognised).
-    var cameraPoseUsable: Bool {
-        switch arView.session.currentFrame?.camera.trackingState {
-        case .normal?, .limited(.relocalizing)?: return true
-        default: return false
-        }
-    }
-
     func snapshot() -> FrameSnapshot? {
-        guard var s = arView.session.currentFrame.flatMap({ FrameSnapshot(frame: $0) }) else { return nil }
-        s.coordinates = coordinates
-        return s
+        arView.session.currentFrame.flatMap { FrameSnapshot(frame: $0) }
     }
-
-    static let takenBeforeRestart = "taken before tracking restarted"
 
     /// A new look. The previous look's cues stay on their objects until this look shows its first
     /// cue, so the user keeps their bearings while Pip thinks, or when the answer points at nothing.
@@ -274,10 +180,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// (what the model asked to point at) lets Pip find the object again after drift.
     @discardableResult
     func addMark(_ inst: SegmentInstance, snapshot: FrameSnapshot, spec: TargetSpec? = nil) -> String {
-        guard let carry = carry(from: snapshot.coordinates) else { return Self.takenBeforeRestart }
         // Clean, regular shapes: a raw mask outline looks hand-drawn once stroked on screen.
-        guard var m = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return "no outline" }
-        if carry != matrix_identity_float4x4 { m = m.transformed(by: carry) }
+        guard let m = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return "no outline" }
         place(m)
         measured[m.id] = m
         if let obs = m.observation {
@@ -295,11 +199,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// its new place.
     @discardableResult
     func updateMark(_ inst: SegmentInstance, snapshot: FrameSnapshot, reason: ObjectTrack.Reason) -> ObjectTrack.Update? {
-        // EdgeTAM or an image lock took the outline over while this was measured: theirs is newer.
-        guard !steered.contains(inst.id), riders[inst.id] == nil, !planarFollowed.contains(inst.id), !lockSeen(inst.id),
-              let carry = carry(from: snapshot.coordinates) else { return nil }
-        guard let old = marks[inst.id], var fresh = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return nil }
-        if carry != matrix_identity_float4x4 { fresh = fresh.transformed(by: carry) }
+        // EdgeTAM or the planar follower took the outline over while this was measured: theirs is newer.
+        guard !steered.contains(inst.id), riders[inst.id] == nil, !planarFollowed.contains(inst.id) else { return nil }
+        guard let old = marks[inst.id], let fresh = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return nil }
         // Measured on another pointed-at object: its look-alike neighbour, not this one (1 Nov: two
         // golden statues 10 cm apart; the smaller one's outline jumped to the larger and back at
         // every return into view, 9.9, 11.8 and 9.5 cm).
@@ -317,7 +219,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         // Earlier views were taken before ARKit's latest correction of this anchor: bring them along.
         let correction = targetCorrections[inst.id] ?? matrix_identity_float4x4
         let predicted = old.centroid
-        let pixelError = snapshot.project((simd_inverse(carry) * simd_float4(predicted, 1)).xyz).map { hypot($0.x - inst.centre.x, $0.y - inst.centre.y) }
+        let pixelError = snapshot.project(predicted).map { hypot($0.x - inst.centre.x, $0.y - inst.centre.y) }
         let update = track.add(obs, correction: correction, reason: reason, predicted: predicted)
         tracks[inst.id] = track
         let placed = update.position.map { fresh.relocated(to: $0) } ?? fresh
@@ -349,8 +251,6 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             p.pose = Self.values(t)
             p.outline = m.polygons.map { ring in ring.map { (inverse * simd_float4($0 - m.glide, 1)).xyz } }
             places[m.id] = p
-            // Stored just now: the copy ARKit restored at start is out of date.
-            restoredPlaces.removeAll { $0.id == p.id }
             onPlaceMoved?(p)
         }
     }
@@ -369,8 +269,6 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             steerMotion[id] = nil
             steerShape[id] = nil
             drawnHistory[id] = nil
-            lockDisagreements[id] = nil
-            inSavedRoomCoordinates.remove(id)
             riders[id] = nil
             planarFollowed.remove(id)
             planarHidden.remove(id)
@@ -382,26 +280,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         let orphans = riders.filter { marks[$0.value.leader] == nil }.map(\.key)
         orphans.forEach { riders[$0] = nil }
         reanchor(orphans)
-        // A lock keeps the marks still there; one with none left goes (its picture stays in
-        // ARKit's set until the next run, see `reconfigureImages`).
-        for (name, var lock) in imageLocks {
-            lock.marks = lock.marks.filter { marks[$0.key] != nil }
-            imageLocks[name] = lock.marks.isEmpty ? nil : lock
-        }
     }
-
-    // MARK: Image locks (see ARController+Locks.swift)
-
-    /// Recent comparisons of a lock's outline with EdgeTAM's mask of the same frame, for still
-    /// objects: true where they disagreed.
-    var lockDisagreements: [Int: [Bool]] = [:]
-
-    var lastImageSet: Set<String> = []
-    /// When the session was last run with other reference images, and whether a run waits (see
-    /// `reconfigureImages`).
-    var lastImageRun: TimeInterval = 0
-    var imageRunScheduled = false
-    var lockSerial = 0
 
     // MARK: Measuring again
 
@@ -414,8 +293,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     func shiftNeighbours(of id: Int, by offset: simd_float3) {
         guard let centre = marks[id]?.centroid, simd_length(offset) > 0.01, simd_length(offset) < 1 else { return }
         for (other, m) in marks where other != id && other < Self.placeMarkBase && simd_distance(m.centroid, centre) < 4 {
-            // Only objects not measured since the drift showed up, and not held by EdgeTAM or a lock.
-            guard !steered.contains(other), riders[other] == nil, !planarFollowed.contains(other), !lockSeen(other),
+            // Only objects not measured since the drift showed up, and not followed in the image.
+            guard !steered.contains(other), riders[other] == nil, !planarFollowed.contains(other),
                   var track = tracks[other], track.needsCheck || track.isAway else { continue }
             let before = m.centroid
             track.align(targetCorrections[other] ?? matrix_identity_float4x4)
@@ -435,8 +314,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         trackingRecovered = false
         var out: [(Int, CGRect, ObjectTrack.Reason, Int)] = []
         // Remembered places too: one brought back from storage is found again when Pip points at it.
-        // Once an outline is locked to its object, only the lock (or EdgeTAM) moves it.
-        let locked = Set(imageLocks.values.filter(\.seen).flatMap(\.marks.keys)).union(steered).union(riders.keys).union(planarFollowed)
+        // Once an outline follows its object in the image (EdgeTAM, the planar follower, riding
+        // along), only that moves it.
+        let locked = steered.union(riders.keys).union(planarFollowed)
         for (id, box) in visibleMarkBoxes(in: snapshot) where !locked.contains(id) {
             guard var track = tracks[id], let m = marks[id] else { continue }
             if recovered { track.needsCheck = true; tracks[id] = track }
@@ -535,17 +415,13 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             lightSamples.append((Double(light.ambientIntensity), Double(light.ambientColorTemperature)))
             if lightSamples.count > 50 { lightSamples.removeFirst(lightSamples.count - 50) }
         }
-        if awaitingFirstRelocalisation, case .limited(.relocalizing) = frame.camera.trackingState {
-            lastRecognisingCamera = frame.camera.transform
-            lastRecognisingTime = frame.timestamp
-        }
         followObjects(frame)
         planar.frame(frame)
         edgeTAM.frame(frame, viewSize: arView.bounds.size, markExists: edgeTAM.markID.map { marks[$0] != nil } ?? false)
         if case .normal = frame.camera.trackingState, (frame.lightEstimate?.ambientIntensity ?? 1000) >= 80 {} else {
             lastTrackingTrouble = CACurrentMediaTime()
         }
-        relocalisation.frame(frame, awaitingRecognition: awaitingFirstRelocalisation)
+        relocalisation.frame(frame)
         // ARKit moves anchors when it corrects its map (loop closure, relocalisation); the drawn
         // outline eases towards the new place in `renderNow`.
         if !anchors.isEmpty {
@@ -557,53 +433,59 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
-    func session(_ session: ARSession, didAdd added: [ARAnchor]) {
-        for anchor in added { restorePlace(anchor) }
-        updateLocks(added)
-    }
+    // MARK: Tracking lost and found
 
-    func session(_ session: ARSession, didUpdate updated: [ARAnchor]) {
-        updateLocks(updated)
-    }
-
-    // MARK: Recognising the saved room (see ARController+Room.swift)
-
-    var recognitionExtended: TimeInterval = 0
-    /// How long trying the next saved room (a fresh start) has waited for questions being answered.
-    var restartHeld: TimeInterval = 0
-    /// Whether a question is being answered: its frame and the outlines grounded on it are in this
-    /// session's coordinates, which a fresh start would throw away (1 Nov: two questions in the
-    /// first 45 s straddled a switch to the next saved room, and pointed at nothing).
-    var restartHold: (() -> Bool)?
-
-    /// The camera while ARKit was still recognising the room: its pose just before and just after
-    /// recognition shows how far the room's coordinates moved.
-    var lastRecognisingCamera: simd_float4x4?
-
-    var lastRecognisingTime: TimeInterval = 0
-
-    var checkScheduledFor: Date?
-
-    var recognitionWait = ARController.firstRelocaliseWait
-
+    /// Since when ARKit has been relocalising after a loss of tracking (nil while tracking is normal).
     var relocalisingSince: Date?
 
-    var awaitingFirstRelocalisation = false
+    /// The spell of relocalising for which the wait to show the cues anyway is scheduled.
+    var checkScheduledFor: Date?
 
     /// ARKit lost the room since tracking was last normal (`trackingNormal` may already be true
     /// again, when Pip gave up waiting and shows the cues anyway).
     var trackingLost = false
 
-    /// The saved room was not recognised at start.
-    var onRelocaliseGaveUp: (() -> Void)?
+    func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
+        switch camera.trackingState {
+        case .normal:
+            relocalisingSince = nil
+            // Back after being lost: every object is checked again.
+            if trackingLost, !tracks.isEmpty { trackingRecovered = true }
+            trackingLost = false
+            trackingNormal = true
+        case .limited(.relocalizing):
+            // ARKit finds its place again after a loss; the cues wait, hidden, a while.
+            let since = relocalisingSince ?? Date()
+            relocalisingSince = since
+            trackingNormal = false
+            trackingLost = true
+            // Once per spell of relocalising (ARKit may switch between limited states meanwhile).
+            if checkScheduledFor != since {
+                checkScheduledFor = since
+                showCuesAnyway(since: since, after: Self.relocaliseWait)
+            }
+        case .limited(.initializing):
+            trackingNormal = false
+            trackingLost = true
+        case .limited, .notAvailable:
+            // Fast motion or few features: keep drawing; the outlines may lag briefly.
+            trackingNormal = true
+        }
+        overlay.isHidden = !trackingNormal
+    }
 
-    /// The saved room was recognised at start.
-    var onRecognised: (() -> Void)?
+    static let relocaliseWait: TimeInterval = 10
+
+    /// Still relocalising (the same spell) after `seconds`: the cues are shown again anyway.
+    func showCuesAnyway(since: Date, after seconds: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            guard let self, self.relocalisingSince == since else { return }
+            self.trackingNormal = true
+            self.overlay.isHidden = false
+        }
+    }
 
     // MARK: Remembered places (see ARController+Places.swift)
-
-    /// Places ARKit restored from the saved map, with their pose now known (to store once).
-    var restoredPlaces: [SpaceMemory.Place] = []
 
     /// A remembered place was measured again: its new pose and outline, to store.
     var onPlaceMoved: ((SpaceMemory.Place) -> Void)?

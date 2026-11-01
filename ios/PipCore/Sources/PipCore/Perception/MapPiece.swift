@@ -31,9 +31,8 @@ public struct GeoPoint: Codable, Sendable, Equatable {
     }
 }
 
-/// The light a room was mapped in, from ARKit's estimate: a map made under evening lamps is
-/// rarely recognised in daylight (Apple: relocalising is "less likely when lighting conditions
-/// have changed"), so the saved room whose light is most like now's is tried first.
+/// The light a room was mapped in, from ARKit's estimate (kept with each piece: a session under
+/// evening lamps and one in daylight see the same room differently).
 public struct MapLight: Codable, Equatable, Sendable {
     /// ARKit's ambient intensity (lumen; 1000 is neutral).
     public var intensity: Double
@@ -43,11 +42,6 @@ public struct MapLight: Codable, Equatable, Sendable {
     public init(intensity: Double, temperature: Double) {
         self.intensity = intensity
         self.temperature = temperature
-    }
-
-    /// How different two lights are: a doubling of brightness counts 1, 1500 K counts 1.
-    public func distance(to o: MapLight) -> Double {
-        abs(log2(max(intensity, 1) / max(o.intensity, 1))) + abs(temperature - o.temperature) / 1500
     }
 }
 

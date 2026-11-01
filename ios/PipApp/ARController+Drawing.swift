@@ -13,10 +13,8 @@ extension ARController {
         let shownFrame = arView.session.currentFrame?.timestamp ?? now
         let dt = lastRender > 0 ? min(0.1, now - lastRender) : 1.0 / 60
         lastRender = now
-        // Steered outlines take up their latest mask (see `steerShape`); a face ARKit's image
-        // tracking holds is drawn from the lock instead.
-        let lockHeld = Set(imageLocks.values.filter { $0.seen && $0.tracked }.flatMap(\.marks.keys))
-        for (id, shape) in steerShape where steered.contains(id) && !lockHeld.contains(id) && shape.shown != shape.target {
+        // Steered outlines take up their latest mask (see `steerShape`).
+        for (id, shape) in steerShape where steered.contains(id) && shape.shown != shape.target {
             guard let current = marks[id] else { continue }
             let moving = steerMotion[id].map { simd_length($0.velocity) > 0 } ?? false
             let k = Float(1 - exp(-dt / (moving ? Self.followMoving : Self.followStill)))
@@ -71,18 +69,17 @@ extension ARController {
             if changed { marks[id] = m }
         }
         // Marks riding along with the one EdgeTAM follows (see `takeRiders`): at their offset from
-        // its drawn centre, with its lead, unless a lock holds them.
-        for (id, ride) in riders where !lockHeld.contains(id) {
+        // its drawn centre, with its lead.
+        for (id, ride) in riders {
             guard let leader = marks[ride.leader], let shape = steerShape[ride.leader] else { continue }
             let centre = Contour.centroid(shape.shown)
             var m = AnchoredMark(id: id, world: ride.offset.map { ring in ring.map { $0 + centre } })
             m.lead = leader.lead
             marks[id] = m
         }
-        // Also for a face an image lock holds: EdgeTAM's check of the lock compares with it.
-        // And for one followed in the image: EdgeTAM, still following it, measures what is drawn.
-        for id in steered.union(lockHeld).union(planarFollowed) {
-            guard let m = marks[id], lockHeld.contains(id) || (planarFollowed.contains(id) ? !planarHidden.contains(id) : !steerHidden.contains(id)) else { continue }
+        // Also for one followed in the image: EdgeTAM, still following it, measures what is drawn.
+        for id in steered.union(planarFollowed) {
+            guard let m = marks[id], planarFollowed.contains(id) ? !planarHidden.contains(id) : !steerHidden.contains(id) else { continue }
             var h = drawnHistory[id] ?? []
             if h.last?.t != shownFrame { h.append((shownFrame, m.centroid)) }
             if h.count > 90 { h.removeFirst(h.count - 90) }
@@ -90,34 +87,16 @@ extension ARController {
         }
         trackVisibility(now: now)
         board.tick(now)
-        // A locked object ARKit has lost sight of may have moved: its outline waits, hidden, until
-        // ARKit finds the object again, rather than staying where the object was.
         var adjust = follower.adjust
-        // One that EdgeTAM draws, or that rides along with the mark it follows, stays.
-        func drawnByEdgeTAM(_ id: Int) -> Bool {
-            let followed = riders[id]?.leader ?? id
-            return steered.contains(followed) && !steerHidden.contains(followed)
-        }
-        for lock in imageLocks.values where lock.seen && !lock.tracked {
-            for id in lock.marks.keys where !drawnByEdgeTAM(id) {
-                adjust[id] = ImageFollower.Adjust(from: .zero, to: .zero, scale: 1, hidden: true)
-            }
-        }
-        for id in steerHidden where !lockTracks(id) {
+        // Steered and lost while it moved: hidden until EdgeTAM sees it again.
+        for id in steerHidden {
             adjust[id] = ImageFollower.Adjust(from: .zero, to: .zero, scale: 1, hidden: true)
         }
         // Followed in the image and lost while it moved: hidden until found again.
         for id in planarHidden { adjust[id] = ImageFollower.Adjust(from: .zero, to: .zero, scale: 1, hidden: true) }
         // Riding along with an object EdgeTAM lost while it moved: hidden with it.
-        for (id, ride) in riders where steerHidden.contains(ride.leader) && !lockTracks(id) {
+        for (id, ride) in riders where steerHidden.contains(ride.leader) {
             adjust[id] = ImageFollower.Adjust(from: .zero, to: .zero, scale: 1, hidden: true)
-        }
-        // While the saved room is being recognised, its remembered places are in its coordinates,
-        // not yet in this session's: they wait.
-        if awaitingFirstRelocalisation {
-            for id in marks.keys where id >= Self.placeMarkBase || inSavedRoomCoordinates.contains(id) {
-                adjust[id] = ImageFollower.Adjust(from: .zero, to: .zero, scale: 1, hidden: true)
-            }
         }
         overlay.adjust = adjust
         // Points behind the camera are never drawn (a projection would mirror them onto the
@@ -137,7 +116,7 @@ extension ARController {
 
     /// Pointed-at objects with a cue on screen, followed in the image (see ImageFollower).
     func followObjects(_ frame: ARFrame) {
-        let locked = Set(imageLocks.values.filter(\.seen).flatMap(\.marks.keys)).union(steered).union(riders.keys).union(planarFollowed)
+        let locked = steered.union(riders.keys).union(planarFollowed)
         let shownIDs = Set(board.annotations.flatMap { $0.cue.marks }).filter { $0 < Self.placeMarkBase && tracks[$0] != nil && !locked.contains($0) }
         guard !shownIDs.isEmpty else { return }
         var shown: [(id: Int, box: CGRect)] = []

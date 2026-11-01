@@ -13,6 +13,14 @@ import simd
         ViewLink(transform: t, inliers: inliers, residual: 0.006, centre: centre, spread: 0.3, from: from, to: to)
     }
 
+    /// Where `book` carries a point of the earlier session: by the link nearest it, as the app
+    /// carries poses and anchors.
+    static func carried(_ p: SIMD3<Float>, by book: LinkBook) -> SIMD3<Float>? {
+        var pose = matrix_identity_float4x4
+        pose.columns.3 = SIMD4(p, 1)
+        return book.carry(pose: pose, of: earlier, near: p).map { simd_make_float3($0.columns.3) }
+    }
+
     @Test func depthIsTrustedOnlyOffEdges() {
         #expect(TrustedDepth.of([1.20, 1.21, 1.22, 1.20, 1.23]) == 1.21)
         // Across a depth edge (a table edge in front of the floor).
@@ -29,7 +37,7 @@ import simd
         let changes = book.add([(Self.earlier, Self.link(Self.truth, from: 7, to: 2, centre: SIMD3(1.5, 0, 0)))])
         #expect(changes[Self.earlier] == .linked)
         let p = SIMD3<Float>(0.7, 0.1, -0.3)
-        let carried = try #require(book.carry(p, of: Self.earlier))
+        let carried = try #require(Self.carried(p, by: book))
         #expect(simd_distance(carried, Self.truth.apply(p)) < 0.001)
         // More of the same: strengthened.
         #expect(book.add([(Self.earlier, Self.link(Self.truth, from: 8, to: 3, centre: SIMD3(0.5, 0, 1)))])[Self.earlier] == .strengthened)
@@ -42,15 +50,15 @@ import simd
         book.trackingBroke()
         // Still carried by the link in use.
         let p = SIMD3<Float>(0.2, 0, 0.2)
-        #expect(book.carry(p, of: Self.earlier).map { simd_distance($0, Self.truth.apply(p)) < 0.001 } == true)
+        #expect(Self.carried(p, by: book).map { simd_distance($0, Self.truth.apply(p)) < 0.001 } == true)
         // The live coordinates moved by 30 cm: one new view is not enough to replace the link...
         var moved = Self.truth
         moved.t += SIMD3(0.3, 0, 0)
         #expect(book.add([(Self.earlier, Self.link(moved, from: 3, to: 3, centre: .zero))]).isEmpty)
-        #expect(book.carry(p, of: Self.earlier).map { simd_distance($0, Self.truth.apply(p)) < 0.001 } == true)
+        #expect(Self.carried(p, by: book).map { simd_distance($0, Self.truth.apply(p)) < 0.001 } == true)
         // ...two agreeing ones are, and evidence from before the break does not outvote them.
         #expect(book.add([(Self.earlier, Self.link(moved, from: 7, to: 4, centre: SIMD3(1.5, 0, 0)))])[Self.earlier] == .relinked)
-        #expect(book.carry(p, of: Self.earlier).map { simd_distance($0, moved.apply(p)) < 0.001 } == true)
+        #expect(Self.carried(p, by: book).map { simd_distance($0, moved.apply(p)) < 0.001 } == true)
     }
 
     @Test func aViewIsCarriedByItsOwnLinkFirst() throws {

@@ -33,12 +33,6 @@ public struct UprightTransform: Codable, Sendable, Equatable, CustomStringConver
         return SIMD3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z) + t
     }
 
-    /// Turns a direction (no shift).
-    public func turn(_ v: SIMD3<Float>) -> SIMD3<Float> {
-        let c = cos(yaw), s = sin(yaw)
-        return SIMD3(c * v.x + s * v.z, v.y, -s * v.x + c * v.z)
-    }
-
     public var inverse: UprightTransform {
         let back = UprightTransform(yaw: -yaw, t: .zero)
         return UprightTransform(yaw: -yaw, t: -back.apply(t))

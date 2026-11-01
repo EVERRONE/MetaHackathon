@@ -45,14 +45,6 @@ final class EdgeTAMFollower {
     /// No longer followed (a newer object, the time is up, or it failed): its outline is the
     /// room's again (ARController.unsteer).
     var onStopped: ((Int) -> Void)?
-    /// Whether an image lock saw this mark's object face recently (ARController).
-    var lockHeld: ((Int) -> Bool)?
-    /// A comparison of the shown outline with this frame's mask, in mm, and whether the object
-    /// moved (ARController checks image locks against it).
-    var onShownCheck: ((Int, Double, Bool, Bool) -> Void)?
-    /// EdgeTAM's object score above which its mask may overrule an image lock (on 1 Nov a remote's
-    /// POWER button scored 8-10, a mask that was wrong 3.2-3.8).
-    static let sureScore: Float = 6
     /// Where the outline was drawn on the camera frame of a given time, if it was (ARController):
     /// what the user saw, to compare with where the mask of that same frame finds the object.
     var drawnAt: ((Int, TimeInterval) -> simd_float3?)?
@@ -67,8 +59,6 @@ final class EdgeTAMFollower {
     /// Masks in a row on which the fast tracker disagreed with EdgeTAM.
     private var disagreements = 0
     private var lastFastStart: TimeInterval = 0
-    /// Masks of frames up to this time were lifted into the old room coordinates.
-    private var coordinatesMovedAt: TimeInterval = 0
     private(set) var markID: Int?
     private var run = 0
     private var seeded = false
@@ -193,8 +183,7 @@ final class EdgeTAMFollower {
         if keep { lastKept = t; kept += 1 }
         let index = kept
         let request = EdgeTAMWorker.Request(buffer: frame.capturedImage, depth: DepthCopy(frame.sceneDepth), camera: frame.camera, time: t,
-                                            keep: keep ? folder?.appendingPathComponent(String(format: "%03d", index)) : nil,
-                                            lockHeld: lockHeld?(id) ?? false)
+                                            keep: keep ? folder?.appendingPathComponent(String(format: "%03d", index)) : nil)
         let display = frame.displayTransform(for: .portrait, viewportSize: viewSize)
         let arFps = arTimes.count
         worker.track(request) { [weak self] result in
@@ -228,8 +217,6 @@ final class EdgeTAMFollower {
     /// Pip's outline follows the mask; when the object is not seen, it waits where it was, unless
     /// it was moving (then it is hidden until seen again).
     private func steer(_ id: Int, _ r: EdgeTAMWorker.Tracked, time: TimeInterval) {
-        // A frame from before the room was recognised: its outline is in the old coordinates.
-        guard r.time > coordinatesMovedAt else { return }
         if case .reject(let d) = r.verdict {
             // A look-alike, or the object taken away faster than the masks show: not drawn there.
             rejected += 1
@@ -258,20 +245,6 @@ final class EdgeTAMFollower {
             let moving = centres.count >= 2 && simd_distance(centres.first!.p, centres.last!.p) > Self.movingDistance
             onLost?(id, moving)
         }
-    }
-
-    /// The room's coordinates moved (ARKit recognised the saved room) after the frame of time
-    /// `before`: masks of frames up to then, and positions kept from before, are in the old ones,
-    /// so the gate and the fast tracker start again from the next mask.
-    func coordinatesMoved(before: TimeInterval) {
-        coordinatesMovedAt = before
-        centres = []
-        smoothedVelocity = .zero
-        lastDrawn = nil
-        lastTaken = nil
-        disagreements = 0
-        fast.stop()
-        worker.resetGate()
     }
 
     // MARK: Between masks
@@ -305,7 +278,7 @@ final class EdgeTAMFollower {
     /// The outline drawn since the last mask, against where this mask finds the object: the error
     /// the user saw just before this update (the object's own motion since, plus the depth error
     /// as far as the camera moved). In pixels of the camera image and in millimetres at the
-    /// object, like the image lock's check; a summary every three seconds.
+    /// object; a summary every three seconds.
     private var lastDrawn: simd_float3?
     private var checks: [(px: Double, mm: Double, moved: Double)] = []
     /// The outline as shown on the mask's own camera frame against the mask: mm, and whether the
@@ -351,7 +324,6 @@ final class EdgeTAMFollower {
                 let smm = spx / Double(k[0][0]) * Double(simd_distance(camera, s)) * 1000
                 let moving = moved > 5 || simd_length(smoothedVelocity) >= Self.stillSpeed
                 shownChecks.append((smm, spx, moving))
-                onShownCheck?(id, smm, moving, r.frame.objectScore >= Self.sureScore)
                 shown = String(format: "%.1f\t%.1f\t%d", spx, smm, moving ? 1 : 0)
             }
         }
@@ -476,8 +448,6 @@ private final class EdgeTAMWorker: @unchecked Sendable {
         let time: TimeInterval
         /// Where to keep this frame and its mask (without extension), or nil.
         let keep: URL?
-        /// An image lock saw the object's face recently (see TrackGate).
-        let lockHeld: Bool
     }
 
     struct Seeded: Sendable {
@@ -560,14 +530,6 @@ private final class EdgeTAMWorker: @unchecked Sendable {
         }
     }
 
-    /// Forgets where the object was (new room coordinates); on the queue, in order with the masks.
-    func resetGate() {
-        queue.async { [self] in
-            gate.reset()
-            lastAbsent = nil
-        }
-    }
-
     func track(_ r: Request, done: @escaping (Result<Tracked, Error>) -> Void) {
         queue.async { [self] in
             let result = Result<Tracked, Error> {
@@ -596,7 +558,7 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                 let recentlyLost = lastAbsent.map { r.time - $0 < Self.lostFor } ?? false
                 var verdict: TrackGate.Verdict?
                 if f.present, let w = world {
-                    verdict = gate.judge(time: r.time, position: w, area: Float(f.area), lockHeld: r.lockHeld, recentlyLost: recentlyLost)
+                    verdict = gate.judge(time: r.time, position: w, area: Float(f.area), recentlyLost: recentlyLost)
                     if case .reject = verdict {
                         tracker.forgetLatest()
                         depthFilter = depthBefore
