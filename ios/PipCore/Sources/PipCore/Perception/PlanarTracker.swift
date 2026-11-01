@@ -61,6 +61,18 @@ public struct GrayImage: Sendable {
         return GrayImage(width: w2, height: h2, pixels: out)
     }
 
+    /// Resampled to another size (bilinear; a snapshot to the tracking size).
+    public func resized(width w: Int, height h: Int) -> GrayImage {
+        var out = [Float](repeating: 0, count: w * h)
+        let sx = Float(width) / Float(w), sy = Float(height) / Float(h)
+        pixels.withUnsafeBufferPointer { p in
+            for y in 0..<h {
+                for x in 0..<w { out[y * w + x] = sample((Float(x) + 0.5) * sx - 0.5, (Float(y) + 0.5) * sy - 0.5, p) }
+            }
+        }
+        return GrayImage(width: w, height: h, pixels: out)
+    }
+
     /// Bilinear sample; positions outside are clamped to the edge.
     @inline(__always) func sample(_ x: Float, _ y: Float, _ p: UnsafeBufferPointer<Float>) -> Float {
         let xc = min(max(x, 0), Float(width - 1) - 0.001), yc = min(max(y, 0), Float(height - 1) - 0.001)
@@ -227,8 +239,91 @@ public struct PlanarTracker: Sendable {
         return state
     }
 
+    /// Takes the object up again on `image`, from where `predicted` (reference → this image) says it
+    /// is: from the moment it was outlined (the outline is of an earlier frame) or after it was
+    /// lost. Each reference point is aligned against the first view, coarse to fine (a prediction
+    /// may be some ten pixels off), and a homography is fitted to those that settle.
+    @discardableResult
+    public mutating func relocate(to image: GrayImage, predicted: simd_float3x3) -> State {
+        guard let first, !reference.isEmpty || !outline.isEmpty else { return .lost }
+        if reference.isEmpty {
+            reference = Self.corners(in: first, inside: outline, count: settings.points, spacing: settings.spacing, avoiding: [])
+        }
+        let target = Self.pyramid(image, levels: settings.levels)
+        let firstPyramid = Self.pyramid(first, levels: settings.levels)
+        var points = reference.map { r -> SIMD2<Float> in let q = predicted * simd_float3(r.x, r.y, 1); return SIMD2(q.x / q.z, q.y / q.z) }
+        var h = predicted
+        var settled = [Bool](repeating: false, count: points.count)
+        for level in stride(from: min(2, target.count - 1), through: 0, by: -1) {
+            let s = Float(1 << level)
+            let down = simd_float3x3(diagonal: SIMD3(1 / s, 1 / s, 1)), up = simd_float3x3(diagonal: SIMD3(s, s, 1))
+            let hl = down * h * up
+            let aligned = Self.alignToFirst(firstPyramid[level], target[level], h: hl, refs: reference.map { $0 / s }, at: points.map { $0 / s }, settings: settings)
+            for i in points.indices {
+                if let a = aligned[i] { points[i] = a * s; settled[i] = true } else { settled[i] = false }
+            }
+            let idx = points.indices.filter { settled[$0] }
+            if idx.count >= settings.minInliers, let fit = Self.ransacHomography(from: idx.map { reference[$0] }, to: idx.map { points[$0] }, threshold: settings.inlierDistance * s) {
+                h = fit.h
+                // The rest go where the fit puts them, for the next level.
+                for i in points.indices where !settled[i] {
+                    let q = h * simd_float3(reference[i].x, reference[i].y, 1)
+                    points[i] = SIMD2(q.x / q.z, q.y / q.z)
+                }
+            }
+        }
+        let idx = points.indices.filter { settled[$0] }
+        guard idx.count >= settings.minInliers, let fit = Self.ransacHomography(from: idx.map { reference[$0] }, to: idx.map { points[$0] }, threshold: settings.inlierDistance),
+              fit.inliers.count >= settings.minInliers, Float(fit.inliers.count) / Float(reference.count) >= settings.minInlierShare else {
+            state = .lost
+            return state
+        }
+        homography = fit.h
+        inliers = fit.inliers.count
+        residual = fit.residual
+        let keep = fit.inliers.map { idx[$0] }
+        current = keep.map { points[$0] }
+        reference = keep.map { reference[$0] }
+        misses = Array(repeating: 0, count: current.count)
+        previous = target
+        state = .tracking
+        return state
+    }
+
     /// Where a point of the reference view is now.
     public func map(_ p: CGPoint) -> CGPoint { homography.apply(p) }
+
+    /// The homography mapping four or more points onto others (least squares).
+    public static func homography(from a: [CGPoint], to b: [CGPoint]) -> simd_float3x3? {
+        dlt(a.map { SIMD2(Float($0.x), Float($0.y)) }, b.map { SIMD2(Float($0.x), Float($0.y)) })
+    }
+
+    /// A polygon clipped to a rectangle (Sutherland–Hodgman): the part of an object's outline in a region.
+    public static func clip(_ polygon: [CGPoint], to rect: CGRect) -> [CGPoint] {
+        var out = polygon
+        let edges: [(inside: (CGPoint) -> Bool, cross: (CGPoint, CGPoint) -> CGPoint)] = [
+            ({ $0.x >= rect.minX }, { a, b in CGPoint(x: rect.minX, y: a.y + (b.y - a.y) * (rect.minX - a.x) / (b.x - a.x)) }),
+            ({ $0.x <= rect.maxX }, { a, b in CGPoint(x: rect.maxX, y: a.y + (b.y - a.y) * (rect.maxX - a.x) / (b.x - a.x)) }),
+            ({ $0.y >= rect.minY }, { a, b in CGPoint(x: a.x + (b.x - a.x) * (rect.minY - a.y) / (b.y - a.y), y: rect.minY) }),
+            ({ $0.y <= rect.maxY }, { a, b in CGPoint(x: a.x + (b.x - a.x) * (rect.maxY - a.y) / (b.y - a.y), y: rect.maxY) }),
+        ]
+        for edge in edges {
+            guard !out.isEmpty else { break }
+            let input = out
+            out = []
+            for (i, cur) in input.enumerated() {
+                let prev = input[(i + input.count - 1) % input.count]
+                let ci = edge.inside(cur), pi = edge.inside(prev)
+                if ci {
+                    if !pi { out.append(edge.cross(prev, cur)) }
+                    out.append(cur)
+                } else if pi {
+                    out.append(edge.cross(prev, cur))
+                }
+            }
+        }
+        return out
+    }
 
     // MARK: Pyramid and corners
 

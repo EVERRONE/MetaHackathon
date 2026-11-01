@@ -100,6 +100,8 @@ extension ARController {
         for id in steerHidden where !lockTracks(id) {
             adjust[id] = ImageFollower.Adjust(from: .zero, to: .zero, scale: 1, hidden: true)
         }
+        // Followed in the image and lost while it moved: hidden until found again.
+        for id in planarHidden { adjust[id] = ImageFollower.Adjust(from: .zero, to: .zero, scale: 1, hidden: true) }
         // Riding along with an object EdgeTAM lost while it moved: hidden with it.
         for (id, ride) in riders where steerHidden.contains(ride.leader) && !lockTracks(id) {
             adjust[id] = ImageFollower.Adjust(from: .zero, to: .zero, scale: 1, hidden: true)
@@ -129,7 +131,7 @@ extension ARController {
 
     /// Pointed-at objects with a cue on screen, followed in the image (see ImageFollower).
     func followObjects(_ frame: ARFrame) {
-        let locked = Set(imageLocks.values.filter(\.seen).flatMap(\.marks.keys)).union(steered).union(riders.keys)
+        let locked = Set(imageLocks.values.filter(\.seen).flatMap(\.marks.keys)).union(steered).union(riders.keys).union(planarFollowed)
         let shownIDs = Set(board.annotations.flatMap { $0.cue.marks }).filter { $0 < Self.placeMarkBase && tracks[$0] != nil && !locked.contains($0) }
         guard !shownIDs.isEmpty else { return }
         var shown: [(id: Int, box: CGRect)] = []

@@ -26,6 +26,7 @@ extension ARController {
         coordinates += 1
         jumps[coordinates] = jump
         edgeTAM.coordinatesMoved(before: before)
+        planar.coordinatesMoved(by: jump)
         let shift = simd_length(simd_float3(jump.columns.3.x, jump.columns.3.y, jump.columns.3.z))
         let angle = acos(min(1, max(-1, (jump.columns.0.x + jump.columns.1.y + jump.columns.2.z - 1) / 2))) * 180 / .pi
         // Found in the visual memory meanwhile: already in these coordinates.
@@ -47,8 +48,9 @@ extension ARController {
                 track.align(carried ? jump : full)
                 tracks[id] = track
             }
-            // ARKit's image anchor carries a locked outline into the new coordinates itself.
-            if lockSeen(id) { continue }
+            // ARKit's image anchor carries a locked outline into the new coordinates itself, and
+            // one followed in the image is lifted with the camera of each new frame.
+            if lockSeen(id) || planarFollowed.contains(id) { continue }
             // A rider keeps its offset from the mark it rides with, turned along.
             if let ride = riders[id] {
                 let turn = simd_float3x3(jump.columns.0.xyz, jump.columns.1.xyz, jump.columns.2.xyz)

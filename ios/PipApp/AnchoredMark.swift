@@ -153,6 +153,12 @@ struct AnchoredMark {
         observation = nil
     }
 
+    /// A point of the snapshot the mark was measured on, laid on that surface in the room (where
+    /// it is now); nil without such a surface (a remembered place, an outline from a lock).
+    func surfacePoint(_ p: CGPoint) -> simd_float3? {
+        imageExtent > 0 ? apply(lift(p)) : nil
+    }
+
     /// Start and end of a straight arrow for `move`, in world space, laid on the surface the mark
     /// was measured on. nil without such a surface (a remembered place, an outline locked to its
     /// object): the arrow is then drawn along the screen.

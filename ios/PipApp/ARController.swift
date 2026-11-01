@@ -42,6 +42,13 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// Marks riding along with the one EdgeTAM follows, at their offset from its centre (see
     /// `takeRiders`).
     var riders: [Int: (leader: Int, offset: [[simd_float3]])] = [:]
+    /// Follows pointed-at objects in the image every frame; marks it draws, and those hidden
+    /// because their object was lost while it moved (see PlanarFollower).
+    let planar = PlanarFollower()
+    var planarFollowed = Set<Int>()
+    var planarHidden = Set<Int>()
+    /// Each mark as first measured, on the surface it was found on (to start following it).
+    var measured: [Int: AnchoredMark] = [:]
 
     /// A steered object's velocity and the time of the frame its outline came from.
     var steerMotion: [Int: (velocity: simd_float3, time: TimeInterval)] = [:]
@@ -150,6 +157,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         edgeTAM.onOutline = { [weak self] id, world, velocity, time in self?.steer(id, world: world, velocity: velocity, at: time) }
         edgeTAM.onLost = { [weak self] id, moving in self?.steerLost(id, moving: moving) }
         edgeTAM.onStopped = { [weak self] id in self?.unsteer(id) }
+        planar.onOutline = { [weak self] id, rings in self?.planarOutline(id, rings) }
+        planar.onLost = { [weak self] ids, moving in self?.planarLost(ids, moving: moving) }
+        planar.onLog = { [weak self] s in self?.onLockLog?(s) }
         edgeTAM.lockHeld = { [weak self] id in
             let now = CACurrentMediaTime()
             return self?.imageLocks.values.contains { $0.marks[id] != nil && $0.seen && now - $0.lastTracked < 3 } ?? false
@@ -262,6 +272,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         guard var m = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return "no outline" }
         if carry != matrix_identity_float4x4 { m = m.transformed(by: carry) }
         place(m)
+        measured[m.id] = m
         if let obs = m.observation {
             tracks[m.id] = ObjectTrack(observation: obs, spec: spec)
             // Found again in the live image when its cue shows, then followed there.
@@ -278,7 +289,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     @discardableResult
     func updateMark(_ inst: SegmentInstance, snapshot: FrameSnapshot, reason: ObjectTrack.Reason) -> ObjectTrack.Update? {
         // EdgeTAM or an image lock took the outline over while this was measured: theirs is newer.
-        guard !steered.contains(inst.id), riders[inst.id] == nil, !lockSeen(inst.id), let carry = carry(from: snapshot.coordinates) else { return nil }
+        guard !steered.contains(inst.id), riders[inst.id] == nil, !planarFollowed.contains(inst.id), !lockSeen(inst.id),
+              let carry = carry(from: snapshot.coordinates) else { return nil }
         guard let old = marks[inst.id], var fresh = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return nil }
         if carry != matrix_identity_float4x4 { fresh = fresh.transformed(by: carry) }
         guard let obs = fresh.observation else { return nil }
@@ -325,7 +337,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     }
 
     func removeMarks(where shouldRemove: (Int) -> Bool) {
-        for id in marks.keys where shouldRemove(id) {
+        let removed = Set(marks.keys.filter(shouldRemove))
+        for id in removed {
             if let a = anchors[id] { arView.session.remove(anchor: a.anchor) }
             anchors[id] = nil
             marks[id] = nil
@@ -340,7 +353,11 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             lockDisagreements[id] = nil
             inSavedRoomCoordinates.remove(id)
             riders[id] = nil
+            planarFollowed.remove(id)
+            planarHidden.remove(id)
+            measured[id] = nil
         }
+        if !planar.isEmpty { planar.stop(removed) }
         // Riding along with a mark that is gone: back on room anchors.
         let orphans = riders.filter { marks[$0.value.leader] == nil }.map(\.key)
         orphans.forEach { riders[$0] = nil }
@@ -375,7 +392,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         guard let centre = marks[id]?.centroid, simd_length(offset) > 0.01, simd_length(offset) < 1 else { return }
         for (other, m) in marks where other != id && other < Self.placeMarkBase && simd_distance(m.centroid, centre) < 4 {
             // Only objects not measured since the drift showed up, and not held by EdgeTAM or a lock.
-            guard !steered.contains(other), riders[other] == nil, !lockSeen(other), var track = tracks[other], track.needsCheck || track.isAway else { continue }
+            guard !steered.contains(other), riders[other] == nil, !planarFollowed.contains(other), !lockSeen(other),
+                  var track = tracks[other], track.needsCheck || track.isAway else { continue }
             let before = m.centroid
             track.align(targetCorrections[other] ?? matrix_identity_float4x4)
             place(m.relocated(to: m.centroid + offset), glideFrom: before)
@@ -395,7 +413,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         var out: [(Int, CGRect, ObjectTrack.Reason, Int)] = []
         // Remembered places too: one brought back from storage is found again when Pip points at it.
         // Once an outline is locked to its object, only the lock (or EdgeTAM) moves it.
-        let locked = Set(imageLocks.values.filter(\.seen).flatMap(\.marks.keys)).union(steered).union(riders.keys)
+        let locked = Set(imageLocks.values.filter(\.seen).flatMap(\.marks.keys)).union(steered).union(riders.keys).union(planarFollowed)
         for (id, box) in visibleMarkBoxes(in: snapshot) where !locked.contains(id) {
             guard var track = tracks[id], let m = marks[id] else { continue }
             if recovered { track.needsCheck = true; tracks[id] = track }
@@ -493,6 +511,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             lastRecognisingTime = frame.timestamp
         }
         followObjects(frame)
+        planar.frame(frame)
         edgeTAM.frame(frame, viewSize: arView.bounds.size, markExists: edgeTAM.markID.map { marks[$0] != nil } ?? false)
         if case .normal = frame.camera.trackingState, (frame.lightEstimate?.ambientIntensity ?? 1000) >= 80 {} else {
             lastTrackingTrouble = CACurrentMediaTime()

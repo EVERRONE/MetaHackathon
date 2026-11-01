@@ -227,14 +227,26 @@ extension GuideModel {
                 return holdsAll && Double(o.area) >= 3 * keyArea && Double(o.area) < 0.7 * Double(bounds.width * bounds.height) ? o : nil
             }
         }
-        let distance = snapshot.depth(atSensor: snapshot.sensorPoint(CGPoint(x: first.midX, y: first.midY)), minConfidence: 1) ?? 0.4
-        guard let made = ImageLock.make(keys: p.keys.map(\.key), object: parent, snapshot: snapshot, distance: distance) else {
-            log("lock: mark\(p.keys.count > 1 ? "s" : "") \(label): no region to lock to")
+        // What to follow: the object around the keys (a laptop's keyboard, not its screen, which
+        // is another plane), or a patch around a key on an object SAM did not find, or the target
+        // itself when it is the object (a bottle, a statue).
+        let keysBox = p.keys.map(\.key.boxRect).reduce(CGRect.null) { $0.union($1) }
+        let side = p.keys.map { max($0.key.boxRect.width, $0.key.boxRect.height) }.max() ?? 20
+        let region: [CGPoint]
+        if let parent, let ring = parent.outlinePoints.first {
+            region = PlanarTracker.clip(ring, to: keysBox.insetBy(dx: -6 * side, dy: -6 * side).intersection(bounds))
+        } else if p.on != nil {
+            let r = keysBox.insetBy(dx: -2 * side, dy: -2 * side).intersection(bounds)
+            region = [CGPoint(x: r.minX, y: r.minY), CGPoint(x: r.maxX, y: r.minY), CGPoint(x: r.maxX, y: r.maxY), CGPoint(x: r.minX, y: r.maxY)]
+        } else {
+            region = p.keys.first?.key.outlinePoints.first ?? []
+        }
+        guard region.count >= 3 else {
+            log("follow: mark\(p.keys.count > 1 ? "s" : "") \(label): no region to follow")
             return
         }
-        log(String(format: "lock: mark%@ %@: reference %@ (%.0f mm), at %.2f m", p.keys.count > 1 ? "s" : "", label,
-                   parent == nil ? "around the key" : "of their object", made.physicalWidth * 1000, distance))
-        ar.lock(Dictionary(uniqueKeysWithValues: zip(p.keys.map(\.id), made.locals)), image: made.image, physicalWidth: made.physicalWidth)
+        log("follow: mark\(p.keys.count > 1 ? "s" : "") \(label): \(parent == nil ? (p.on == nil ? "the object itself" : "around the key") : "on their \(p.on ?? "object")")")
+        ar.follow(region: region, targets: Dictionary(uniqueKeysWithValues: p.keys.map { ($0.id, $0.key.regularized().outlinePoints) }), snapshot: snapshot)
     }
 
     /// An object Pip pointed at was moved (followed in the image) and lies still again: measure it

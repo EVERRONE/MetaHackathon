@@ -154,3 +154,29 @@ import simd
         }
     }
 }
+
+@Suite struct PlanarTrackerRelocateTests {
+    @Test func anObjectIsTakenUpAgainFromARoughPrediction() {
+        // Outlined on one frame; seconds later it is elsewhere (turned 12°, 60 px on, 5% larger),
+        // and the prediction (from the camera's motion) is 9 px and 2° off.
+        let face = PlanarTrackerTests.keyboard(), bg = PlanarTrackerTests.background(seed: 11)
+        let then = PlanarTrackerTests.pose(at: SIMD2(260, 240), degrees: 0)
+        let now = PlanarTrackerTests.pose(at: SIMD2(320, 230), degrees: 12, scale: 1.05)
+        let guess = PlanarTrackerTests.pose(at: SIMD2(327, 236), degrees: 10, scale: 1.04)
+        let f0 = PlanarTrackerTests.frame(face, then, background: bg, noise: 4, seed: 1)
+        let f1 = PlanarTrackerTests.frame(face, now, background: bg, noise: 4, seed: 2)
+        var t = PlanarTracker()
+        let started = t.start(image: f0, outline: [CGPoint(x: 0, y: 0), CGPoint(x: 360, y: 0), CGPoint(x: 360, y: 160), CGPoint(x: 0, y: 160)].map { then.apply($0) })
+        #expect(started)
+        // Reference → now, predicted: then⁻¹ maps the reference frame back onto the face.
+        let relocated = t.relocate(to: f1, predicted: guess * then.inverse)
+        #expect(relocated == .tracking)
+        let key = CGPoint(x: 193, y: 99)
+        let truth = now.apply(key), seen = t.map(then.apply(key))
+        #expect(hypot(truth.x - seen.x, truth.y - seen.y) < 0.5, "\(hypot(truth.x - seen.x, truth.y - seen.y)) px")
+        // And it is followed from there.
+        let f2 = PlanarTrackerTests.frame(face, PlanarTrackerTests.pose(at: SIMD2(326, 228), degrees: 13, scale: 1.05), background: bg, noise: 4, seed: 3)
+        let followed = t.track(f2)
+        #expect(followed == .tracking)
+    }
+}

@@ -9,7 +9,7 @@ extension ARController {
     /// EdgeTAM saw the object: its outline is the mask's, in the room. A flat face that ARKit's image
     /// tracking holds is more exact (under a millimetre to 1.5 mm): there the lock keeps the outline.
     func steer(_ id: Int, world: [[simd_float3]], velocity: simd_float3 = .zero, at time: TimeInterval = CACurrentMediaTime()) {
-        guard marks[id] != nil else { return }
+        guard marks[id] != nil, !planarFollowed.contains(id) else { return }
         if lockTracks(id) { return }
         let first = !steered.contains(id)
         if first {
@@ -51,7 +51,7 @@ extension ARController {
         let centre = Contour.centroid(shape.shown)
         var taken: [Int] = []
         for (id, m) in marks where id != leader && id / 1000 == leader / 1000 && id < Self.foundMarkBase {
-            guard tracks[id]?.spec?.on == on, !steered.contains(id), !lockSeen(id), riders[id] == nil,
+            guard tracks[id]?.spec?.on == on, !steered.contains(id), !lockSeen(id), riders[id] == nil, !planarFollowed.contains(id),
                   simd_distance(m.centroid, centre) < 0.4 else { continue }
             riders[id] = (leader, m.polygons.map { ring in ring.map { $0 - centre } })
             if let a = anchors[id] { arView.session.remove(anchor: a.anchor) }
@@ -63,6 +63,42 @@ extension ARController {
         if !taken.isEmpty {
             onLockLog?("edgetam: mark\(taken.count > 1 ? "s" : "") \(taken.sorted().map { String($0 % 1000) }.joined(separator: ",")) ride along with mark \(leader % 1000) (\(on))")
         }
+    }
+
+    /// Starts following marks on one object in the image (PlanarFollower): `region` the object
+    /// around them and `targets` their outlines, in the pixels of the snapshot they were measured on.
+    func follow(region: [CGPoint], targets: [Int: [[CGPoint]]], snapshot: FrameSnapshot) {
+        guard let frame = arView.session.currentFrame, carry(from: snapshot.coordinates) == matrix_identity_float4x4 else { return }
+        let surfaces = targets.keys.compactMap { measured[$0] }
+        guard !surfaces.isEmpty else { return }
+        planar.follow(targets, region: region, snapshot: snapshot, surface: { p in surfaces.lazy.compactMap { $0.surfacePoint(p) }.first }, frame: frame)
+    }
+
+    /// The planar follower drew a mark's outline (in the room, from this frame).
+    func planarOutline(_ id: Int, _ rings: [[simd_float3]]) {
+        guard marks[id] != nil else { return }
+        if planarFollowed.insert(id).inserted {
+            // From now on it is drawn from the image: not from a room anchor, EdgeTAM, a lock or the box follower.
+            if let a = anchors[id] { arView.session.remove(anchor: a.anchor) }
+            anchors[id] = nil
+            targetCorrections[id] = nil
+            follower.stop(id)
+            steered.remove(id)
+            steerShape[id] = nil
+            steerMotion[id] = nil
+            steerHidden.remove(id)
+            drawnHistory[id] = nil
+            riders[id] = nil
+            if edgeTAM.markID == id { edgeTAM.stop(reason: "followed in the image") }
+        }
+        planarHidden.remove(id)
+        marks[id] = AnchoredMark(id: id, world: rings)
+    }
+
+    /// The planar follower lost these marks' object: hidden if it was moving (it is elsewhere now),
+    /// otherwise left where it lay.
+    func planarLost(_ ids: [Int], moving: Bool) {
+        if moving { planarHidden.formUnion(ids.filter { planarFollowed.contains($0) }) }
     }
 
     /// Back on room anchors where they are drawn now, followed in the image and measured afresh
@@ -84,7 +120,7 @@ extension ARController {
     /// EdgeTAM does not see the object: if it was moving, its outline waits hidden until it is seen
     /// again; if not, it stays where the object was (out of view, or covered for a moment).
     func steerLost(_ id: Int, moving: Bool) {
-        guard steered.contains(id), moving, !lockTracks(id) else { return }
+        guard steered.contains(id), moving, !lockTracks(id), !planarFollowed.contains(id) else { return }
         steerHidden.insert(id)
     }
 
