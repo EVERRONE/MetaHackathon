@@ -54,6 +54,8 @@ struct ObjectTrack {
     var isAway: Bool { outOfViewSince != nil }
 
     static let maxViews = 8
+    /// The most a session's tracking drifts between two looks at an object (beyond: the object).
+    static let maxDrift: Float = 0.05
     /// At most one measurement per object this often.
     static let minInterval: TimeInterval = 2
     /// Out of view this long, and the object is checked when it comes back.
@@ -132,6 +134,10 @@ struct ObjectTrack {
             // difference is the drift every other object in the room has too. A remembered place
             // has no views from this session: its difference is its own storage or link error.
             offset = observations.isEmpty ? nil : newPoint - prior
+            // Tracking within one session drifts by centimetres; a bigger difference for one object
+            // is that object (moved, or taken for its look-alike), not the room: it is not passed on
+            // to the others (1 Nov: 12 cm from one statue moved every other outline along).
+            if let o = offset, simd_length(o) > Self.maxDrift { offset = nil }
             observations = [obs]
             reset = true
             needsCheck = false

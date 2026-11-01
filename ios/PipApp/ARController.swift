@@ -300,6 +300,18 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
               let carry = carry(from: snapshot.coordinates) else { return nil }
         guard let old = marks[inst.id], var fresh = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return nil }
         if carry != matrix_identity_float4x4 { fresh = fresh.transformed(by: carry) }
+        // Measured on another pointed-at object: its look-alike neighbour, not this one (1 Nov: two
+        // golden statues 10 cm apart; the smaller one's outline jumped to the larger and back at
+        // every return into view, 9.9, 11.8 and 9.5 cm).
+        // Only when it lands nearer that other object than its own last place: neighbouring keys are
+        // 19 mm apart, and a key measured again lands a few millimetres from where it was.
+        let own = simd_distance(old.centroid, fresh.centroid)
+        if let (other, _) = marks.first(where: { m in
+            m.key != inst.id && simd_distance(m.value.centroid, fresh.centroid) < min(Self.sameSpot, own)
+        }) {
+            onLockLog?("mark \(inst.id % 1000): measured on mark \(other % 1000) instead (its look-alike); not taken")
+            return nil
+        }
         guard let obs = fresh.observation else { return nil }
         var track = tracks[inst.id] ?? ObjectTrack(observation: obs, spec: nil)
         // Earlier views were taken before ARKit's latest correction of this anchor: bring them along.
@@ -396,6 +408,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// After Pip found one object again and saw it had drifted, the other objects pointed at in
     /// the same room have drifted the same way: they move by the same offset until they are
     /// measured themselves.
+    /// Two objects this close are one spot: a measurement there belongs to the one already there.
+    static let sameSpot: Float = 0.04
+
     func shiftNeighbours(of id: Int, by offset: simd_float3) {
         guard let centre = marks[id]?.centroid, simd_length(offset) > 0.01, simd_length(offset) < 1 else { return }
         for (other, m) in marks where other != id && other < Self.placeMarkBase && simd_distance(m.centroid, centre) < 4 {

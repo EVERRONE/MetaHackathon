@@ -208,6 +208,21 @@ public struct Grounder: Sendable {
                 zoomPick = instances.filter { $0.objectId != nil && Double($0.area) < cropArea * 0.4 && Self.solid($0) && Grounding.contains($0, zp) }
                     .min { $0.area < $1.area }
             }
+            // None of them holds the second point (1 Nov, evening: small statues 2 m away, and the
+            // model's point's mask was the sofa's edge behind them): SAM segments at that point.
+            // Only with time left: the sentence waits for the grounding (8 s at most), and this takes
+            // one or two seconds (1 Nov: 6.6-7.7 s in all with it).
+            let left = Self.segmentAtPointBy - Date().timeIntervalSince(t0)
+            if zoomPick == nil, !spec.small, left > 1 {
+                let at = SegmentObjectPrompt(id: 1, points: [.init(x: min(max(Int(zp.x), 0), crop.width - 1), y: min(max(Int(zp.y), 0), crop.height - 1))])
+                let request = SegmentRequest(jpeg: jpeg, objects: [at], width: crop.width, height: crop.height, minConfidence: 0.25)
+                if let seg = (await Self.withBudget(min(Self.closerBudget, left)) { try? await self.client.segment(request) }) ?? nil,
+                   let mask = seg.instances.first(where: { $0.objectId == 1 }), Double(mask.area) < cropArea * 0.4, Self.solid(mask),
+                   Grounding.contains(mask, zp) {
+                    zoomPick = mask.renumbered(50_000)
+                    if debug { print(String(format: "[ground %d] segmented at the second point: %@", id, "\(mask.box)")) }
+                }
+            }
         }
         if debug { print(String(format: "[ground %d] zoom done %.2f: %@", id, Date().timeIntervalSince(t0), zoomPick.map { "\($0.box)" } ?? "nothing")) }
         // The two pointings agree (the same object, or one inside the other: a key and its symbol,
@@ -342,6 +357,8 @@ public struct Grounder: Sendable {
     static let zoomBudget: TimeInterval = 5
     /// How long the closer second pointing may take (1 Nov: one took 15 s).
     static let closerBudget: TimeInterval = 3
+    /// Segmenting at the second point is only started this long after the grounding started, at most.
+    static let segmentAtPointBy: TimeInterval = 7
     /// Below this (frame pixels) the objects of the kind are too small on the region's crop to
     /// point at one exactly.
     static let smallKeySize: Double = 40
