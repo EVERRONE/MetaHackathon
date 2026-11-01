@@ -146,7 +146,7 @@ It follows the object reliably. Small parts spill onto look-alike neighbours, so
 - real hand motion;
 - the mask against SAM 3.1.
 
-The app now has this test built in: `EdgeTAMSpike`, `Documents/edgetam.log`, and one frame per second kept for comparison.
+The app now has this test built in: `EdgeTAMSpike` (since 1 Nov `EdgeTAMFollower`), `Documents/edgetam.log`, and one frame per second kept for comparison.
 
 ### T3: the home map, automatic
 
