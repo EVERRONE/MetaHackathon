@@ -133,23 +133,60 @@ public struct PipClient: Sendable {
 
     /// A non-streaming Responses API call (web search, PDFs by URL); returns the output text.
     public func responsesText(_ body: JSONValue) async throws -> String {
-        struct Response: Decodable {
-            struct Item: Decodable {
-                struct Content: Decodable { var type: String?; var text: String? }
-                var type: String?
-                var content: [Content]?
-            }
-            var output: [Item]?
+        try await responses(body).texts.joined(separator: "\n")
+    }
+
+    /// What a Responses call answered: each message's text in order (with web search the model
+    /// narrates between searches, and the answer comes last), the pages the search tool really
+    /// opened or cited, and how many searches it made.
+    public struct ResponsesOutput: Sendable, Equatable {
+        public var texts: [String]
+        public var citations: [String]
+        public var searches: Int
+
+        public init(texts: [String], citations: [String], searches: Int) {
+            self.texts = texts
+            self.citations = citations
+            self.searches = searches
         }
+
+        public static func decode(_ data: Data) throws -> ResponsesOutput {
+            struct Response: Decodable {
+                struct Item: Decodable {
+                    struct Content: Decodable {
+                        struct Annotation: Decodable { var type: String?; var url: String? }
+                        var type: String?
+                        var text: String?
+                        var annotations: [Annotation]?
+                    }
+                    struct Action: Decodable { var type: String?; var url: String? }
+                    var type: String?
+                    var status: String?
+                    var content: [Content]?
+                    var action: Action?
+                }
+                var output: [Item]?
+            }
+            let items = try JSONDecoder().decode(Response.self, from: data).output ?? []
+            let parts = items.filter { $0.type == "message" }.flatMap { $0.content ?? [] }.filter { $0.type == "output_text" }
+            let annotations = parts.flatMap { $0.annotations ?? [] }
+            let citedURLs: [String] = annotations.filter { $0.type == "url_citation" }.compactMap(\.url)
+            let opened = items.filter { item in item.type == "web_search_call" && item.status == "completed" && item.action?.type == "open_page" }
+            let openedURLs: [String] = opened.compactMap { $0.action?.url }
+            var cited: [String] = []
+            for url in citedURLs + openedURLs where !cited.contains(url) { cited.append(url) }
+            return ResponsesOutput(texts: parts.compactMap(\.text), citations: cited,
+                                   searches: items.filter { $0.type == "web_search_call" }.count)
+        }
+    }
+
+    public func responses(_ body: JSONValue, timeout: TimeInterval = 180) async throws -> ResponsesOutput {
         var r = request("v1/responses")
         r.httpBody = try Self.encoder.encode(body)
-        r.timeoutInterval = 180
+        r.timeoutInterval = timeout
         let (data, response) = try await session.data(for: r)
         try Self.check(response, body: data)
-        let decoded = try JSONDecoder().decode(Response.self, from: data)
-        return (decoded.output ?? []).filter { $0.type == "message" }
-            .flatMap { $0.content ?? [] }.filter { $0.type == "output_text" }
-            .compactMap(\.text).joined(separator: "\n")
+        return try ResponsesOutput.decode(data)
     }
 
     /// What a link really answers with, after redirects.

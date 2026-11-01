@@ -484,8 +484,9 @@ final class GuideModel: ObservableObject {
     /// `onState` receives the model's state tag, which a check uses as its evidence.
     /// `gate`: started before the final transcript (see `startEarly`); nothing is said, shown or
     /// remembered until it opens, and the look ends unseen if it opens with false.
+    /// `lookups`: false for the answer to a look-up, so one question never searches twice.
     func look(_ utterance: String, snapshot: FrameSnapshot, started: Date, directive: String? = nil, gate: TurnGate? = nil,
-              onState: (([String: String]) -> Void)? = nil) async {
+              lookups: Bool = true, onState: (([String: String]) -> Void)? = nil) async {
         lastModelCall = Date()
         lookCount += 1
         let me = lookCount
@@ -505,10 +506,11 @@ final class GuideModel: ObservableObject {
         if let directive { recorder?.log("directive: \(directive)") }
         var pendingFind: (what: String, phrase: String)?
         var pendingTask: (goal: String, product: String?)?
+        var pendingLookup: String?
         // What the model asked to point at, kept with each mark so Pip can find it again later.
         var specs: [Int: TargetSpec] = [:]
         let pipeline = LookPipeline(client: client, language: language)
-        var known = facts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.value) (\($0.value.source == "seen" ? "you saw it" : "the user said so"))" }
+        var known = facts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.value) (\(Self.provenance($0.value.source)))" }
         let places = ar.placeDescriptions()
         if !places.isEmpty { known.append("Remembered places (point with m=number; direction and distance from the user now, measured by the app): " + places.joined(separator: " | ")) }
         if !shopping.isEmpty {
@@ -578,6 +580,9 @@ final class GuideModel: ObservableObject {
                 case .sideChannel(.task(let goal, let product)):
                     note("task: \(goal) · \(product ?? "no product")")
                     if runtime?.isActive != true, preparingGoal == nil, pageReader == nil { pendingTask = (goal, product) }
+                case .sideChannel(.lookup(let query)):
+                    note("lookup: \(query)\(lookups ? "" : " (not again for this question)")")
+                    if lookups { pendingLookup = query }
                 case .sideChannel(.remember(let key, let value, let source)):
                     facts[key] = Fact(value: value, source: source)
                     rememberLongTerm(key, value, source: source)
@@ -623,6 +628,16 @@ final class GuideModel: ObservableObject {
         // A plan is prepared in the background; the conversation goes on meanwhile.
         if let pending = pendingTask { startPreparing(goal: pending.goal, product: pending.product) }
         if let find = pendingFind { await findInMemory(find.what, phrase: find.phrase) }
+        if let query = pendingLookup { await lookUp(query, question: utterance) }
+    }
+
+    /// How a fact came to be known, as the model reads it under "What you know".
+    static func provenance(_ source: String) -> String {
+        switch source {
+        case "seen": return "you saw it"
+        case "web": return "found online"
+        default: return "the user said so"
+        }
     }
 
     /// Keeps the recent turns as they were heard, for follow-up questions. The user's words are

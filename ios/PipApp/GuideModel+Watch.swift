@@ -120,7 +120,7 @@ extension GuideModel {
         If it is not happening, say nothing at all: give only the state tag.
         """
         sessionLog.add(.said, step: index, "possible mistake: \(problem.problemText)")
-        await look("(watching step \(index + 1))", snapshot: snapshot, started: Date(), directive: directive)
+        await look("(watching step \(index + 1))", snapshot: snapshot, started: Date(), directive: directive, lookups: false)
         let spoke = !spokenThisTurn.isEmpty
         log(spoke ? "corrected: \(problem.problemText)" : "false alarm: \(problem.problemText)")
         // After a false alarm (or a correction) the quick checks stay quiet for a while, so one

@@ -133,7 +133,7 @@ final class OverlayView: UIView {
                 guard let mark = marks[m] else { continue }
                 if let p = screenPolygons(mark, proj(mark)) { stroke(p, color: Self.verified, width: 4, alpha: alpha) }
                 if let c = proj(mark)(mark.centroid) { badge("✓", at: c, color: Self.verified, alpha: alpha) }
-            case .clear, .state, .locate, .needView, .remember, .task, .readPages, .find, .list:
+            case .clear, .state, .locate, .needView, .remember, .task, .readPages, .find, .list, .lookup:
                 break
             }
         }

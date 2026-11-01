@@ -57,6 +57,19 @@ struct Phrases {
     var paused: String { dutch ? "Ik wacht. Zeg 'ga verder' als je klaar bent." : "I'll wait. Say 'continue' when you're ready." }
     var resumed: String { dutch ? "We gaan verder." : "Let's continue." }
     var stopped: String { dutch ? "De taak is gestopt." : "The task is stopped." }
+    // Looking things up online (GuideModel+Lookup).
+    var lookingUp: String { dutch ? "Ik zoek het op…" : "Looking it up…" }
+    var stillLookingUp: String { dutch ? "Ik zoek nog even verder." : "Still looking." }
+    var lookupNothing: String { dutch ? "Ik vond daar online niets betrouwbaars over." : "I couldn't find anything reliable about that online." }
+    /// The start of an answer from the manufacturer: "Volgens de handleiding van Philips:".
+    func accordingTo(_ publisher: String, manual: Bool) -> String {
+        let who = publisher.isEmpty ? (dutch ? "de fabrikant" : "the manufacturer") : publisher
+        if dutch { return manual ? "Volgens de handleiding van \(who):" : "Volgens de site van \(who):" }
+        return manual ? "According to the \(who) manual:" : "According to \(who)'s website:"
+    }
+    func unverified(_ answer: String) -> String {
+        dutch ? "Online vond ik dit, niet van de fabrikant, dus controleer het even: \(answer)" : "I found this online, not from the manufacturer, so please double-check: \(answer)"
+    }
     func searchingMemory(_ what: String) -> String { dutch ? "Ik kijk terug waar ik \(what) zag." : "I'm looking back for \(what)." }
     var searchingFurther: String { dutch ? "Ik kijk verder terug." : "I'm looking further back." }
 

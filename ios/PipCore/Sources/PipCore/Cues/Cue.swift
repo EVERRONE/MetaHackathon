@@ -128,10 +128,13 @@ public enum Cue: Equatable, Sendable {
     case find(what: String, phrase: String)
     /// Changes to the shopping list.
     case list(add: [String], got: [String], remove: [String])
+    /// The answer depends on a fact the model does not know for certain: Pip searches the web
+    /// (the manufacturer's pages first) and answers from what it finds.
+    case lookup(query: String)
 
     public var isDrawn: Bool {
         switch self {
-        case .state, .locate, .needView, .remember, .task, .readPages, .find, .list: return false
+        case .state, .locate, .needView, .remember, .task, .readPages, .find, .list, .lookup: return false
         default: return true
         }
     }
@@ -145,7 +148,7 @@ public enum Cue: Equatable, Sendable {
             return ms
         case .danger(let m, _):
             return m.map { [$0] } ?? []
-        case .clear, .state, .locate, .needView, .remember, .task, .readPages, .find, .list:
+        case .clear, .state, .locate, .needView, .remember, .task, .readPages, .find, .list, .lookup:
             return []
         }
     }
@@ -164,7 +167,7 @@ public enum Cue: Equatable, Sendable {
         case .offscreen(let m): return .offscreen(mark: f(m))
         case .verified(let m): return .verified(mark: f(m))
         case .landmark(let m, let n): return .landmark(mark: f(m), name: n)
-        case .clear, .state, .locate, .needView, .remember, .task, .readPages, .find, .list: return self
+        case .clear, .state, .locate, .needView, .remember, .task, .readPages, .find, .list, .lookup: return self
         }
     }
 }
@@ -242,6 +245,9 @@ extension Cue {
                 CueTag.alternatives(a[key] ?? "")
             }
             return .success(.list(add: items("add"), got: items("got"), remove: items("remove")))
+        case "lookup", "look_up", "search":
+            guard let q = (a["q"] ?? a["query"])?.trimmingCharacters(in: .whitespaces), !q.isEmpty else { return fail("needs q") }
+            return .success(.lookup(query: q))
         case "read_pages", "readpages":
             return .success(.readPages(goal: a["goal"]?.trimmingCharacters(in: .whitespaces) ?? ""))
         case "task":

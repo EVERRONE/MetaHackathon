@@ -264,7 +264,7 @@ extension GuideModel {
         }
         let expected = rt.procedure.steps[i].check.expected
         var evidence: (seen: Bool, confidence: Double)?
-        await look("(check step \(i + 1))", snapshot: snapshot, started: Date(), directive: phrases.verify(step: i + 1, expected: expected)) { state in
+        await look("(check step \(i + 1))", snapshot: snapshot, started: Date(), directive: phrases.verify(step: i + 1, expected: expected), lookups: false) { state in
             evidence = (state["step"] == "done", Double(state["conf"] ?? "") ?? 0)
         }
         guard var current = runtime, current.index == i else { return }

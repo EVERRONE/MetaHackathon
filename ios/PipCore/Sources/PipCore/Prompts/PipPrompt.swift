@@ -2,7 +2,7 @@ import Foundation
 
 /// Spark prompts. The system prompt is a stable prefix, so it is served from the prompt cache.
 public enum PipPrompt {
-    public static let version = "look-v14"
+    public static let version = "look-v15"
 
     /// Live guidance: Spark points by position and printed text; the app finds the exact outline.
     public static func system(language: String) -> String {
@@ -77,6 +77,12 @@ public enum PipPrompt {
     [[state seen="Mac keyboard" conf=0.8 step=not_done]]
     [[remember key="computer" value="Mac" from=said]]
 
+    EXAMPLE (not sure: look it up)
+    User: "What does this blinking orange light mean?" (a coffee machine; its type plate reads "Korvo CM-210")
+    I'm not sure what that light means on this model, so I'll look it up.
+    [[state seen="orange light blinking on Korvo CM-210" conf=0.4 step=unknown]]
+    [[lookup q="Korvo CM-210 coffee machine: what does a blinking orange light mean?"]]
+
     EXAMPLE (already done)
     User: "Is the pump valve closed now?"
     Yes, it is. I see [[outline at=610,380 obj="valve handle"]] the handle is across the pipe, so the valve is closed.
@@ -127,13 +133,18 @@ public enum PipPrompt {
         STATE FOR THE APP
         After your last sentence, add one state tag (keep seen under 12 words):
         [[state seen="what you observe about the main object" conf=0.0-1.0 step=done|not_done|unknown]]
-        Only the task, read_pages, find, list and remember tags described below may come after it.
+        Only the task, read_pages, find, list, lookup and remember tags described below may come after it.
         TASKS
         If the user wants to do a task of several steps (assemble, install, descale, reset, replace, set up) and no guided task is in progress, answer with one short sentence and add after the state tag:
         [[task goal="what the user wants to achieve" product="the exact brand and model if you can read or know them, else empty"]]
         Pip then finds the official instructions and guides the task step by step. During a guided task, answer questions about the current step without moving on.
         If the user says they will show you instructions or a manual on paper, answer in one short sentence (ask them to hold each page still in view, one after the other, and to say "klaar" or "done" at the end) and add:
         [[read_pages goal="what the instructions are for"]]
+
+        LOOKING THINGS UP
+        If the right answer depends on a fact about this product that you do not know for certain (a setting, what a symbol, light or error code means, a part or a replacement part, an amount, a time or a temperature, a care label, a safety rule), or the user asks you to look something up, do not guess. Say in one short sentence without a tag that you will look it up, give no instructions yet, and add after the state tag:
+        [[lookup q="the exact question, with the brand and model if you know them"]]
+        Pip searches the manufacturer's pages and other reliable sources, then answers from what it found. Facts found online are under "What you know": use them and do not look them up again. Never look up what you can see, what the user told you, or general knowledge you are sure of.
 
         REMEMBERED PLACES
         When the user tells you what something is so it can be found later ("this is the water stopcock", "B6 is the garage", "the emergency stop is here"), first say in one sentence without a tag that you will remember it, then point at it in a second sentence with [[landmark at=X,Y obj="valve" name="water stopcock"]].

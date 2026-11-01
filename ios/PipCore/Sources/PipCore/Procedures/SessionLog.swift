@@ -5,7 +5,7 @@ import Foundation
 public struct SessionLog: Codable, Sendable {
     public struct Entry: Codable, Equatable, Sendable {
         public enum Kind: String, Codable, Sendable {
-            case started, said, heard, instructed, verified, confirmed, notVerifiable, skipped, hazard, stopped, finished, fact
+            case started, said, heard, instructed, verified, confirmed, notVerifiable, skipped, hazard, stopped, finished, fact, lookedUp
         }
         public var time: Date
         public var kind: Kind
@@ -38,6 +38,12 @@ public struct SessionLog: Codable, Sendable {
             default: status = "not done"
             }
             lines.append("\(i + 1). \(step.instruction) [\(status)]")
+        }
+        // What Pip looked up during the task, and where it was found: a professional can check it.
+        let lookups = entries.filter { $0.kind == .lookedUp }
+        if !lookups.isEmpty {
+            lines.append("")
+            lines += lookups.map { "Looked up" + ($0.step.map { " at step \($0 + 1)" } ?? "") + ": " + $0.text }
         }
         let hazards = entries.filter { $0.kind == .hazard || $0.kind == .stopped }
         if !hazards.isEmpty {

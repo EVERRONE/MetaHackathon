@@ -239,6 +239,24 @@ if args.first == "check", args.count >= 3 {
     exit(0)
 }
 
+// pipeval lookup "<question>" ["<the user's words>"] [--lang Dutch]: a web look-up as Pip makes it.
+if args.first == "lookup", args.count >= 2 {
+    let env = ProcessInfo.processInfo.environment
+    let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
+    var rest = Array(args.dropFirst())
+    var language = "English"
+    if let i = rest.firstIndex(of: "--lang"), i + 1 < rest.count { language = rest[i + 1]; rest.removeSubrange(i...(i + 1)) }
+    let question = rest[0]
+    do {
+        let a = try await WebLookup(client: client, language: language).answer(question, asked: rest.count > 1 ? rest[1] : question, facts: [])
+        print(String(format: "%.1fs", a.seconds), a.found ? "FOUND" : "nothing reliable", a.official ? "(official)" : "")
+        print("answer:", a.answer)
+        print("source:", a.best.map { "\($0.publisher) · \($0.url)" } ?? "none that the search opened")
+        print("pages opened or cited:", a.cited.count, "· sources given:", a.sources.map(\.url))
+    } catch { fail("lookup failed: \(error)") }
+    exit(0)
+}
+
 // pipeval find "<what>" <img> <img>…: searches snapshots (oldest first) like the visual memory.
 if args.first == "find", args.count >= 3 {
     let env = ProcessInfo.processInfo.environment
