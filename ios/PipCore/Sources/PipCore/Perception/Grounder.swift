@@ -170,7 +170,27 @@ public struct Grounder: Sendable {
 
         // 5. The model's second point, on the enlarged crop: the object it lands on, or the nearest
         //    one just beside it (it lands on the object or at its edge, 1 Nov).
-        let zoomAt: CGPoint? = (await zoomed) ?? nil
+        var zoomAt: CGPoint? = (await zoomed) ?? nil
+        // Keys this small in the frame (the whole laptop in view) are still small on the crop: the
+        // second point lands a key off (1 Nov: backspace for the power key, 0 of 5). It points once
+        // more, on a crop of a fifth of the frame round that answer (5 of 5); the wider crop gave
+        // the context ("left of the 180 degrees"), which a crop that narrow round the first point
+        // can cut off (2 of 40 recorded targets).
+        // Their size from the objects of the kind (keys), not the symbols printed on them.
+        let kindSizes = concept.filter { $0.prompts.contains(spec.phrase) }.map { sqrt(Double($0.area)) }.sorted()
+        let kindSize = kindSizes.count >= 3 ? kindSizes[kindSizes.count / 2] : typical
+        if let zp = zoomAt, kindSize / Double(scale) < Self.smallKeySize {
+            let centre = CGPoint(x: region.minX + zp.x / scale, y: region.minY + zp.y / scale)
+            let side = 0.2 * max(size.width, size.height)
+            let tight = CGRect(x: min(max(centre.x - side / 2, 0), size.width - side), y: min(max(centre.y - side / 2, 0), size.height - side), width: side, height: side).integral
+            let zoom = 800 / tight.width
+            if let view = SetOfMarks.crop(frame, to: tight, scale: zoom), let tightJPEG = SetOfMarks.jpeg(view, quality: 0.85),
+               let p = await zoomPoint(spec, describe: describe, jpeg: tightJPEG, size: CGSize(width: view.width, height: view.height), waitForWords: false) {
+                let inFrame = CGPoint(x: tight.minX + p.x / zoom, y: tight.minY + p.y / zoom)
+                zoomAt = CGPoint(x: (inFrame.x - region.minX) * scale, y: (inFrame.y - region.minY) * scale)
+                if debug { print(String(format: "[ground %d] keys of %.0f px: pointed again closer, %.2f", id, kindSize / Double(scale), Date().timeIntervalSince(t0))) }
+            }
+        }
         var zoomPick: SegmentInstance?
         if let zp = zoomAt {
             let fits = concept.filter { Double($0.area) < cropArea * 0.4 }
@@ -279,7 +299,7 @@ public struct Grounder: Sendable {
         // shaver's whole panel). The ring goes round the key, and the outline is big enough to
         // follow (1 Nov: the second point landed on the ⊞ and ⏻ printed on their keys, and on the
         // pause sign of a remote's pause button).
-        if iconLike, let pick = chosen, let holder = Self.holder(of: pick, among: concept, kind: spec.phrase, typical: typical) {
+        if iconLike, let pick = chosen, let holder = Self.holder(of: pick, among: concept, kind: spec.phrase, maxArea: 0.08 * cropArea) {
             chosen = holder
             method += " (the \(spec.phrase) it is on)"
         }
@@ -291,17 +311,21 @@ public struct Grounder: Sendable {
     }
 
     /// The key or button a printed symbol is on: the smallest instance of that kind holding the
-    /// symbol's centre, not outsized (at most 2.5 times the usual size there). Nil when `pick` is of
-    /// that kind itself.
-    static func holder(of pick: SegmentInstance, among concept: [SegmentInstance], kind: String, typical: Double) -> SegmentInstance? {
+    /// symbol's centre, not outsized (at most `maxArea`: a twelfth of the crop, which a whole panel
+    /// is; the usual size of the kind there was no measure, the symbols SAM finds as well pulled it
+    /// down). Nil when `pick` is of that kind itself.
+    static func holder(of pick: SegmentInstance, among concept: [SegmentInstance], kind: String, maxArea: Double) -> SegmentInstance? {
         guard !pick.prompts.contains(kind) else { return nil }
         let c = CGPoint(x: pick.boxRect.midX, y: pick.boxRect.midY)
         return concept.filter { $0.id != pick.id && $0.prompts.contains(kind) && $0.area > pick.area
-            && Double($0.area) <= 2.5 * typical * typical && Grounding.contains($0, c) }.min { $0.area < $1.area }
+            && Double($0.area) <= maxArea && Grounding.contains($0, c) }.min { $0.area < $1.area }
     }
 
     /// How long the second pointing may take, from the start of the grounding (SAM takes about 4 s).
     static let zoomBudget: TimeInterval = 5
+    /// Below this (frame pixels) the objects of the kind are too small on the region's crop to
+    /// point at one exactly.
+    static let smallKeySize: Double = 40
 
     /// The same object: one outline holds the other's centre (a key and the symbol on it).
     static func agree(_ a: SegmentInstance, _ b: SegmentInstance) -> Bool {
@@ -314,12 +338,12 @@ public struct Grounder: Sendable {
     /// first point can be a key or two off (1 Nov: above home for the power key); on the crop it
     /// lands on the key or at its edge (1 Nov, 21 recorded targets: 16 on the object, the rest
     /// beside it; 2.4 s).
-    func zoomPoint(_ spec: TargetSpec, describe: (@Sendable () -> String?)?, jpeg: Data, size: CGSize) async -> CGPoint? {
+    func zoomPoint(_ spec: TargetSpec, describe: (@Sendable () -> String?)?, jpeg: Data, size: CGSize, waitForWords: Bool = true) async -> CGPoint? {
         guard spec.small else { return nil }
         // Its words for the target ("the Windows key") come right after the tag: wait for them a
         // moment (they stop changing at the end of their sentence).
         var description = describe?()
-        if let describe {
+        if let describe, waitForWords {
             let start = Date()
             var stable = Date()
             while Date().timeIntervalSince(start) < 1.5 {

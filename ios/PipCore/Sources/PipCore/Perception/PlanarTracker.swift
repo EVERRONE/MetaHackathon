@@ -120,6 +120,14 @@ public struct PlanarTracker: Sendable {
         /// A point that cannot be followed in a frame (motion blur at the start of a move) is kept
         /// where the fit puts it for this many frames before it is dropped.
         public var graceFrames = 3
+        /// Two fits agree when they put the object's outline within this of each other (pixels): a
+        /// look-alike next to it (the neighbouring key) is a key's width away, 15 px and more.
+        public var agreeDistance: Float = 8
+        /// An alignment that moved the object at most this far from where it was predicted (pixels)
+        /// may be taken without its described corners, right after a brief loss.
+        public var smallCorrection: Float = 6
+        /// Described corners that must agree to overrule an alignment.
+        public var minDescribed = 20
         public init() {}
     }
 
@@ -132,6 +140,9 @@ public struct PlanarTracker: Sendable {
     /// Points that agreed with the last fit, and how far they were from it on average (pixels).
     public private(set) var inliers = 0
     public private(set) var residual: Float = 0
+    /// How far the last `relocate` moved the object from where it was predicted (median over its
+    /// outline, pixels).
+    public private(set) var correction: Float = 0
 
     /// Followed points: where they are now, and where they were on the object's first view.
     private var current: [SIMD2<Float>] = []
@@ -284,6 +295,7 @@ public struct PlanarTracker: Sendable {
         homography = fit.h
         inliers = fit.inliers.count
         residual = fit.residual
+        correction = Self.disagreement(predicted, fit.h, at: checkPoints)
         let keep = fit.inliers.map { idx[$0] }
         current = keep.map { points[$0] }
         reference = keep.map { reference[$0] }
@@ -291,6 +303,64 @@ public struct PlanarTracker: Sendable {
         previous = target
         state = .tracking
         return state
+    }
+
+    /// Where it was predicted, confirmed by its described corners; where it was predicted, too few
+    /// described corners to confirm (taken only right after a brief loss); where its described
+    /// corners are.
+    public enum Reacquired: Equatable, Sendable { case wherePredicted, wherePredictedUnchecked, byCorners }
+
+    /// Takes the object up again (after a loss, or on a later frame than the one it was outlined
+    /// on) where it really is, not on a look-alike. Aligning from a prediction settles on whatever
+    /// matches near it: on a face of look-alike parts (a row of keys) a prediction a key or two off
+    /// settles on the look-alike there, and every check of the alignment passes (1 Nov: two keys
+    /// left of the power key, after tracking started afresh, then followed there). The described
+    /// corners match by what each part looks like (the print on each key): an alignment that
+    /// disagrees with their fit is not taken, theirs is. Without enough described corners in the
+    /// frame (blur) an alignment is taken only right after a brief loss (`trustPrediction`) and if
+    /// it hardly moved from the prediction.
+    @discardableResult
+    public mutating func reacquire(in image: GrayImage, predicted: simd_float3x3?, trustPrediction: Bool = false) -> Reacquired? {
+        let fit = describedFit(in: image)
+        if let predicted {
+            var near = self
+            if near.relocate(to: image, predicted: predicted) == .tracking {
+                let agrees = fit.map { Self.disagreement(near.homography, $0, at: checkPoints) <= settings.agreeDistance }
+                if agrees == true || (agrees == nil && trustPrediction && near.correction <= settings.smallCorrection) {
+                    self = near
+                    return agrees == true ? .wherePredicted : .wherePredictedUnchecked
+                }
+            }
+        }
+        if let fit, relocate(to: image, predicted: fit) == .tracking { return .byCorners }
+        state = .lost
+        return nil
+    }
+
+    /// While followed: whether the object is still where its described corners say. False with
+    /// their fit when it slid onto a look-alike; nil when too few are found to tell.
+    public func confirmed(in image: GrayImage) -> (agrees: Bool, fit: simd_float3x3)? {
+        guard state == .tracking, let fit = describedFit(in: image) else { return nil }
+        return (Self.disagreement(homography, fit, at: checkPoints) <= settings.agreeDistance, fit)
+    }
+
+    /// The reference → `image` homography of the described corners, if enough of them agree.
+    func describedFit(in image: GrayImage) -> simd_float3x3? {
+        guard first != nil, !described.isEmpty,
+              let fit = FeatureMatcher.homography(from: described, to: FeatureMatcher.features(in: image), minInliers: settings.minDescribed) else { return nil }
+        return fit.h
+    }
+
+    /// Where the fits are compared: the outline's corners (or the followed points).
+    var checkPoints: [SIMD2<Float>] { outline.isEmpty ? reference : outline }
+
+    /// The median distance between where two homographies put `points`.
+    static func disagreement(_ a: simd_float3x3, _ b: simd_float3x3, at points: [SIMD2<Float>]) -> Float {
+        let d = points.map { p -> Float in
+            let qa = a * simd_float3(p.x, p.y, 1), qb = b * simd_float3(p.x, p.y, 1)
+            return simd_distance(SIMD2(qa.x / qa.z, qa.y / qa.z), SIMD2(qb.x / qb.z, qb.y / qb.z))
+        }.sorted()
+        return d.isEmpty ? 0 : d[d.count / 2]
     }
 
     /// Finds the object again anywhere in `image` (moved far, turned, nearer or further) by its

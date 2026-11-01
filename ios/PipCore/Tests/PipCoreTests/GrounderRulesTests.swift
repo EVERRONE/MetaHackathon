@@ -64,12 +64,14 @@ import Testing
         // 1 Nov: the second point landed on the ⊞ printed on the Windows key.
         let logo = found(1, [314, 715, 333, 734], by: "icon"), key = found(2, [291, 691, 358, 761], by: "key")
         let alt = found(3, [370, 691, 437, 761], by: "key")
-        #expect(Grounder.holder(of: logo, among: [logo, key, alt], kind: "key", typical: 67)?.id == 2)
+        // A twelfth of a 600 × 600 crop at most.
+        let most = 0.08 * 600 * 600
+        #expect(Grounder.holder(of: logo, among: [logo, key, alt], kind: "key", maxArea: most)?.id == 2)
         // A key is not lifted.
-        #expect(Grounder.holder(of: key, among: [logo, key, alt], kind: "key", typical: 67) == nil)
+        #expect(Grounder.holder(of: key, among: [logo, key, alt], kind: "key", maxArea: most) == nil)
         // A shaver's power symbol on its whole panel (outsized): the symbol stays.
         let symbol = found(4, [455, 650, 483, 680], by: "icon"), panel = found(5, [429, 472, 575, 708], by: "button")
-        #expect(Grounder.holder(of: symbol, among: [symbol, panel], kind: "button", typical: 40) == nil)
+        #expect(Grounder.holder(of: symbol, among: [symbol, panel], kind: "button", maxArea: most) == nil)
     }
 
     @Test func aSolidMaskIsAWholeObject() {

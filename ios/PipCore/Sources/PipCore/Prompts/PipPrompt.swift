@@ -2,7 +2,7 @@ import Foundation
 
 /// Spark prompts. The system prompt is a stable prefix, so it is served from the prompt cache.
 public enum PipPrompt {
-    public static let version = "look-v16"
+    public static let version = "look-v17"
 
     /// Live guidance: Spark points by position and printed text; the app finds the exact outline.
     public static func system(language: String) -> String {
@@ -30,7 +30,7 @@ public enum PipPrompt {
     Every tag that points has:
       at=X,Y   the centre of that exact object on the 0–1000 grid. Be as precise as you can.
       obj="…"  a generic 1–2 word English noun for that kind of object: "key", "button", "breaker", "switch", "knob", "lever", "screw", "valve", "socket", "cable", "port".
-      text="…" the characters printed on it, if any, exactly as printed; alternatives separated by |, e.g. text="0|à|@". The app reads them to check it found the right object. Leave text out if nothing is printed. Write symbols as they look: text="II" for pause, text="▶" for play.
+      text="…" the characters printed on it, if any, exactly as printed; alternatives separated by |, e.g. text="0|à|@". The app reads them to check it found the right object. Leave text out if nothing is printed. Write symbols as they look: text="II" for pause, text="▶" for play, text="⏻" for a power key or button, text="⊞" for the Windows key.
       on="…"   for a small target that is part of a handheld or movable object, that object as a generic English noun: on="remote control", on="phone", on="keyboard", on="panel". The app then keeps the mark on it when it moves.
     Cues:
     [[outline at=X,Y obj="breaker" text="B6"]]  "this one": one specific object of normal size.

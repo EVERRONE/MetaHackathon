@@ -36,6 +36,10 @@ final class PlanarFollower {
         var onSnapshot = true
         /// How it was last found again: where it was, or anywhere by its corners.
         var foundBy = ""
+        /// When its described corners last confirmed it (the watch against look-alikes).
+        var lastCheck: TimeInterval = 0
+        /// A look-alike was caught (the watch), for the log.
+        var slid = false
         /// Recent centres in the room, to tell a moving object from a still one when it is lost
         /// (in the image the phone's own motion would count too).
         var recent: [(t: TimeInterval, p: simd_float3)] = []
@@ -78,18 +82,19 @@ final class PlanarFollower {
         // On to the current frame: predicted from the camera's motion and aligned against the
         // snapshot; if it moved meanwhile, found again by its described corners.
         guard let image = Self.gray(frame) else { return }
-        var how = "from the camera's motion"
+        // Checked by its described corners: the prediction from the camera's motion can be a key or
+        // two off (a few millimetres of the room's coordinates, more right after tracking started
+        // afresh), and aligned from there it settles on the look-alike (1 Nov).
         let predicted = Self.predict(object, camera: frame.camera)
-        if predicted.map({ object.tracker.relocate(to: image, predicted: $0) }) != .tracking {
-            how = "found again by its corners"
-            if object.tracker.redetect(in: image) != .tracking {
-                object.lostSince = CACurrentMediaTime()
-                objects[group] = object
-                onLog?("follow: marks \(Self.label(targets.keys)) not found in the live image yet; looked for again")
-                return
-            }
+        guard let found = object.tracker.reacquire(in: image, predicted: predicted) else {
+            object.lostSince = CACurrentMediaTime()
+            objects[group] = object
+            onLog?("follow: marks \(Self.label(targets.keys)) not found in the live image yet; looked for again")
+            return
         }
-        Self.rebase(&object, on: image)
+        let how = found == .byCorners ? "found by its corners" : "from the camera's motion"
+        object.lastCheck = CACurrentMediaTime()
+        Self.rebase(&object, on: image, checked: true)
         objects[group] = object
         onLog?("follow: marks \(Self.label(targets.keys)) followed in the image (\(object.tracker.inliers) points, \(how))")
     }
@@ -133,6 +138,10 @@ final class PlanarFollower {
                     guard let live = self.objects[r.group] else { continue }
                     var object = r.object
                     object.targets = object.targets.filter { live.targets[$0.key] != nil }
+                    if object.slid {
+                        object.slid = false
+                        self.onLog?("follow: marks \(Self.label(live.targets.keys)) were on a look-alike; put back where their corners are")
+                    }
                     self.objects[r.group] = object.targets.isEmpty ? nil : object
                     for (id, rings) in r.outlines where live.targets[id] != nil { self.onOutline?(id, rings, r.time) }
                     if let found = r.found { self.onLog?("follow: marks \(Self.label(live.targets.keys)) found again \(found)") }
@@ -154,20 +163,38 @@ final class PlanarFollower {
             guard now - object.lastTry > 0.2 else { return ([:], nil) }
             object.lastTry = now
             let predicted = predict(object, camera: camera)
-            let near = predicted.map { object.tracker.relocate(to: image, predicted: $0) } == .tracking
-            // Anywhere in the frame only when it can be there: it was moving, or where it lay is in view.
-            guard near || ((object.lostMoving || predicted != nil) && object.tracker.redetect(in: image) == .tracking) else { return ([:], nil) }
-            object.foundBy = near ? "where it was" : "by its corners"
+            // Only when it can be in view: it was moving, or where it lay is in view.
+            guard predicted != nil || object.lostMoving else { return ([:], nil) }
+            // Checked by its described corners (never a look-alike); without them (blur) only right
+            // after a brief loss of an object that lay still, where it was predicted.
+            let brief = now - (object.lostSince ?? now) < 0.5 && !object.lostMoving
+            guard let found = object.tracker.reacquire(in: image, predicted: predicted, trustPrediction: brief) else { return ([:], nil) }
+            object.foundBy = found == .byCorners ? "by its corners" : "where it was"
             object.lostSince = nil
             object.recent = []
-            if object.onSnapshot { rebase(&object, on: image) }
+            object.lastCheck = now
+            if object.onSnapshot { rebase(&object, on: image, checked: found != .wherePredictedUnchecked) }
         } else if object.tracker.track(image) == .lost {
             object.lostSince = now
             let moved = object.recent.count >= 2 ? simd_distance(object.recent.last!.p, object.recent.first!.p) : 0
             object.lostMoving = moved > 0.02
             return ([:], Array(object.targets.keys))
         }
-        if object.onSnapshot { rebase(&object, on: image) }
+        // The watch: once a second the described corners must agree with where it is followed; a
+        // look-alike taken meanwhile (a fast jolt along a row of keys) is left for where they are.
+        if now - object.lastCheck > 1.0 {
+            object.lastCheck = now
+            if let check = object.tracker.confirmed(in: image) {
+                if !check.agrees {
+                    var moved = object.tracker
+                    if moved.relocate(to: image, predicted: check.fit) == .tracking {
+                        object.tracker = moved
+                        object.slid = true
+                    }
+                }
+                if object.onSnapshot { rebase(&object, on: image, checked: true) }
+            }
+        }
         let h = object.tracker.homography
         var outlines: [Int: [[simd_float3]]] = [:]
         var depths: [Float] = []
@@ -195,8 +222,10 @@ final class PlanarFollower {
     /// A live frame becomes the reference once the object is followed well in it (sharp, many
     /// points): the snapshot was converted to grey otherwise than camera frames are. The marks and
     /// corners are mapped onto it.
-    private static func rebase(_ object: inout Object, on image: GrayImage) {
-        guard object.onSnapshot, object.tracker.residual < 0.8, let h = object.tracker.rebase(on: image) else { return }
+    /// `checked`: its described corners agreed on this frame; a look-alike taken up as the reference
+    /// would stay (1 Nov: the snapshot was left for a frame two keys off, then followed there).
+    private static func rebase(_ object: inout Object, on image: GrayImage, checked: Bool) {
+        guard checked, object.onSnapshot, object.tracker.residual < 0.8, let h = object.tracker.rebase(on: image) else { return }
         object.targets = object.targets.mapValues { rings in rings.map { ring in ring.map { h.apply($0) } } }
         object.corners = object.corners.map { h.apply($0) }
         object.onSnapshot = false

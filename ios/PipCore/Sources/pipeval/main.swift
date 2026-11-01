@@ -15,6 +15,10 @@ func fail(_ message: String) -> Never {
 var args = Array(CommandLine.arguments.dropFirst())
 
 // pipeval track <clip folder> <phrase> [x y] [--every N] [--out dir]: see Track.swift.
+if args.first == "alias" {
+    await aliasClip(args)
+    exit(0)
+}
 if args.first == "track" {
     await trackClip(args)
     exit(0)

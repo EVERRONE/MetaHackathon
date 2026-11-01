@@ -216,3 +216,38 @@ import simd
         #expect(r.error < 1, "\(r.error) px (lost at \(r.lostAt.map { "\($0)" } ?? "never"))")
     }
 }
+
+@Suite struct PlanarTrackerLookAlikeTests {
+    /// 1 Nov: tracking started afresh, the prediction from the camera's motion was two keys off,
+    /// and aligning from it settled two keys left of the power key; it was followed there. Taken up
+    /// again by `reacquire`, its described corners (each key's own print) put it back on its key.
+    @Test func aPredictionTwoKeysOffIsNotTakenForTheKey() {
+        let face = PlanarTrackerTests.keyboard(), bg = PlanarTrackerTests.background(seed: 21)
+        let then = PlanarTrackerTests.pose(at: SIMD2(260, 240), degrees: 0)
+        let now = PlanarTrackerTests.pose(at: SIMD2(300, 236), degrees: 3)
+        let f0 = PlanarTrackerTests.frame(face, then, background: bg, noise: 4, seed: 4)
+        let f1 = PlanarTrackerTests.frame(face, now, background: bg, noise: 4, seed: 5)
+        var base = PlanarTracker()
+        let started = base.start(image: f0, outline: [CGPoint(x: 0, y: 0), CGPoint(x: 360, y: 0), CGPoint(x: 360, y: 160), CGPoint(x: 0, y: 160)].map { then.apply($0) })
+        #expect(started)
+        // Two key widths (29 px each) along the row.
+        let a: Float = 3 * .pi / 180
+        let shift = simd_float3x3(rows: [SIMD3(1, 0, 58 * cos(a)), SIMD3(0, 1, 58 * sin(a)), SIMD3(0, 0, 1)])
+        let guess = shift * now * then.inverse
+        let key = CGPoint(x: 193, y: 99)
+        let truth = now.apply(key)
+        func off(_ t: PlanarTracker) -> CGFloat { let p = t.map(then.apply(key)); return hypot(p.x - truth.x, p.y - truth.y) }
+
+        var checked = base
+        let found = checked.reacquire(in: f1, predicted: guess)
+        #expect(found != nil)
+        #expect(off(checked) < 1, "\(off(checked)) px")
+        #expect(checked.confirmed(in: f1)?.agrees == true)
+
+        // Aligned from the prediction alone it may settle on the look-alike; the watch then says so.
+        var aligned = base
+        if aligned.relocate(to: f1, predicted: guess) == .tracking, off(aligned) > 10 {
+            #expect(aligned.confirmed(in: f1)?.agrees == false)
+        }
+    }
+}
