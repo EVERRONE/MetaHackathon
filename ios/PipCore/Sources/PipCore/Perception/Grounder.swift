@@ -45,6 +45,10 @@ public struct GroundingResult: Sendable {
 /// instance under the point; then SAM's own point-prompted mask; then the nearest instance.
 public struct Grounder: Sendable {
     public var client: PipClient
+    /// The user's question the look answers: the verifier reads a target without printed text by
+    /// what the guide said about it, and that alone can be vague ("the key near the top right,
+    /// beside delete", 1 Nov, for the power key the user asked about).
+    public var asked: String?
     /// Whole-frame SAM results per phrase, shared by all targets of one look.
     let wholeFrame: WholeFrameSegments
 
@@ -85,18 +89,26 @@ public struct Grounder: Sendable {
         // A small target may be a printed symbol (a power icon on a panel) rather than a part of
         // its own: SAM also looks for icons around it.
         // Only for targets without printed text: on keys, SAM would find the printed letters.
-        let iconLike = spec.small && spec.text.isEmpty
+        // A key that carries a symbol, not letters (⏻, ⊞, ⌘, arrows): text recognition cannot read
+        // it, so it is found like an icon, and it is described in words to the verifier.
+        let symbol = Self.symbolOnly(spec.text)
+        let iconLike = spec.small && (spec.text.isEmpty || symbol)
         let prompts = iconLike && spec.phrase != "icon" ? [spec.phrase, "icon"] : [spec.phrase]
         let allObjects = objects
         async let segmented = Result { try await client.segment(SegmentRequest(jpeg: jpeg, prompts: prompts, objects: allObjects, width: crop.width, height: crop.height, minConfidence: 0.25, maxInstances: 120)) }
         async let whole = wholeFrame.instances(for: spec.phrase, frame: size)
+        // A small target: the model points again, on the enlarged crop, alongside SAM (it takes
+        // about as long). Bounded, so a slow answer never holds up the pointing.
+        let cropSize = CGSize(width: crop.width, height: crop.height)
+        async let zoomed = Self.withBudget(Self.zoomBudget) { await self.zoomPoint(spec, describe: describe, jpeg: jpeg, size: cropSize) }
         let debug = ProcessInfo.processInfo.environment["PIP_DEBUG_GROUND"] != nil
         // Text recognition runs alongside SAM: the fast pass always (≈0.05 s), the accurate pass
         // within a budget, because after a pause it reloads its models (~25 s).
         // Vision handles requests one at a time, so even the fast pass can queue behind another
         // target's cold accurate pass: both get a budget.
-        async let fastText = Self.withBudget(Self.fastTextBudget) { await Self.findText(spec.text, in: crop, accurate: false) }
-        async let accurateText = Self.withBudget(Self.accurateTextBudget) { await Self.findText(spec.text, in: crop, accurate: true) }
+        let readable = symbol ? [] : spec.text
+        async let fastText = Self.withBudget(Self.fastTextBudget) { await Self.findText(readable, in: crop, accurate: false) }
+        async let accurateText = Self.withBudget(Self.accurateTextBudget) { await Self.findText(readable, in: crop, accurate: true) }
         let (fast, accurate) = await (fastText, accurateText)
         let found = (accurate?.isEmpty == false ? accurate : nil) ?? fast ?? []
         if debug { print(String(format: "[ground %d] text done %.2f (%d found)", id, Date().timeIntervalSince(t0), found.count)) }
@@ -156,11 +168,39 @@ public struct Grounder: Sendable {
             method = "nearest"
         }
 
+        // 5. The model's second point, on the enlarged crop: the object it lands on, or the nearest
+        //    one just beside it (it lands on the object or at its edge, 1 Nov).
+        let zoomAt: CGPoint? = (await zoomed) ?? nil
+        var zoomPick: SegmentInstance?
+        if let zp = zoomAt {
+            let fits = concept.filter { Double($0.area) < cropArea * 0.4 }
+            zoomPick = fits.filter { Grounding.contains($0, zp) }.min { $0.area < $1.area }
+                ?? fits.filter { Grounding.distance(zp, $0.boxRect) <= 0.5 * sqrt(Double($0.area)) }
+                    .min { Grounding.distance(zp, $0.boxRect) < Grounding.distance(zp, $1.boxRect) }
+        }
+        if debug { print(String(format: "[ground %d] zoom done %.2f: %@", id, Date().timeIntervalSince(t0), zoomPick.map { "\($0.box)" } ?? "nothing")) }
+        // The two pointings agree (the same object, or one inside the other: a key and its symbol,
+        // a shaver's panel and its power symbol): the smaller, the more exact, is the object.
+        // They disagree: the second one, made on the enlarged view, is (1 Nov, 22 recorded targets:
+        // in each disagreement it was right, while the verifier picked the first point's object
+        // one time in three, the home key for the power key). No check either way.
+        var zoomDecided = false
+        if method != "text", let z = zoomPick {
+            if let current = chosen, Self.agree(current, z) {
+                if z.area < current.area { chosen = z }
+                method += " + zoom"
+            } else {
+                method = chosen == nil ? "zoom" : "zoom (moved)"
+                chosen = z
+            }
+            zoomDecided = true
+        }
+
         // Look-alikes around a point the text could not confirm (small keys, rows of breakers), or
         // an object without printed text that the model described ("the power symbol"): ask Spark
         // to pick between them on an enlarged crop, by the printed text or the description.
         let description = spec.text.isEmpty ? describe?() : nil
-        if let current = chosen, method != "text", !spec.text.isEmpty || description != nil {
+        if !zoomDecided, let current = chosen, method != "text", !spec.text.isEmpty || description != nil {
             // An outsized pick (the space bar for a key) is compared with objects of the usual size.
             let reference = min(Double(current.area), 2.5 * typical * typical)
             var lookalikes = concept
@@ -199,6 +239,19 @@ public struct Grounder: Sendable {
             // that is the one it means, and the speech need not wait for a check. Points near an
             // edge or in a gap are checked.
             if let current = chosen, method == "point", Self.deepInside(local, current.boxRect) { lookalikes = [] }
+            // A symbol key the model's point is plainly on (on it or at its edge, much nearer to it
+            // than to any neighbour): the verifier reads small symbols badly (2 Nov: the power key's
+            // ⏻ was refused once and taken for delete once, while the point was on the power key).
+            // (The model points at a key's top edge, or a little above it: on 2 Nov a third of the key's height.)
+            if symbol, let current = chosen {
+                let keys = ([current] + lookalikes).filter { Double($0.area) > 0.4 * reference }
+                if let nearest = keys.min(by: { Grounding.distance(local, $0.boxRect) < Grounding.distance(local, $1.boxRect) }),
+                   Self.plainlyOn(local, nearest.boxRect, others: keys.filter { $0.id != nearest.id }.map(\.boxRect)) {
+                    if nearest.id != current.id { method = "nearest key" }
+                    chosen = nearest
+                    lookalikes = []
+                }
+            }
             if !lookalikes.isEmpty, let current = chosen {
                 switch await verify(spec, description: description, point: local, candidates: [current] + lookalikes.filter { $0.id != current.id }.prefix(10), in: crop) {
                 case .picked(let picked):
@@ -220,8 +273,93 @@ public struct Grounder: Sendable {
         var result = chosen?.unmapped(from: region, scale: scale).renumbered(id)
         if method == "text", result != nil { result!.confidence = max(result!.confidence, 0.85) }
         if result != nil { result!.objectId = nil }
-        if nearby.isEmpty && !spec.text.isEmpty { problems.append("text not found nearby") }
+        if nearby.isEmpty && !spec.text.isEmpty && !symbol { problems.append("text not found nearby") }
         return GroundingResult(instance: result, method: method + (problems.isEmpty ? "" : " (\(problems.joined(separator: "; ")))"), seconds: Date().timeIntervalSince(t0))
+    }
+
+    /// How long the second pointing may take, from the start of the grounding (SAM takes about 4 s).
+    static let zoomBudget: TimeInterval = 5
+
+    /// The same object: one outline holds the other's centre (a key and the symbol on it).
+    static func agree(_ a: SegmentInstance, _ b: SegmentInstance) -> Bool {
+        a.id == b.id || Grounding.contains(a, CGPoint(x: b.boxRect.midX, y: b.boxRect.midY))
+            || Grounding.contains(b, CGPoint(x: a.boxRect.midX, y: a.boxRect.midY))
+    }
+
+    /// The model points again, at a small target, on the enlarged crop around its first point
+    /// (crop pixels), told what the user asked and what it said about the target. On a keyboard its
+    /// first point can be a key or two off (1 Nov: above home for the power key); on the crop it
+    /// lands on the key or at its edge (1 Nov, 21 recorded targets: 16 on the object, the rest
+    /// beside it; 2.4 s).
+    func zoomPoint(_ spec: TargetSpec, describe: (@Sendable () -> String?)?, jpeg: Data, size: CGSize) async -> CGPoint? {
+        guard spec.small else { return nil }
+        // Its words for the target ("the Windows key") come right after the tag: wait for them a
+        // moment (they stop changing at the end of their sentence).
+        var description = describe?()
+        if let describe {
+            let start = Date()
+            var stable = Date()
+            while Date().timeIntervalSince(start) < 1.5 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                let now = describe()
+                if now != description { description = now; stable = Date() } else if now != nil, Date().timeIntervalSince(stable) >= 0.3 { break }
+            }
+        }
+        // Nothing to go on (finding an outline again, without the conversation): the first point,
+        // which is where the object was on screen, is better than a guess.
+        guard !spec.text.isEmpty || description != nil || asked != nil else { return nil }
+        let shows: String
+        if spec.text.isEmpty { shows = "" }
+        else if Self.symbolOnly(spec.text) { shows = " showing " + spec.text.map(Self.describeSymbol).joined(separator: " or ") }
+        else { shows = " with \"\(spec.text.joined(separator: " / "))\" printed on it" }
+        let context = asked.map { "The user asked: \"\($0)\". " } ?? ""
+        let said = description.map { " and said: \"\($0)\"" } ?? ""
+        let question = "\(context)A guide answered by pointing at a \(spec.phrase)\(shows)\(said). In this zoomed-in photo, point at that \(spec.phrase). "
+            + "Give the centre of that one \(spec.phrase) as x and y on a 0-1000 grid of this image (0,0 top left, 1000,1000 bottom right). If you cannot see it, answer x=-1, y=-1."
+        let schema: JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object(["x": .object(["type": .string("integer")]), "y": .object(["type": .string("integer")])]),
+            "required": .array([.string("x"), .string("y")]),
+            "additionalProperties": .bool(false),
+        ])
+        let request = ChatRequest(messages: [ChatMessage(role: .user, parts: [.text(question), .imageJPEG(jpeg)])], stream: false, reasoningEffort: .minimal,
+                                  responseFormat: ResponseFormat(name: "point", schema: schema))
+        struct Point: Decodable { var x: Int; var y: Int }
+        let answer = try? await client.chat(request)
+        if ProcessInfo.processInfo.environment["PIP_DEBUG_GROUND"] != nil { print("zoom:", question, "→", answer?.text ?? "error") }
+        guard let (text, _) = answer, let p = try? JSONDecoder().decode(Point.self, from: Data(text.utf8)),
+              (0...1000).contains(p.x), (0...1000).contains(p.y) else { return nil }
+        return CGPoint(x: Double(p.x) / 1000 * size.width, y: Double(p.y) / 1000 * size.height)
+    }
+
+    /// Printed "text" made only of symbols (⏻, ⊞, ⌘, ←), no letters or digits.
+    public static func symbolOnly(_ text: [String]) -> Bool {
+        !text.isEmpty && text.allSatisfy { !$0.isEmpty && !$0.contains(where: { $0.isLetter || $0.isNumber }) }
+    }
+
+    /// The model's point is plainly on one of a row of look-alikes: inside it or within half its
+    /// size of its edge, and nearer to it than to any other by half its size.
+    static func plainlyOn(_ p: CGPoint, _ box: CGRect, others: [CGRect]) -> Bool {
+        let size = Double(min(box.width, box.height))
+        let d1 = Grounding.distance(p, box)
+        guard size > 0, d1 <= 0.5 * size else { return false }
+        let d2 = others.map { Grounding.distance(p, $0) }.min() ?? .infinity
+        return d2 >= d1 + 0.5 * size
+    }
+
+    /// A symbol in words, for the verifier: models read a drawn ⏻ better than they match the glyph.
+    public static func describeSymbol(_ s: String) -> String {
+        let names: [String: String] = [
+            "⏻": "the power symbol (a circle open at the top, with a short vertical line)", "⏼": "the power symbol", "⏽": "the power symbol",
+            "⭘": "the power symbol", "⊞": "the Windows logo (four panes)", "⌘": "the command symbol (a looped square)",
+            "⌥": "the option symbol", "⌃": "the control symbol (a caret)", "⇧": "the shift arrow (a hollow arrow pointing up)",
+            "⇪": "the caps lock arrow", "⌫": "the backspace arrow (pointing left)", "⌦": "the forward delete arrow",
+            "⏎": "the return arrow", "↵": "the return arrow", "⇥": "the tab arrow", "←": "an arrow pointing left",
+            "→": "an arrow pointing right", "↑": "an arrow pointing up", "↓": "an arrow pointing down", "⏏": "the eject symbol",
+            "⏯": "the play/pause symbol", "▶": "the play symbol (a triangle)", "⏸": "the pause symbol (two bars)", "🔇": "a crossed-out speaker",
+            "🔈": "a speaker", "🔉": "a speaker with one wave", "🔊": "a speaker with waves", "☀": "a sun", "🔅": "a small sun", "🔆": "a big sun",
+        ]
+        return names[s] ?? "the symbol \(s)"
     }
 
     static func deepInside(_ p: CGPoint, _ box: CGRect) -> Bool {
@@ -344,9 +482,13 @@ public struct Grounder: Sendable {
         let pointed = point == nil ? "" : " The yellow cross is where the guide pointed; it may be a little off."
         let question: String
         if let description, spec.text.isEmpty {
-            question = "A guide pointed at a \(spec.phrase) and said: \"\(description)\".\(pointed) Which numbered outline is the \(spec.phrase) the guide means? The numbers are labels next to the outlines; look at what is inside each outline. Answer with its number, or 0 if none of them is."
+            let context = asked.map { "The user asked: \"\($0)\". " } ?? ""
+            question = "\(context)A guide pointed at a \(spec.phrase) and said: \"\(description)\".\(pointed) Which numbered outline is the \(spec.phrase) the guide means? The numbers are labels next to the outlines; look at what is inside each outline. Answer with its number, or 0 if none of them is."
         } else if spec.text.isEmpty {
             question = "A guide pointed at a \(spec.phrase).\(pointed) Which numbered outline is that \(spec.phrase)? Answer with its number, or 0 if none of them is."
+        } else if Self.symbolOnly(spec.text) {
+            let shown = spec.text.map(Self.describeSymbol).joined(separator: " or ")
+            question = "Which numbered \(spec.phrase) shows \(shown)? Look at the small symbol on each numbered \(spec.phrase) carefully.\(pointed) Answer with its number, or 0 if none of them does."
         } else {
             question = "Which numbered \(spec.phrase) has \(printed) printed on it? Read the printed characters on each numbered \(spec.phrase) carefully.\(pointed) Answer with its number, or 0 if none of them does."
         }

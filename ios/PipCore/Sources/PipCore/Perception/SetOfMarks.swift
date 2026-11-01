@@ -43,13 +43,14 @@ public enum SetOfMarks {
         let fontSize = max(13, 17 * scale)
         for inst in instances {
             let box = inst.boxRect
-            // A small outline keeps what is inside it visible: its number goes beside it, above
-            // and to the left (or below when there is no room above).
+            // A small outline keeps what is inside it visible: its number goes right above it (or
+            // below when there is no room above). Above and to the left, a number sat nearer the
+            // neighbour of a key in a tilted row (1 Nov: the power key's number was taken for delete's).
             let small = box.width < fontSize * 4 || box.height < fontSize * 4
             let anchor: CGPoint
             if small {
                 let above = box.minY - fontSize * 0.8
-                anchor = CGPoint(x: max(fontSize, box.minX - fontSize * 0.4), y: above > fontSize ? above : box.maxY + fontSize * 0.8)
+                anchor = CGPoint(x: min(max(fontSize, box.midX), CGFloat(w) - fontSize), y: above > fontSize ? above : box.maxY + fontSize * 0.8)
             } else {
                 anchor = CGPoint(x: box.midX, y: min(box.minY + fontSize * 0.9, box.midY))
             }

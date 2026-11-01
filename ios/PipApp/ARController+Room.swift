@@ -144,6 +144,7 @@ extension ARController {
     /// the fresh start would be dropped); the cues themselves are found again afterwards. On 1 Nov
     /// the wait of up to 60 s kept the image locks off (they wait for the room) all test long.
     static let maxRecognitionExtension: TimeInterval = 20
+    static let maxRestartHold: TimeInterval = 30
 
     /// When the wait for a saved room is over: try another (or start fresh), unless this session's
     /// cues are on screen; then a while longer, since a fresh start would wipe them.
@@ -155,6 +156,13 @@ extension ARController {
                     self.recognitionExtended += 10
                     self.onLockLog?("map: still recognising the room; cues are on screen, so a while longer")
                     self.scheduleRecognitionCheck(since: since, firstTry: true, after: 10)
+                    return
+                }
+                // A question is being answered: the fresh start waits for it (at most half a minute).
+                if self.restartHold?() == true, self.restartHeld < Self.maxRestartHold {
+                    if self.restartHeld == 0 { self.onLockLog?("map: a question is being answered; the next room waits for it") }
+                    self.restartHeld += 2
+                    self.scheduleRecognitionCheck(since: since, firstTry: true, after: 2)
                     return
                 }
                 // The saved room is not this one: another saved room, or start fresh.

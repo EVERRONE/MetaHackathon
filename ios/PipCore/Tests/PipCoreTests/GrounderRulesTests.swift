@@ -18,6 +18,43 @@ import Testing
         #expect(!Grounder.deepInside(CGPoint(x: 200, y: 140), key))
     }
 
+    @Test func symbolKeysAreNotText() {
+        #expect(Grounder.symbolOnly(["⏻"]))
+        #expect(Grounder.symbolOnly(["⊞", "⌘"]))
+        #expect(!Grounder.symbolOnly(["F1"]))
+        #expect(!Grounder.symbolOnly(["delete"]))
+        #expect(!Grounder.symbolOnly([]))
+        #expect(Grounder.describeSymbol("⏻").contains("power"))
+    }
+
+    @Test func aPointPlainlyOnASymbolKeyNeedsNoCheck() {
+        // 2 Nov: the model's point on the top edge of the power key, delete to its right.
+        let power = CGRect(x: 440, y: 485, width: 46, height: 22), delete = CGRect(x: 499, y: 484, width: 46, height: 22)
+        let prtScr = CGRect(x: 381, y: 485, width: 46, height: 22)
+        #expect(Grounder.plainlyOn(CGPoint(x: 474, y: 481), power, others: [delete, prtScr]))
+        // Between two keys: checked.
+        #expect(!Grounder.plainlyOn(CGPoint(x: 492, y: 495), power, others: [delete, prtScr]))
+        // Far above any key: checked.
+        #expect(!Grounder.plainlyOn(CGPoint(x: 462, y: 440), power, others: [delete, prtScr]))
+    }
+
+    static func outlined(_ id: Int, _ box: [Int]) -> SegmentInstance {
+        let (x0, y0, x1, y1) = (box[0], box[1], box[2], box[3])
+        return SegmentInstance(id: id, prompts: [], confidence: 0.9, box: box, area: (x1 - x0) * (y1 - y0),
+                               centroid: [(x0 + x1) / 2, (y0 + y1) / 2], polygons: [[x0, y0, x1, y0, x1, y1, x0, y1]])
+    }
+
+    @Test func twoPointingsAgreeOnAKeyAndTheSymbolOnIt() {
+        // 1 Nov: the power key, the ⏻ printed on it, and delete beside it.
+        let power = Self.outlined(1, [440, 485, 486, 507]), symbol = Self.outlined(2, [455, 490, 465, 500])
+        let delete = Self.outlined(3, [499, 484, 545, 506])
+        #expect(Grounder.agree(power, power))
+        #expect(Grounder.agree(power, symbol))
+        #expect(Grounder.agree(symbol, power))
+        #expect(!Grounder.agree(power, delete))
+        #expect(!Grounder.agree(symbol, delete))
+    }
+
     @Test func aSolidMaskIsAWholeObject() {
         // The left statue on 1 Nov: SAM sure, compact.
         #expect(Grounder.solid(Self.instance(box: [424, 656, 481, 727], area: 2900, confidence: 0.906)))

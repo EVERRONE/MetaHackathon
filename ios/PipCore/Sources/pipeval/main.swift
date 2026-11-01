@@ -30,7 +30,9 @@ if args.first == "ground", args.count >= 5 {
     let description = args.count > 6 ? args[6] : nil
     let spec = TargetSpec(x: Double(args[2])!, y: Double(args[3])!, phrase: args[4], text: text, small: args.count > 7 && args[7] == "small")
     let t0 = Date()
-    let r = await Grounder(client: client, frameJPEG: SetOfMarks.jpeg(frame)!).ground(spec, id: 1, frame: frame, describe: { description })
+    var grounder = Grounder(client: client, frameJPEG: SetOfMarks.jpeg(frame)!)
+    grounder.asked = env["PIP_ASKED"]
+    let r = await grounder.ground(spec, id: 1, frame: frame, describe: { description })
     print(String(format: "%.2fs", Date().timeIntervalSince(t0)), r.method, r.instance.map { "box \($0.box) conf \($0.confidence)" } ?? "nil")
     exit(0)
 }

@@ -563,7 +563,17 @@ final class GuideModel: ObservableObject {
                     if let inst {
                         let anchoring = ar.addMark(inst.renumbered(id + offset), snapshot: snapshot, spec: specs[id])
                         // Lock the outline to the object itself, so it stays on it when it moves.
-                        if anchoring != "assumed depth" { lockToObject(id + offset, key: inst.renumbered(id + offset), on: specs[id]?.on, snapshot: snapshot) }
+                        if anchoring != "assumed depth", anchoring != ARController.takenBeforeRestart {
+                            lockToObject(id + offset, key: inst.renumbered(id + offset), on: specs[id]?.on, snapshot: snapshot)
+                        }
+                        // The frame is from before tracking started afresh: found again in the new
+                        // session, around where it was on screen, instead of dropped.
+                        if anchoring == ARController.takenBeforeRestart, var spec = specs[id] {
+                            spec.x = Double(inst.boxRect.midX) / Double(snapshot.image.width) * 1000
+                            spec.y = Double(inst.boxRect.midY) / Double(snapshot.image.height) * 1000
+                            let carried = ARController.Carried(id: id + offset, spec: spec)
+                            Task { await findAgain([carried]) }
+                        }
                         recorder?.grounded(inst)
                         note(String(format: "grounded %d via %@ in %.1fs, anchored on %@", id, method, seconds, anchoring))
                     } else {

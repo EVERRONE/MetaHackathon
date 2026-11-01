@@ -56,6 +56,7 @@ extension GuideModel {
         mapKeeper.begin(continuing: continuing, others: pieces.filter { $0.id != continuing?.id })
         mapKeeper.onLog = { [weak self] line in self?.log(line) }
         ar.onRelocaliseGaveUp = { [weak self] in self?.relocalisationGaveUp() }
+        ar.restartHold = { [weak self] in self?.lookActive ?? false }
         ar.onStartedAfresh = { [weak self] carried in
             Task { @MainActor [weak self] in await self?.findAgain(carried) }
         }

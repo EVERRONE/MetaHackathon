@@ -143,7 +143,8 @@ public struct LookPipeline: Sendable {
                                promptCacheKey: promptCacheKey, maxCompletionTokens: 4000)
         chat.model = model
         // The frame is at most 1280 px already, so Spark and SAM can share one encoding.
-        let grounder = Grounder(client: client, frameJPEG: context)
+        var grounder = Grounder(client: client, frameJPEG: context)
+        if request.directive == nil { grounder.asked = request.utterance }
         // What the model says each target is, as its words stream in (for objects without text).
         let notes = TargetNotes()
         let (inputs, feed) = AsyncStream<Input>.makeStream()

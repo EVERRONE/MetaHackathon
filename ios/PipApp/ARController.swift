@@ -192,6 +192,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     /// The saved room was not recognised: ARKit tries another saved room's map.
     func restart(initialMap: ARWorldMap) {
+        restartHeld = 0
         awaitingFirstRelocalisation = true
         recognitionWait = Self.nextRelocaliseWait
         relocalisingSince = nil
@@ -201,6 +202,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// The saved room was not recognised (Pip is in another room): start fresh, so tracking works
     /// at once; the room's map waits to be linked when Pip sees it.
     func restartFresh() {
+        restartHeld = 0
         awaitingFirstRelocalisation = false
         relocalisingSince = nil
         startAfresh(Self.configuration(initialMap: nil))
@@ -257,6 +259,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         return s
     }
 
+    static let takenBeforeRestart = "taken before tracking restarted"
+
     /// A new look. The previous look's cues stay on their objects until this look shows its first
     /// cue, so the user keeps their bearings while Pip thinks, or when the answer points at nothing.
     func beginLook(markOffset: Int) {
@@ -270,7 +274,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// (what the model asked to point at) lets Pip find the object again after drift.
     @discardableResult
     func addMark(_ inst: SegmentInstance, snapshot: FrameSnapshot, spec: TargetSpec? = nil) -> String {
-        guard let carry = carry(from: snapshot.coordinates) else { return "taken before tracking restarted" }
+        guard let carry = carry(from: snapshot.coordinates) else { return Self.takenBeforeRestart }
         // Clean, regular shapes: a raw mask outline looks hand-drawn once stroked on screen.
         guard var m = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return "no outline" }
         if carry != matrix_identity_float4x4 { m = m.transformed(by: carry) }
@@ -544,6 +548,12 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     // MARK: Recognising the saved room (see ARController+Room.swift)
 
     var recognitionExtended: TimeInterval = 0
+    /// How long trying the next saved room (a fresh start) has waited for questions being answered.
+    var restartHeld: TimeInterval = 0
+    /// Whether a question is being answered: its frame and the outlines grounded on it are in this
+    /// session's coordinates, which a fresh start would throw away (1 Nov: two questions in the
+    /// first 45 s straddled a switch to the next saved room, and pointed at nothing).
+    var restartHold: (() -> Bool)?
 
     /// The camera while ARKit was still recognising the room: its pose just before and just after
     /// recognition shows how far the room's coordinates moved.
