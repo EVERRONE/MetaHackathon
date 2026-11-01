@@ -89,7 +89,7 @@ public struct Grounder: Sendable {
         let prompts = iconLike && spec.phrase != "icon" ? [spec.phrase, "icon"] : [spec.phrase]
         let allObjects = objects
         async let segmented = Result { try await client.segment(SegmentRequest(jpeg: jpeg, prompts: prompts, objects: allObjects, width: crop.width, height: crop.height, minConfidence: 0.25, maxInstances: 120)) }
-        async let whole = wholeFrame.instances(for: spec.phrase)
+        async let whole = wholeFrame.instances(for: spec.phrase, frame: size)
         let debug = ProcessInfo.processInfo.environment["PIP_DEBUG_GROUND"] != nil
         // Text recognition runs alongside SAM: the fast pass always (≈0.05 s), the accurate pass
         // within a budget, because after a pause it reloads its models (~25 s).
@@ -422,19 +422,33 @@ public struct Grounder: Sendable {
 actor WholeFrameSegments {
     private let client: PipClient
     private let jpeg: Data
-    private var tasks: [String: Task<[SegmentInstance]?, Never>] = [:]
+    private var tasks: [String: Task<SegmentResponse?, Never>] = [:]
 
     init(client: PipClient, jpeg: Data) {
         self.client = client
         self.jpeg = jpeg
     }
 
-    func instances(for phrase: String) async -> [SegmentInstance]? {
-        if let task = tasks[phrase] { return await task.value }
-        let client = client, jpeg = jpeg
-        let task = Task { try? await client.segment(SegmentRequest(jpeg: jpeg, prompts: [phrase], minConfidence: 0.25, maxInstances: 200)).instances }
-        tasks[phrase] = task
-        return await task.value
+    /// SAM's instances of `phrase` on the whole frame, in pixels of a frame of `size` (SAM sees
+    /// the look's context image, at most 1280 px on its long side).
+    func instances(for phrase: String, frame size: CGSize) async -> [SegmentInstance]? {
+        let task: Task<SegmentResponse?, Never>
+        if let running = tasks[phrase] {
+            task = running
+        } else {
+            let client = client, jpeg = jpeg
+            task = Task { try? await client.segment(SegmentRequest(jpeg: jpeg, prompts: [phrase], minConfidence: 0.25, maxInstances: 200)) }
+            tasks[phrase] = task
+        }
+        guard let seg = await task.value else { return nil }
+        guard let w = seg.width, w > 0, abs(CGFloat(w) - size.width) > 0.5 else { return seg.instances }
+        let scale = CGFloat(w) / size.width
+        return seg.instances.map { $0.unmapped(from: CGRect(origin: .zero, size: size), scale: scale) }
+    }
+
+    /// The look is over: calls still running are cancelled.
+    func cancel() {
+        tasks.values.forEach { $0.cancel() }
     }
 }
 

@@ -18,8 +18,8 @@ public enum SafetyPolicy {
     /// Task kinds Pip never guides, with the professional to call instead.
     static let refusedKinds: [(words: [String], reason: String)] = [
         (["medicijn", "medicijnen", "medicatie", "insuline", "dosis", "doseren medicijn*", "wonde", "wond", "verband aanleggen",
-          "een verband", "reanimat*", "symptoom", "symptomen", "pijn",
-          "medication", "medicine", "medicines", "insulin", "dose", "dosage", "wound", "bandage", "symptom", "symptoms", "injury", "cpr"],
+          "wonden", "een verband", "reanimat*", "symptoom", "symptomen", "pijn",
+          "medication", "medicine", "medicines", "insulin", "dose", "dosage", "wound*", "bandage", "symptom", "symptoms", "injury", "cpr"],
          "medical"),
         (["gasleiding", "gaslek", "gaskraan", "gasketel openen", "gasfornuis aansluiten", "gas aansluiten", "gasmeter",
           "gas pipe", "gas leak", "gas line", "gas valve", "connect the gas", "gas meter"],
@@ -27,7 +27,8 @@ public enum SafetyPolicy {
         (["bedrading", "zekeringkast openen", "verdeelkast openen", "onder spanning", "rewire", "rewiring", "wiring", "live wire", "mains",
           "open the fuse box", "open the consumer unit"],
          "mains"),
-        (["draagmuur", "dragende muur", "steunbalk", "load-bearing", "load bearing", "structural beam"],
+        // "load-bearing" is "load bearing" once split into words.
+        (["draagmuur", "dragende muur", "steunbalk", "load bearing", "structural beam"],
          "structural"),
     ]
 
@@ -37,14 +38,21 @@ public enum SafetyPolicy {
                                "plafondlamp", "plafonnière", "outlet", "outlets", "socket", "sockets", "light switch", "ceiling light",
                                "light fixture", "wall switch"]
     static let mainsVerbs = ["vervang*", "replace*", "install*", "installeer*", "aansluit*", "aansluiten", "sluit", "connect*", "wire",
-                             "bedraad*", "plaats*", "monteer*", "swap", "change"]
+                             "bedraad*", "plaats*", "monteer*", "monteren", "ophang*", "hang", "hangen", "verplaats*", "fit", "fitting",
+                             "mount*", "relocate*", "swap", "change"]
+    /// Gas work on an appliance, in any word order ("sluit het gasfornuis aan", "open de gasketel").
+    static let gasObjects = ["gasfornuis", "gasketel", "gaskachel", "gasgeiser", "geiser", "gasoven", "gasbrander", "gaskookplaat",
+                             "gas stove", "gas cooker", "gas hob", "gas boiler", "gas heater", "gas oven", "gas fire", "gas dryer"]
+    static let gasVerbs = mainsVerbs + ["open*", "demonteer*", "demonteren", "repareer*", "repair*", "disconnect*", "loskoppel*",
+                                        "afkoppel*", "koppel*", "verwijder*", "remove*", "dismantle*", "service"]
     /// Phrases that make a keyword harmless.
     static let harmless = ["medicine cabinet", "medicijnkast*", "doorbell wiring", "speaker wiring", "network wiring", "low voltage",
                            "laagspanning", "deurbel*", "luidspreker*", "usb", "smoke alarm", "smoke alarms", "smoke detector",
                            "smoke detectors", "spark plug", "spark plugs", "bougie*", "rookmelder*", "in verband met"]
 
     /// Electrical or pressurised work that is fine with a confirmed safety condition first.
-    static let gatedWords = ["zekering*", "automaat", "automaten", "differentieel", "verliesschakelaar", "ketel", "boiler", "liftinstallatie",
+    static let gatedWords = ["zekering*", "automaat", "automaten", "differentieel", "verliesschakelaar", "ketel", "gasketel", "combiketel",
+                             "boiler", "liftinstallatie",
                              "elektr*", "breaker", "breakers", "fuse", "fuses", "rcd", "water heater", "elevator", "electric*", "stroom*"]
 
     // MARK: Matching
@@ -94,6 +102,9 @@ public enum SafetyPolicy {
         let words = withoutHarmless(normalized(goal))
         for kind in refusedKinds where kind.words.contains(where: { contains(words, $0) }) {
             return .refused(reason: kind.reason)
+        }
+        if gasObjects.contains(where: { contains(words, $0) }), gasVerbs.contains(where: { contains(words, $0) }) {
+            return .refused(reason: "gas")
         }
         if mainsObjects.contains(where: { contains(words, $0) }), mainsVerbs.contains(where: { contains(words, $0) }) {
             return .refused(reason: "mains")

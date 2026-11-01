@@ -71,8 +71,4 @@ public enum RayFusion {
         return simd_length(v - o.direction * along)
     }
 
-    /// The angle between two observations' rays, in degrees: triangulation needs a few degrees.
-    public static func angle(_ a: Observation, _ b: Observation) -> Float {
-        acos(max(-1, min(1, simd_dot(a.direction, b.direction)))) * 180 / .pi
-    }
 }

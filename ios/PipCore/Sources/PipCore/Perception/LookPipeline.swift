@@ -168,6 +168,8 @@ public struct LookPipeline: Sendable {
             chatTask.cancel()
             ticker.cancel()
             groundTasks.forEach { $0.cancel() }
+            // The whole-frame SAM calls too (up to 200 instances each, billed): nobody waits for them.
+            Task { await grounder.wholeFrame.cancel() }
             feed.finish()
         }
 
@@ -180,6 +182,8 @@ public struct LookPipeline: Sendable {
         var chatDone = false
         /// The stream broke off after some of the answer had come.
         var cutOff: String?
+        /// The model finished its answer (a connection that drops after that lost nothing).
+        var answerFinished = false
 
         func handle(_ events: [CueStreamEvent]) {
             for e in events {
@@ -206,7 +210,8 @@ public struct LookPipeline: Sendable {
             while let first = pending.first {
                 // A mark that is neither known nor being grounded (a mistyped m=N) never resolves:
                 // waiting for it would only hold up the speech; the validator rejects its cue.
-                let waiting = Set(first.sentence.cues.flatMap { $0.cue.marks }).subtracting(resolved).intersection(grounding)
+                // A warning is said at once: its outline follows when its mark is found.
+                let waiting = Set(first.sentence.cues.filter { !$0.cue.isDanger }.flatMap { $0.cue.marks }).subtracting(resolved).intersection(grounding)
                 guard waiting.isEmpty || since(first.completed) > groundingTimeout else { return }
                 var s = first.sentence
                 var traces: [CueTrace] = []
@@ -234,9 +239,9 @@ public struct LookPipeline: Sendable {
             case .chat(.usage(let u)):
                 usage = u
             case .chat(.finished):
-                break
+                answerFinished = true
             case .chatEnded(let error):
-                if let error {
+                if let error, !answerFinished {
                     // Cut off before a whole sentence came: the look failed. After: the sentences
                     // that came whole are still said (with their cues), the unfinished one is not,
                     // and then the look fails.

@@ -100,10 +100,81 @@ import Testing
         #expect(failed)
     }
 
+    @Test func aWarningIsSaidWithoutWaitingForItsMark() async throws {
+        // Grounding takes 0.8 s here: the warning comes before its mark, not after.
+        StreamStub.body = Self.chunk("Careful [[danger at=500,500 obj=\"wire\" reason=\"bare wire\"]] there. ")
+        StreamStub.breakOff = false
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StreamStub.self]
+        let client = PipClient(baseURL: URL(string: "https://pip.test")!, token: "t", session: URLSession(configuration: config))
+        var order: [String] = []
+        for try await event in LookPipeline(client: client).run(LookRequest(frame: Self.frame(), utterance: "is this safe?")) {
+            if case .sentence = event { order.append("sentence") }
+            if case .grounded = event { order.append("grounded") }
+        }
+        #expect(order.first == "sentence", "\(order)")
+    }
+
     @Test func anErrorSentMidStreamCutsTheAnswerOff() async {
         let body = Self.chunk("Press it once. And then the") + "data: {\"error\":{\"message\":\"overloaded\"}}\n\n"
         let (said, failed) = await Self.look(body, breakOff: false)
         #expect(said.map { $0.trimmingCharacters(in: .whitespaces) } == ["Press it once."])
         #expect(failed)
+    }
+}
+
+/// The rest of the PipCore review of 1 Nov: tags, binding to symbols, warnings, gas work.
+@Suite struct CueReviewTests {
+    static func run(_ chunks: [String]) -> [CueStreamEvent] {
+        var parser = CueStreamParser()
+        var events: [CueStreamEvent] = []
+        for c in chunks { events += parser.feed(c) }
+        events += parser.finish()
+        return events
+    }
+
+    static func sentences(_ events: [CueStreamEvent]) -> [SpokenSentence] {
+        events.compactMap { if case .sentence(let s) = $0 { return s } else { return nil } }
+    }
+
+    @Test func aCueBeforeASymbolIsOnTheSymbol() {
+        for (said, symbol) in [("Press [[ring at=500,500 obj=\"key\" text=\"@\"]] @ now.", "@"), ("Hold [[ring at=500,500 obj=\"key\" text=\"⌘\"]] ⌘ and space.", "⌘")] {
+            let s = Self.sentences(Self.run([said]))
+            let text = s.first?.text ?? ""
+            let anchor = s.first?.cues.first?.anchor ?? -1
+            let offset = text.utf16.distance(from: text.utf16.startIndex, to: text.range(of: symbol)!.lowerBound.samePosition(in: text.utf16)!)
+            #expect(anchor == offset, "\(said)")
+        }
+    }
+
+    @Test func spacedListsAndTypographicQuotesAreRead() {
+        #expect(CueTag.parse("candidates at=100,200; 300,400 obj=\"key\"")?.attributes["at"] == "100,200;300,400")
+        #expect(CueTag.parse("ring at=1,2 obj=”key”")?.attributes["obj"] == "key")
+        #expect(CueTag.parse("ring at=1,2 obj=„key“")?.attributes["obj"] == "key")
+        #expect(CueTag.parse("ring at=1,2 obj=„key”")?.attributes["obj"] == "key")
+        #expect(CueTag.parse("ring at=1,2 text=‘F1’")?.attributes["text"] == "F1")
+        // A list of several points with a space after ";" names two targets.
+        let events = Self.run(["These [[candidates at=100,200; 300,400 obj=\"knob\"]] two."])
+        #expect(events.filter { if case .target = $0 { return true } else { return false } }.count == 2)
+    }
+
+    @Test func aCueThatWillBeDroppedIsNotGrounded() {
+        let events = Self.run(["Move [[move at=500,500 obj=\"lever\" dir=sideways]] it."])
+        #expect(!events.contains { if case .target = $0 { return true } else { return false } })
+        #expect(events.contains { if case .invalidTag = $0 { return true } else { return false } })
+    }
+
+    @Test func gasAndMainsWorkInAnyWordOrder() {
+        for goal in ["sluit het gasfornuis aan", "open de gasketel", "connect the gas stove"] {
+            #expect(SafetyPolicy.classify(goal) == .refused(reason: "gas"), "\(goal)")
+        }
+        for goal in ["plafondlamp ophangen", "stopcontact verplaatsen", "fit a new light switch"] {
+            #expect(SafetyPolicy.classify(goal) == .refused(reason: "mains"), "\(goal)")
+        }
+        #expect(SafetyPolicy.classify("treat my wounds") == .refused(reason: "medical"))
+        #expect(SafetyPolicy.classify("de druk van de gasketel controleren") == .allowedWithGates)
+        // Still allowed.
+        #expect(SafetyPolicy.classify("hang a picture") == .allowed)
+        #expect(SafetyPolicy.classify("change the battery of the smoke alarm") == .allowed)
     }
 }

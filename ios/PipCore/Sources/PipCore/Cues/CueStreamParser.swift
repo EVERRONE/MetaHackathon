@@ -137,6 +137,8 @@ public struct CueStreamParser: Sendable {
         return events
     }
 
+    static let betweenWords = CharacterSet(charactersIn: ".,;:!?…\"'“”„‘’«»()[]{}-–—")
+
     private mutating func handleTag(_ body: String, into events: inout [CueStreamEvent]) {
         guard var tag = CueTag.parse(body) else {
             events.append(.invalidTag(CueError(raw: "[[\(body)]]", reason: "malformed tag")))
@@ -144,6 +146,14 @@ public struct CueStreamParser: Sendable {
         }
         if let at = tag.attributes["at"] {
             let many = ["candidates", "seq", "sequence"].contains(tag.name)
+            // A cue that will be dropped (dir=sideways) must not cost a grounding: checked with
+            // stand-in marks before its targets are registered.
+            var trial = tag
+            trial.attributes["m"] = (1...max(1, many ? min(6, at.split(separator: ";").count) : 1)).map(String.init).joined(separator: ",")
+            if case .failure(let error) = Cue.from(trial) {
+                events.append(.invalidTag(error))
+                return
+            }
             guard let ids = register(at: at, tag: tag, many: many, into: &events) else {
                 events.append(.invalidTag(CueError(raw: tag.raw, reason: "at must be x,y on the 0–1000 grid")))
                 return
@@ -307,9 +317,11 @@ public struct CueStreamParser: Sendable {
     /// Start of the first word at or after `offset`; the last word if there is none.
     private func wordStart(atOrAfter offset: Int, in s: String) -> Int {
         let units = Array(s.utf16)
+        // Letters, digits and symbols said as a word ("@", "⌘", "%"); not spaces, nor the
+        // punctuation between words.
         func isWordUnit(_ u: UInt16) -> Bool {
             guard let scalar = Unicode.Scalar(u) else { return true } // surrogate halves: part of a word
-            return CharacterSet.alphanumerics.contains(scalar)
+            return !CharacterSet.whitespacesAndNewlines.contains(scalar) && !Self.betweenWords.contains(scalar)
         }
         var i = min(offset, units.count)
         while i < units.count, !isWordUnit(units[i]) { i += 1 }

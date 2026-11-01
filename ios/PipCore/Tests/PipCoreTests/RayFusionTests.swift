@@ -32,7 +32,7 @@ import simd
         let two = try #require(RayFusion.fuse([a, b]))
         #expect(simd_distance(one, target) > 0.04)
         #expect(simd_distance(two, target) < 0.01)
-        #expect(RayFusion.angle(a, b) > 20)
+        #expect(acos(simd_dot(a.direction, b.direction)) * 180 / .pi > 20)
     }
 
     @Test func parallelRaysWithoutDepthAreUndetermined() {

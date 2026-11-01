@@ -20,25 +20,37 @@ public struct CueTag: Equatable, Sendable {
         return parts
     }
 
-    /// "m=3, 4" → "m=3,4", outside quoted values only ("shelf 2, 3rd row" stays as written).
+    /// The quotes a value may be in, and what closes each: straight ones, and the typographic
+    /// ones models also write (“…”, ”…”, „…“ or „…”, ‘…’).
+    static func closingQuotes(for c: Character) -> Set<Character>? {
+        switch c {
+        case "\"": return ["\""]
+        case "'": return ["'"]
+        case "“", "”": return ["”"]
+        case "„": return ["“", "”"]
+        case "‘", "’": return ["’"]
+        default: return nil
+        }
+    }
+
+    /// "m=3, 4" → "m=3,4" and "at=100,200; 300,400" → "at=100,200;300,400", outside quoted values
+    /// only ("shelf 2, 3rd row" stays as written).
     static func joiningSpacedLists(_ body: String) -> String {
         var out = ""
-        var quote: Character?
+        var closing: Set<Character>?
         let chars = Array(body)
         var i = 0
         while i < chars.count {
             let c = chars[i]
-            if let q = quote {
-                if c == q { quote = nil }
-            } else if c == "\"" || c == "'" {
-                quote = c
-            } else if c == "“" {
-                quote = "”"
-            } else if c == "," {
+            if let q = closing {
+                if q.contains(c) { closing = nil }
+            } else if let q = closingQuotes(for: c) {
+                closing = q
+            } else if c == "," || c == ";" {
                 var j = i + 1
                 while j < chars.count, chars[j] == " " { j += 1 }
                 if j > i + 1, j < chars.count, chars[j].isNumber {
-                    out.append(",")
+                    out.append(c)
                     i = j
                     continue
                 }
@@ -77,10 +89,9 @@ public struct CueTag: Equatable, Sendable {
             guard !key.isEmpty, !key.contains(" ") else { return nil }
             scanner = scanner[scanner.index(after: eq)...]
             let value: Substring
-            if let quote = scanner.first, quote == "\"" || quote == "“" || quote == "'" {
-                let closing: Character = quote == "“" ? "”" : quote
+            if let quote = scanner.first, let closing = closingQuotes(for: quote) {
                 let rest = scanner.dropFirst()
-                guard let end = rest.firstIndex(of: closing) else { return nil }
+                guard let end = rest.firstIndex(where: { closing.contains($0) }) else { return nil }
                 value = rest[..<end]
                 scanner = rest[rest.index(after: end)...]
             } else {
@@ -95,6 +106,10 @@ public struct CueTag: Equatable, Sendable {
 }
 
 public enum MoveDirection: String, Sendable, CaseIterable { case up, down, left, right, `in`, out }
+
+extension Cue {
+    var isDanger: Bool { if case .danger = self { return true } else { return false } }
+}
 public enum RotationDirection: String, Sendable, CaseIterable { case cw, ccw }
 public enum RotationAmount: String, Sendable, CaseIterable { case quarter, half, full }
 
