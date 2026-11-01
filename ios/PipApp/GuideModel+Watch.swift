@@ -13,10 +13,10 @@ extension GuideModel {
     static let watchChecksPerStep = 60
 
     func startWatching() {
-        watchTimer = Timer.scheduledTimer(withTimeInterval: Self.watchInterval, repeats: true) { [weak self] _ in
+        Timer.scheduledTimer(withTimeInterval: Self.watchInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.watchTick() }
         }
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: Self.refreshInterval, repeats: true) { [weak self] _ in
+        Timer.scheduledTimer(withTimeInterval: Self.refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refreshTick() }
         }
     }

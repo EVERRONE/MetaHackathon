@@ -8,6 +8,9 @@ import PipCore
 final class HomeLocation: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private(set) var current: CLLocation?
+    /// Asked for only once the user agreed to be remembered (`start`), also when location access
+    /// was granted before.
+    private var started = false
     /// A new fix came in.
     var onUpdate: ((GeoPoint) -> Void)?
 
@@ -18,6 +21,7 @@ final class HomeLocation: NSObject, CLLocationManagerDelegate {
     }
 
     func start() {
+        started = true
         // A fix the system already has, if it is recent: available at once.
         if let l = manager.location, -l.timestamp.timeIntervalSinceNow < 600 { current = l }
         switch manager.authorizationStatus {
@@ -34,6 +38,8 @@ final class HomeLocation: NSObject, CLLocationManagerDelegate {
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        // Also called when the manager is made, at launch.
+        guard started else { return }
         switch manager.authorizationStatus {
         case .authorizedWhenInUse, .authorizedAlways: manager.requestLocation()
         default: break

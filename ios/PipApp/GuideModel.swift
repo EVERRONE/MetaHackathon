@@ -74,7 +74,6 @@ final class GuideModel: ObservableObject {
     let mapKeeper = MapKeeper()
     /// Which frames are clean enough for the map and the visual memory.
     let captureGate = CaptureGate()
-    var mapSaveTimer: Timer?
     /// How well outlines hold: every re-measurement, on this iPhone, to evaluate on the Mac.
     let trackingLog = TrackingLog()
     var foundCount = 0
@@ -91,7 +90,6 @@ final class GuideModel: ObservableObject {
     }
     @Published var shopping: [ShoppingItem] = []
     var basketChecking = false
-    var basketTimer: Timer?
     private let audio = AudioIO()
     let speaker: Speaker
     let client: PipClient
@@ -137,6 +135,9 @@ final class GuideModel: ObservableObject {
     var runtime: ProcedureRuntime?
     var sessionLog = SessionLog()
     var offering = false
+    /// The plan offer was the last thing said: a yes (or "okay") answers it. After other talk
+    /// it is made again first.
+    var offerFresh = false
     /// A yes/no question from the runtime was just asked, with no other talk since.
     var questionFresh = false
     /// The plan being prepared in the background (search, read, compile), and its goal.
@@ -151,8 +152,6 @@ final class GuideModel: ObservableObject {
     /// The speaker label of the person Pip talks with; others are ignored unless they say "Pip".
     var primarySpeaker: String?
     @Published var watching = false
-    var watchTimer: Timer?
-    var refreshTimer: Timer?
     var watchHits = 0
     /// Consecutive checks that saw the same problem.
     var problemHits = 0
@@ -165,8 +164,10 @@ final class GuideModel: ObservableObject {
     var problemQuietUntil = Date.distantPast
     /// Speech started while Pip was busy; Pip stops once it is clearly the user (see `handle`).
     private var bargeInPending = false
+    /// The user began this turn while Pip was quiet: speech Pip starts on its own meanwhile (a
+    /// plan offer, "Page 5.") gives way to what they say.
+    private var turnBeganQuiet = false
     private var reconnectDelay: TimeInterval = 0.5
-    private var warmTimer: Timer?
     private var started = false
 
     init() {
@@ -223,7 +224,7 @@ final class GuideModel: ObservableObject {
         for (key, fact) in memory.facts { facts[key] = Fact(value: fact.value, source: fact.source) }
         // Accurate text recognition unloads after a pause and then takes ~25 s to load: keep it warm.
         Task.detached(priority: .utility) { await Grounder.warmUp() }
-        warmTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
+        Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
             Task.detached(priority: .background) { await Grounder.warmUp() }
         }
         startWatching()
@@ -376,6 +377,7 @@ final class GuideModel: ObservableObject {
             } else {
                 heard = ""
                 phase = .hearing
+                turnBeganQuiet = true
             }
         case .partial(let text):
             guard !muted, !isEcho(text) else { return }
@@ -399,22 +401,14 @@ final class GuideModel: ObservableObject {
             // The service heard the user stop: Pip starts on the words at once (see `startEarly`).
             if !busy, !heard.isEmpty { startEarly(heard) }
         case .final(_, let text, let speaker):
-            let spokeOver = bargeInPending
+            let spokeOver = bargeInPending || turnBeganQuiet
             bargeInPending = false
+            turnBeganQuiet = false
             // A hazard is never dropped, also not while Pip speaks or looks, and not for being
             // said by someone else: it stops everything.
             let hazard = !muted && text.count >= 2 && !isEcho(text) && SafetyPolicy.spokenHazard(in: text) != nil
             if hazard, busy {
                 log("barge-in: hazard")
-                interrupt()
-            }
-            // A one-word command said over Pip ("stop", "wacht", "klaar", "ja"): too short to stop
-            // Pip on the partials, where a cough is one word too, but the final makes it a command.
-            // Not when Pip itself is saying those words ("zeg klaar als…"): that is its echo.
-            if spokeOver, busy, !hazard, !muted, text.count >= 2, !isEcho(text), Command.parse(text) != nil,
-               !Set(words(text)).isSubset(of: Set(words(self.speaker.recentText.joined(separator: " ")))),
-               acceptSpeaker(speaker, text: text) {
-                log("barge-in: \(text)")
                 interrupt()
             }
             // Pip already started on these words: the final transcript only confirms them.
@@ -430,6 +424,16 @@ final class GuideModel: ObservableObject {
                 e.gate.open(false)
                 task?.cancel()
                 activeLook = nil
+            }
+            // The user's words while Pip speaks or looks: a command said over Pip ("stop", "wacht",
+            // "klaar": too short to stop it on the partials, where a cough is one word too), more
+            // words whose partials were one, or a turn begun before Pip started talking on its own.
+            // Pip gives way, but not to its own echo ("zeg klaar als…").
+            if busy, spokeOver, !hazard, !muted, text.count >= 2, !isEcho(text), wordCount(text) >= 2 || Command.parse(text) != nil,
+               !Set(words(text)).isSubset(of: Set(words(self.speaker.recentText.joined(separator: " ")))),
+               acceptSpeaker(speaker, text: text) {
+                log("barge-in: \(text)")
+                interrupt()
             }
             guard !muted, text.count >= 2, !isEcho(text), !busy else {
                 if phase == .hearing { phase = .listening }
@@ -493,8 +497,11 @@ final class GuideModel: ObservableObject {
         defer { if activeLook == me { activeLook = nil } }
         phase = .looking
         spokenThisTurn = []
-        // A question from the user: any open yes/no question of the runtime is stale now.
-        if directive == nil { questionFresh = false }
+        // A question from the user: any open yes/no question, and the plan offer, are stale now.
+        if directive == nil {
+            questionFresh = false
+            offerFresh = false
+        }
         let offset = ARController.markOffset(look: lookCount)
         ar.beginLook(markOffset: offset)
         let recorder = LookRecorder(utterance: utterance, language: language, frame: snapshot.image)

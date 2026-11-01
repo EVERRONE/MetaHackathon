@@ -15,8 +15,11 @@ extension GuideModel {
             say(phrases.notFound(what, since: nil))
             return
         }
-        preparing = phrases.searchingMemory(what)
-        defer { preparing = nil }
+        // The banner of a plan being prepared or pages being read comes back afterwards.
+        let shownBefore = preparing
+        let banner = phrases.searchingMemory(what)
+        preparing = banner
+        defer { if preparing == banner { preparing = shownBefore } }
         let now = Date()
         let recent = all.filter { now.timeIntervalSince($0.time) <= Keyframes.recentFor }
         let older = all.filter { now.timeIntervalSince($0.time) > Keyframes.recentFor }.reversed()
@@ -150,11 +153,16 @@ extension GuideModel {
             // Never in the user's way: only while Pip is free.
             guard !lookActive, !Task.isCancelled else { return }
             let batch = Array(located.suffix(MemorySearch.tilesPerSheet * 4))
-            if case .found(let world, _) = await search(place.name, phrase: place.phrase ?? "", in: batch) {
+            let outcome = await search(place.name, phrase: place.phrase ?? "", in: batch)
+            // The user started something meanwhile: later.
+            guard !lookActive, !Task.isCancelled else { return }
+            if case .found(let world, _) = outcome {
                 foundCount += 1
                 let id = ARController.foundMarkBase + foundCount % 90_000
-                ar.addFound(world: world, id: id)
+                // Not shown, and not in place of an object the user just had found.
+                ar.addFound(world: world, id: id, replacing: false)
                 adopt(place, mark: id)
+                ar.dropMark(id)
             } else {
                 log("place \(place.name) of another map: not seen in this room's snapshots")
             }
@@ -178,7 +186,7 @@ extension GuideModel {
     static let basketQuietAfter: TimeInterval = 15 * 60
 
     func startBasketWatch() {
-        basketTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+        Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.basketTick() }
         }
     }

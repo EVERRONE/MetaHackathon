@@ -1031,12 +1031,16 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     /// A found object from the visual memory, outlined in the room (not remembered across
     /// sessions). The previous found object gives way.
-    func addFound(world polygons: [[simd_float3]], id: Int) {
-        removeMarks { $0 >= Self.foundMarkBase && $0 < Self.placeMarkBase }
+    func addFound(world polygons: [[simd_float3]], id: Int, replacing: Bool = true) {
+        if replacing { removeMarks { $0 >= Self.foundMarkBase && $0 < Self.placeMarkBase } }
         let m = AnchoredMark(id: id, world: polygons)
         place(m)
         // The snapshots that can be searched now are of the saved room, in its coordinates.
         if awaitingFirstRelocalisation { inSavedRoomCoordinates.insert(id) }
+    }
+
+    func dropMark(_ id: Int) {
+        removeMarks { $0 == id }
     }
 
     /// Saves the room map with the places' anchors only (outline anchors are for this session).

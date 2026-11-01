@@ -92,7 +92,7 @@ extension GuideModel {
         // Places of the piece ARKit is recognising come back on their own anchors.
         ar.restore(memory.places.filter { $0.piece == nil || $0.piece == continuing?.id })
         if continuing != nil { log("map: recognising the room of last time") }
-        mapSaveTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
+        Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.mapKeeper.dirty else { return }
                 self.saveRoomNow()
@@ -126,8 +126,8 @@ extension GuideModel {
         ar.relocalisation.trying(String(best.id.uuidString.prefix(4)), detail: describe(best) + " (closer light)")
     }
 
-    /// The user asked something while ARKit still tries a saved room: no more tries this session.
-    func giveUpRecognising(because reason: String = "the user asked something") {
+    /// No more saved rooms are tried this session (`reason`: why, for the log).
+    func giveUpRecognising(because reason: String) {
         log("map: \(reason); no more waiting for a saved room")
         mapCandidates = []
         relocalisationGaveUp()
@@ -259,6 +259,7 @@ extension GuideModel {
         memory.setConsent(yes)
         mapKeeper.enabled = yes
         if yes {
+            homeLocation.start()
             keyframes.persist = true
             keyframes.currentPiece = mapKeeper.current.id
             keepPending()

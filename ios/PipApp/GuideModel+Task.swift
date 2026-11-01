@@ -47,20 +47,31 @@ extension GuideModel {
             // The user moved on: Pip asks again another time.
             awaitingConsent = false
         }
+        // A bare "stop" is a pause during a task; here it means stop.
+        let stopWord = command == .stop || (command == .pause && Utterance.words(text).contains("stop"))
         if pageReader != nil, handleWhileReading(text, command: command) { return }
-        if prepTask != nil, command == .stop {
+        if prepTask != nil, stopWord {
             cancelPreparing()
             say(phrases.cancelled, heard: text)
             return
         }
         if offering {
             if yes || command == .done || command == .resume {
+                // Other talk came in between: the offer is made again rather than this yes (or an
+                // "okay" said to something else) taken for it.
+                guard offerFresh else {
+                    if let rt = runtime {
+                        offerFresh = true
+                        say(phrases.offer(rt.procedure.steps.count, source: rt.procedure.source.kind), heard: text)
+                    }
+                    return
+                }
                 offering = false
                 task?.cancel()
                 task = Task { await startTask(heard: text) }
                 return
             }
-            if no || command == .stop {
+            if no || stopWord {
                 offering = false
                 endTask(silently: true)
                 say(phrases.cancelled, heard: text)
@@ -152,8 +163,10 @@ extension GuideModel {
             say(phrases.cancelled, heard: text)
             return true
         }
-        let finished = !words.isDisjoint(with: ["klaar", "gedaan", "done", "finished"])
-            || ["dat was het", "dat was alles", "that's all", "that was all", "that's it"].contains { lower.contains($0) }
+        // "Klaar", "I'm done", "dat was het": not a question that has "klaar" in it ("is het klaar
+        // als het lampje groen is?"), nor "volgende" (the next page).
+        let finished = (command == .done && !words.isDisjoint(with: ["klaar", "gedaan", "done", "finished"]))
+            || (!text.contains("?") && ["dat was het", "dat was alles", "that's all", "that was all", "that's it"].contains { lower.contains($0) })
         if finished, command != .no {
             let pages = pageReader?.pages ?? []
             guard !pages.isEmpty else {
@@ -347,7 +360,8 @@ extension GuideModel {
             // The task says what kind of device it is ("use steam on this iron"): it helps the
             // search when the product is only a brand and range ("Philips Azur").
             let found = try? await compiler.findSource(for: "\(product), for this task: \(goal)")
-            if Task.isCancelled { preparing = nil; return }
+            // Cancelled: whoever cancelled it has the banner now (a new plan, or "stop").
+            if Task.isCancelled { return }
             log("manual search for \(product): \(found?.note ?? "the search failed")")
             if let manual = found?.manual {
                 source = .manual(manual)
@@ -374,8 +388,8 @@ extension GuideModel {
                 compiled = try? await compiler.compile(goal: goal, source: .none, frameJPEG: frame, facts: known)
             }
         }
-        preparing = nil
         if Task.isCancelled { return }
+        preparing = nil
         guard let compiled else {
             say(phrases.prepareFailed)
             return
@@ -392,6 +406,7 @@ extension GuideModel {
         refreshTaskView()
         if let note = compiled.mismatch { say(phrases.mismatch(note)) }
         offering = true
+        offerFresh = true
         say(phrases.offer(compiled.procedure.steps.count, source: compiled.procedure.source.kind))
     }
 
