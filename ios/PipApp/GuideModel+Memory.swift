@@ -40,6 +40,12 @@ extension GuideModel {
         if let richest = saved.filter({ $0.id != order.first?.id }).max(by: { worth($0) < worth($1) }) { order.append(richest) }
         var worldMap: ARWorldMap?
         var continuing: MapPiece?
+        // Always a fresh start (1 Nov): recognising a saved room kept tracking in ARKit's
+        // relocalising state for up to 45 s and restarted it twice, which moved outlines a key or
+        // three and dropped them; it recognised the room once in about ten tries. The maps and
+        // snapshots of every session are still kept, to find where the user is in a saved room
+        // without touching the live session.
+        if !Self.recogniseSavedRoomAtStart { order = [] }
         while worldMap == nil, !order.isEmpty {
             let p = order.removeFirst()
             worldMap = usableMap(p)
@@ -129,6 +135,8 @@ extension GuideModel {
         ar.restore(memory.places.filter { $0.piece == nil || $0.piece == best.id })
         ar.relocalisation.trying(String(best.id.uuidString.prefix(4)), detail: describe(best) + " (closer light)")
     }
+
+    static let recogniseSavedRoomAtStart = false
 
     /// No more saved rooms are tried this session (`reason`: why, for the log).
     func giveUpRecognising(because reason: String) {

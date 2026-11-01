@@ -100,7 +100,8 @@ public struct Grounder: Sendable {
         // A small target: the model points again, on the enlarged crop, alongside SAM (it takes
         // about as long). Bounded, so a slow answer never holds up the pointing.
         let cropSize = CGSize(width: crop.width, height: crop.height)
-        async let zoomed = Self.withBudget(Self.zoomBudget) { await self.zoomPoint(spec, describe: describe, jpeg: jpeg, size: cropSize) }
+        // A task of its own, not awaited when it cannot change the pick (an async let would be).
+        let zoomed = Task { await Self.withBudget(Self.zoomBudget) { await self.zoomPoint(spec, describe: describe, jpeg: jpeg, size: cropSize) } }
         let debug = ProcessInfo.processInfo.environment["PIP_DEBUG_GROUND"] != nil
         // Text recognition runs alongside SAM: the fast pass always (≈0.05 s), the accurate pass
         // within a budget, because after a pause it reloads its models (~25 s).
@@ -170,7 +171,11 @@ public struct Grounder: Sendable {
 
         // 5. The model's second point, on the enlarged crop: the object it lands on, or the nearest
         //    one just beside it (it lands on the object or at its edge, 1 Nov).
-        var zoomAt: CGPoint? = (await zoomed) ?? nil
+        // Not waited for when it cannot change the pick: the printed text was found, or a whole
+        // object is under the model's own point (that point wins, see below).
+        let zoomMatters = method != "text" && (spec.small || method != "point")
+        var zoomAt: CGPoint? = zoomMatters ? ((await zoomed.value) ?? nil) : nil
+        if !zoomMatters { zoomed.cancel() }
         // Keys this small in the frame (the whole laptop in view) are still small on the crop: the
         // second point lands a key off (1 Nov: backspace for the power key, 0 of 5). It points once
         // more, on a crop of a fifth of the frame round that answer (5 of 5); the wider crop gave
@@ -185,7 +190,7 @@ public struct Grounder: Sendable {
             let tight = CGRect(x: min(max(centre.x - side / 2, 0), size.width - side), y: min(max(centre.y - side / 2, 0), size.height - side), width: side, height: side).integral
             let zoom = 800 / tight.width
             if let view = SetOfMarks.crop(frame, to: tight, scale: zoom), let tightJPEG = SetOfMarks.jpeg(view, quality: 0.85),
-               let p = await zoomPoint(spec, describe: describe, jpeg: tightJPEG, size: CGSize(width: view.width, height: view.height), waitForWords: false) {
+               let p = (await Self.withBudget(Self.closerBudget) { await self.zoomPoint(spec, describe: describe, jpeg: tightJPEG, size: CGSize(width: view.width, height: view.height), waitForWords: false) }) ?? nil {
                 let inFrame = CGPoint(x: tight.minX + p.x / zoom, y: tight.minY + p.y / zoom)
                 zoomAt = CGPoint(x: (inFrame.x - region.minX) * scale, y: (inFrame.y - region.minY) * scale)
                 if debug { print(String(format: "[ground %d] keys of %.0f px: pointed again closer, %.2f", id, kindSize / Double(scale), Date().timeIntervalSince(t0))) }
@@ -197,6 +202,12 @@ public struct Grounder: Sendable {
             zoomPick = fits.filter { Grounding.contains($0, zp) }.min { $0.area < $1.area }
                 ?? fits.filter { Grounding.distance(zp, $0.boxRect) <= 0.5 * sqrt(Double($0.area)) }
                     .min { Grounding.distance(zp, $0.boxRect) < Grounding.distance(zp, $1.boxRect) }
+            // A whole object SAM did not find as its kind (1 Nov: no "statue" on the coffee table):
+            // the masks of the points round the model's point, whole and solid, are what it can be.
+            if zoomPick == nil, !spec.small {
+                zoomPick = instances.filter { $0.objectId != nil && Double($0.area) < cropArea * 0.4 && Self.solid($0) && Grounding.contains($0, zp) }
+                    .min { $0.area < $1.area }
+            }
         }
         if debug { print(String(format: "[ground %d] zoom done %.2f: %@", id, Date().timeIntervalSince(t0), zoomPick.map { "\($0.box)" } ?? "nothing")) }
         // The two pointings agree (the same object, or one inside the other: a key and its symbol,
@@ -213,6 +224,12 @@ public struct Grounder: Sendable {
             if let current = chosen, Self.agree(current, z) {
                 if z.area < current.area { chosen = z }
                 method += " + zoom"
+            } else if !spec.small, method == "point" {
+                // A whole object under the model's own point, of the kind it named: that point is
+                // the stronger (1 Nov: the second point took the oven's ▸☰ button for the play
+                // triangle the finger was on). It wins where SAM had to guess (a candle and a
+                // statue merged at the model's point, 1 Nov).
+                method += " (the second point disagreed)"
             } else {
                 method = chosen == nil ? "zoom" : "zoom (moved)"
                 chosen = z
@@ -323,6 +340,8 @@ public struct Grounder: Sendable {
 
     /// How long the second pointing may take, from the start of the grounding (SAM takes about 4 s).
     static let zoomBudget: TimeInterval = 5
+    /// How long the closer second pointing may take (1 Nov: one took 15 s).
+    static let closerBudget: TimeInterval = 3
     /// Below this (frame pixels) the objects of the kind are too small on the region's crop to
     /// point at one exactly.
     static let smallKeySize: Double = 40
@@ -339,7 +358,6 @@ public struct Grounder: Sendable {
     /// lands on the key or at its edge (1 Nov, 21 recorded targets: 16 on the object, the rest
     /// beside it; 2.4 s).
     func zoomPoint(_ spec: TargetSpec, describe: (@Sendable () -> String?)?, jpeg: Data, size: CGSize, waitForWords: Bool = true) async -> CGPoint? {
-        guard spec.small else { return nil }
         // Its words for the target ("the Windows key") come right after the tag: wait for them a
         // moment (they stop changing at the end of their sentence).
         var description = describe?()
