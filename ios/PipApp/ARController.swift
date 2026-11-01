@@ -40,6 +40,10 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     var steered = Set<Int>()
 
     var steerHidden = Set<Int>()
+    /// Since when each of them is hidden.
+    var steerHiddenSince: [Int: TimeInterval] = [:]
+    /// A steered mark out of sight this long after it moved is gone, as far as Pip knows.
+    static let lostForGood: TimeInterval = 1
     /// Marks riding along with the one EdgeTAM follows, at their offset from its centre (see
     /// `takeRiders`).
     var riders: [Int: (leader: Int, offset: [[simd_float3]])] = [:]
@@ -223,7 +227,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         let update = track.add(obs, correction: correction, reason: reason, predicted: predicted)
         tracks[inst.id] = track
         let placed = update.position.map { fresh.relocated(to: $0) } ?? fresh
-        place(placed, glideFrom: predicted)
+        // Drawn where the box follower saw it go (it moved): the outline is there already, and a glide
+        // from its old room place would show it jump back there and slide over.
+        place(placed, glideFrom: follower.adjust[inst.id] == nil ? predicted : nil)
         follower.reanchored(inst.id)
         var result = update
         result.pixelError = pixelError.map(Double.init)
@@ -266,6 +272,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             follower.stop(id)
             steered.remove(id)
             steerHidden.remove(id)
+            steerHiddenSince[id] = nil
             steerMotion[id] = nil
             steerShape[id] = nil
             drawnHistory[id] = nil
@@ -298,7 +305,12 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
                   var track = tracks[other], track.needsCheck || track.isAway else { continue }
             let before = m.centroid
             track.align(targetCorrections[other] ?? matrix_identity_float4x4)
-            place(m.relocated(to: m.centroid + offset), glideFrom: before)
+            // A measured mark moves about its camera ray; one without a ray (found in the visual
+            // memory) as it is drawn now, ARKit's correction included (`relocated` left it unmoved,
+            // and the new anchor undid the correction).
+            let shifted = m.observation != nil ? m.relocated(to: m.centroid + offset)
+                : AnchoredMark(id: other, world: m.polygons.map { ring in ring.map { $0 - m.glide + offset } })
+            place(shifted, glideFrom: before)
             track.shifted(by: offset)
             tracks[other] = track
         }

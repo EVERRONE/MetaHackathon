@@ -86,7 +86,15 @@ final class ImageFollower {
         let t = frame.timestamp
         guard !busy, t - lastRun >= Self.rate, viewSize.width > 0 else { return }
         let ids = Set(shown.map(\.id))
-        for id in Set(follows.keys).union(retryAt.keys) where !ids.contains(id) && pending[id] == nil { stop(id) }
+        // Off screen (or its cue gone for now): not followed meanwhile, but its template stays, so it
+        // is looked for again, strictly, where it is once it is back in view (1 Nov review: a mark
+        // that left the view was never followed again, and keys picked up after a look round kept
+        // their outline behind). `stop` forgets it when its mark goes.
+        for id in Set(follows.keys).union(retryAt.keys) where !ids.contains(id) && pending[id] == nil {
+            if follows.removeValue(forKey: id) != nil { worker.drop(id) }
+            adjust[id] = nil
+            if templates[id] != nil, retryAt[id] == nil { retryAt[id] = t }
+        }
         let wanted = shown.prefix(Self.maxFollowed)
         guard !wanted.isEmpty else { return }
         lastRun = t
@@ -132,6 +140,9 @@ final class ImageFollower {
             if let (box, confidence) = results[id] {
                 f.box = box
                 f.lostFrames = confidence < 0.3 ? f.lostFrames + 1 : 0
+            } else {
+                // Vision gave nothing for it this frame: its old box is no sighting.
+                f.lostFrames += 1
             }
             guard let box = f.box, f.lostFrames < 5 else {
                 // Lost. A moving object's outline is hidden rather than left behind. One that lay

@@ -58,6 +58,10 @@ final class EdgeTAMFollower {
     private var lastTaken: (t: TimeInterval, p: simd_float3)?
     /// Masks in a row on which the fast tracker disagreed with EdgeTAM.
     private var disagreements = 0
+    /// The latest mask did not show the object where it lay (absent, or not taken): the fast
+    /// tracker may be on whatever covered it (a hand passing a still bottle), so it does not move
+    /// the outline until a mask sees the object again.
+    private var latestUnseen = false
     private var lastFastStart: TimeInterval = 0
     private(set) var markID: Int?
     private var run = 0
@@ -150,6 +154,7 @@ final class EdgeTAMFollower {
         run += 1
         markID = nil
         fast.stop()
+        latestUnseen = false
         seeded = false
         busy = false
         maskLayer.contents = nil
@@ -227,6 +232,7 @@ final class EdgeTAMFollower {
                            r.recentlyLost ? ", just after losing it" : "", rejected))
             }
             if r.uncertain { onLost?(id, true) }
+            latestUnseen = true
             return
         }
         if r.verdict == .moved {
@@ -235,6 +241,7 @@ final class EdgeTAMFollower {
             smoothedVelocity = .zero
         }
         if r.frame.present, r.outline.count >= 3, let c = r.world {
+            latestUnseen = false
             check(id, r, now: c)
             centres.append((r.time, c))
             centres.removeAll { r.time - $0.t > 0.6 }
@@ -243,6 +250,7 @@ final class EdgeTAMFollower {
             onOutline?(id, [r.outline], v, r.time)
         } else {
             let moving = centres.count >= 2 && simd_distance(centres.first!.p, centres.last!.p) > Self.movingDistance
+            latestUnseen = true
             onLost?(id, moving)
         }
     }
@@ -269,7 +277,7 @@ final class EdgeTAMFollower {
     /// How far a steered object moved from its mask's frame (`since`) to the frame shown, as the
     /// fast tracker saw it, and how fast it moves; nil when the tracker cannot be trusted now.
     func liveShift(id: Int, since: TimeInterval, shown: TimeInterval) -> (shift: simd_float3, speed: Float)? {
-        guard markID == id, disagreements == 0 else { return nil }
+        guard markID == id, disagreements == 0, !latestUnseen else { return nil }
         return fast.shift(since: since, to: shown)
     }
 

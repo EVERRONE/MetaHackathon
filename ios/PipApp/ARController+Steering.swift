@@ -22,6 +22,7 @@ extension ARController {
             onLockLog?("edgetam: mark \(id % 1000) is drawn from EdgeTAM's mask")
         }
         steerHidden.remove(id)
+        steerHiddenSince[id] = nil
         guard let ring = world.first, ring.count >= 3 else { return }
         var target = Contour.resample(ring, count: Self.steerPoints)
         // From the outline drawn so far (the first time: SAM's), unless the object was found again
@@ -86,9 +87,15 @@ extension ARController {
             steerShape[id] = nil
             steerMotion[id] = nil
             steerHidden.remove(id)
+            steerHiddenSince[id] = nil
             drawnHistory[id] = nil
             riders[id] = nil
             // EdgeTAM goes on following it, only to measure what is drawn (its log: "edgetam shown").
+            // Marks that rode along with it ride no more: those the planar follower does not draw go
+            // back on room anchors (they stayed where they were, and were never measured again).
+            let led = riders.filter { $0.value.leader == id }.map(\.key)
+            led.forEach { riders[$0] = nil }
+            reanchor(led.filter { !planarFollowed.contains($0) })
         }
         planarHidden.remove(id)
         let points = rings.flatMap { $0 }
@@ -131,7 +138,7 @@ extension ARController {
     /// again; if not, it stays where the object was (out of view, or covered for a moment).
     func steerLost(_ id: Int, moving: Bool) {
         guard steered.contains(id), moving, !planarFollowed.contains(id) else { return }
-        steerHidden.insert(id)
+        if steerHidden.insert(id).inserted { steerHiddenSince[id] = CACurrentMediaTime() }
     }
 
     /// EdgeTAM follows another object now, or stopped. An outline it drew goes back on a room
@@ -146,9 +153,15 @@ extension ARController {
         let riding = riders.filter { $0.value.leader == id }.map(\.key)
         riding.forEach { riders[$0] = nil }
         if steerHidden.remove(id) != nil {
-            onLockLog?("edgetam: mark \(id % 1000) moved away unseen and is no longer followed; its outline is dropped")
-            removeMarks { $0 == id || riding.contains($0) }
-            return
+            let hiddenFor = CACurrentMediaTime() - (steerHiddenSince.removeValue(forKey: id) ?? 0)
+            if hiddenFor >= Self.lostForGood {
+                onLockLog?("edgetam: mark \(id % 1000) moved away unseen and is no longer followed; its outline is dropped")
+                removeMarks { $0 == id || riding.contains($0) }
+                return
+            }
+            // Out of sight for a moment only, as EdgeTAM moved on to the next object of the look (1 Nov
+            // review: dropped then, its cue pointed at nothing): held where it was last seen.
+            onLockLog?(String(format: "edgetam: mark %d was out of sight for %.1f s when EdgeTAM moved on; held where it was last seen", id % 1000, hiddenFor))
         }
         let back = [id] + riding
         reanchor(back)
