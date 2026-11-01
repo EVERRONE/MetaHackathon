@@ -74,8 +74,9 @@ struct ObjectTrack {
         lastMeasured = observation.time
     }
 
-    /// A remembered place brought back from storage or a linked map piece: not measured in this
-    /// session yet, so it is found again the first time Pip points at it.
+    /// Without views that still hold: a remembered place brought back from storage, or an outline
+    /// EdgeTAM followed elsewhere. It is found again the first time Pip points at it, and that
+    /// first measurement is not taken for drift of the room.
     init(place spec: TargetSpec?, now: TimeInterval) {
         observations = []
         self.spec = spec

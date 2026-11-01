@@ -69,6 +69,8 @@ struct FrameSnapshot: @unchecked Sendable {
     let depth: DepthCopy?
     /// The camera at capture time, to project world points back into this image.
     let camera: ARCamera
+    /// The room coordinates it was taken in (ARController.coordinates).
+    var coordinates = 0
 
     private static let context = CIContext(options: [.cacheIntermediates: false])
 

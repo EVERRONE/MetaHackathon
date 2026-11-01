@@ -219,7 +219,9 @@ private final class Worker: @unchecked Sendable {
     func reacquire(id: Int, template: CGImage, box: CGRect, predicted: CGRect, strict: Bool, in buffer: CVPixelBuffer) -> CGRect? {
         guard let found = Self.match(template: template, box: box, predicted: predicted, in: buffer) ?? (strict ? nil : predicted) else { return nil }
         let request = VNTrackObjectRequest(detectedObjectObservation: VNDetectedObjectObservation(boundingBox: found))
-        request.trackingLevel = .accurate
+        // The fast level, as in FastFollow: the accurate one took 35–90 ms a frame and slowed
+        // EdgeTAM; this follower only needs to see whether a whole object moved (by 14 pt or more).
+        request.trackingLevel = .fast
         lock.lock()
         if let old = requests.updateValue(request, forKey: id) { finish(old) }
         lock.unlock()
