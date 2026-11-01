@@ -40,6 +40,16 @@ knows where the user is. Built step by step; each step is measured before the ne
 - No link between sessions that do not belong together.
 - The statue test: the larger golden statue outlined by the grounder in two snapshots of each
   morning session and lifted at its depth; see the principle above.
+- Live, simulated (`pipeval livelink`: one session's snapshots in the order they were taken play
+  the live views): the 11:26 session was linked at its second view (10 s in) against the 11:05
+  one; the other way round at view 31 (210 s, when the user reached the coffee table); the 15:08
+  session at the 14:06 one's fourth view (62 s), one view link rejected. Live views come every
+  1.5 s, more often than stored snapshots (every 25 cm or 20°), so linking is quicker live.
+- The evening session (17:01) does not link to the morning ones: other light, and other
+  viewpoints too (the laptop on the lap and the room from the couch, against the coffee table from
+  above). Linking needs a place seen from about the same side.
+- Local light normalisation before describing corners (each pixel against the brightness and
+  contrast round it): every link was lost, also in the same light. Not used.
 
 ## Steps
 
@@ -60,7 +70,16 @@ knows where the user is. Built step by step; each step is measured before the ne
    live room (their poses carried by the links); remembered places of a linked session come back on
    anchors of their own, found again on sight.
 7. **Light**: snapshots of every session are kept, so mornings and evenings both get views to link
-   to; descriptors that hold across light (learned corners and matchers on the Neural Engine) are the
-   next lever.
+   to, more with every session. Local normalisation did not help (see above). Descriptors that hold
+   across light are the next lever: Meta's DINOv2 patch features (light-robust, to find which stored
+   view shows the same place, then the corners pin it down) need a Core ML conversion first.
 8. **Beyond home**: within one visit (a shop) the session's own snapshots already answer "where did I
-   see…"; across visits the same linking, per place on earth.
+   see…" (the last 30 minutes are kept in full, located in the live session). Across visits the same
+   linking, per place on earth: the linker only matches sessions mapped at the same place
+   (`SpaceLinker.keepOnly`, from the location of each session).
+
+## Status (1 Nov, evening)
+
+Steps 1-6 and 8 are in the app; 7 as far as accumulating views. To be shown on the device: a session
+linked to an earlier one (the log says "space: linked to the session of …"), things of the earlier
+session found and pointed at here, remembered places back and corrected on sight.

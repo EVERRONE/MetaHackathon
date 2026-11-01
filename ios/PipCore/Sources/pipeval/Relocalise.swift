@@ -155,3 +155,31 @@ func linksAll(_ args: [String]) {
     }
     if !any { print("  (no three sessions linked to each other)") }
 }
+
+// pipeval livelink <memory/frames folder> <stored piece> <live piece>
+//   The live piece's snapshots, in the order they were taken, play the live views (as SpaceLinker
+//   gets them, every 1.5 s): after how many the stored session is linked, and what the links say.
+func liveLink(_ args: [String]) {
+    guard args.count >= 4 else { fail("pipeval livelink <memory/frames> <stored piece> <live piece>") }
+    let dir = URL(fileURLWithPath: args[1])
+    let views = loadViews(dir, pieces: [args[2], args[3]])
+    let stored = views.filter { pieceName($0).hasPrefix(args[2]) }
+    let live = views.filter { pieceName($0).hasPrefix(args[3]) }.sorted { $0.frame.time < $1.frame.time }
+    let settings = SessionLink.Settings()
+    var found: [ViewLink] = []
+    var linkedAt: Int?
+    for (n, v) in live.enumerated() {
+        for (i, s) in stored.enumerated() {
+            if let l = SessionLink.link(s.points, v.points, from: i, to: n, settings: settings) { found.append(l) }
+        }
+        if linkedAt == nil, let core = SessionLink.consensus(found, settings: settings) {
+            linkedAt = n
+            let usable = SessionLink.usable(found, core: core, settings: settings)
+            print(String(format: "linked at live view %d of %d (%.0f s into the session): %d views agree, %d matches; %d usable, %d rejected",
+                         n + 1, live.count, v.frame.time - live[0].frame.time, Set(core.map(\.to)).count, core.reduce(0) { $0 + $1.inliers },
+                         usable.count, found.count - usable.count))
+        }
+    }
+    if linkedAt == nil { print("not linked after \(live.count) live views (\(found.count) view links)") }
+    print("view links per live view: " + live.indices.map { n in String(found.filter { $0.to == n }.count) }.joined(separator: " "))
+}

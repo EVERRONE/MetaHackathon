@@ -32,6 +32,8 @@ final class SpaceLinker {
     /// The stored snapshots that may be linked to (ViewLink.from indexes them), and their corners.
     private var stored: [Keyframes.Frame] = []
     private var described: [Int: ViewPoints] = [:]
+    /// Snapshots of sessions elsewhere on earth: never matched (a look-alike shop is not the home).
+    private var excluded = Set<Int>()
     private var describing = Set<Int>()
     private var undescribable = Set<Int>()
     /// View links found so far, per stored session (ViewLink.to numbers the live views).
@@ -72,7 +74,8 @@ final class SpaceLinker {
     }
 
     private func describeSome() {
-        let todo = stored.indices.filter { described[$0] == nil && !describing.contains($0) && !undescribable.contains($0) }.prefix(Self.describePerRound)
+        let todo = stored.indices.filter { described[$0] == nil && !describing.contains($0) && !undescribable.contains($0) && !excluded.contains($0) }
+            .prefix(Self.describePerRound)
         guard !todo.isEmpty else {
             if describing.isEmpty { timer?.invalidate(); timer = nil }
             return
@@ -108,7 +111,7 @@ final class SpaceLinker {
         liveViews += 1
         let view = liveViews, epoch = self.epoch
         // The next stored snapshots in turn (all of them come round every few seconds).
-        let ready = described.keys.sorted()
+        let ready = described.keys.filter { !excluded.contains($0) }.sorted()
         var batch: [(Int, ViewPoints)] = []
         for k in 0..<min(Self.comparePerView, ready.count) {
             let i = ready[(cursor + k) % ready.count]
@@ -174,6 +177,22 @@ final class SpaceLinker {
             }
             onLinked?(piece, link, first)
         }
+    }
+
+    /// Only sessions mapped at this place on earth (`here` decides for each session; sessions without a
+    /// location stay): known once the location comes in, a second or two after start.
+    func keepOnly(_ here: (UUID) -> Bool) {
+        var dropped = Set<UUID>()
+        for (i, f) in stored.enumerated() {
+            guard let piece = f.piece, !here(piece) else { continue }
+            excluded.insert(i)
+            dropped.insert(piece)
+        }
+        for piece in dropped {
+            found[piece] = nil
+            linked[piece] = nil
+        }
+        if !dropped.isEmpty { onLog?("space: \(dropped.count) earlier sessions were mapped elsewhere; not linked to") }
     }
 
     /// The live session's tracking broke or jumped: its coordinates may have moved. Evidence is

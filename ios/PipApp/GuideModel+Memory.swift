@@ -107,6 +107,10 @@ extension GuideModel {
         spaceLinker.onLinked = { [weak self] piece, link, first in self?.spaceLinked(piece, link, first: first) }
         let current = mapKeeper.current.id
         spaceLinker.begin(with: keyframes.frames.filter { $0.piece != nil && $0.piece != current })
+        if let here {
+            let locations = Dictionary(uniqueKeysWithValues: pieces.map { ($0.id, $0.location) })
+            spaceLinker.keepOnly { piece in (locations[piece] ?? nil).map { here.couldBeSamePlace(as: $0) } ?? true }
+        }
         // Places of the piece ARKit is recognising come back on their own anchors.
         ar.restore(memory.places.filter { $0.piece == nil || $0.piece == continuing?.id })
         if continuing != nil { log("map: recognising the room of last time") }
@@ -253,6 +257,9 @@ extension GuideModel {
             giveUpRecognising(because: "it was mapped elsewhere")
         }
         mapKeeper.setLocation(here)
+        // Earlier sessions mapped elsewhere on earth are not linked to.
+        let locations = Dictionary(uniqueKeysWithValues: MapStore.loadAll().map { ($0.id, $0.location) })
+        spaceLinker.keepOnly { piece in (locations[piece] ?? nil).map { here.couldBeSamePlace(as: $0) } ?? true }
     }
 
     private func describe(_ p: MapPiece) -> String {
