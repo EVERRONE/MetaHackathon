@@ -200,6 +200,8 @@ final class GuideModel: ObservableObject {
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try? session.setActive(true)
         startMap()
+        // What Pip keeps stays on this iPhone: no iCloud or computer backup of it.
+        Diagnostics.excludeAllFromBackup()
         warmPrompt()
         // Every camera frame: the visual memory, the map of the home, and reading mode when it is on.
         captureGate.onTrouble = { [weak self] since in
@@ -668,8 +670,8 @@ final class GuideModel: ObservableObject {
         if trace.count > 60 { trace.removeFirst(trace.count - 60) }
         // Everything Pip decides is kept on the iPhone too (Documents/session.log; the map's
         // decisions also in map.log), so a test can be read back afterwards.
-        TrackingLog.append(line, to: "session.log")
-        if line.hasPrefix("map:") { TrackingLog.append(line, to: "map.log") }
+        Diagnostics.log(line, to: "session.log")
+        if line.hasPrefix("map:") { Diagnostics.log(line, to: "map.log") }
     }
 }
 

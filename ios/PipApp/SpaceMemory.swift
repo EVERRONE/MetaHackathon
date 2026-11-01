@@ -37,7 +37,11 @@ final class SpaceMemory: ObservableObject {
     /// nil until the user has been asked; then their answer.
     @Published private(set) var consent: Bool?
 
+    nonisolated static let consentKey = "pip.memoryConsent"
     private let dir: URL
+    /// False when memory.json is there but cannot be read now (the phone is locked): this session
+    /// leaves it alone rather than overwrite it with less.
+    private var writable = true
     private var mapURL: URL { dir.appendingPathComponent("room.arworldmap") }
     private var dataURL: URL { dir.appendingPathComponent("memory.json") }
 
@@ -50,16 +54,25 @@ final class SpaceMemory: ObservableObject {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         dir = docs.appendingPathComponent("memory")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let v = UserDefaults.standard.object(forKey: "pip.memoryConsent") as? Bool { consent = v }
-        if consent == true, let data = try? Data(contentsOf: dataURL), let stored = try? JSONDecoder().decode(Stored.self, from: data) {
+        if let v = UserDefaults.standard.object(forKey: Self.consentKey) as? Bool { consent = v }
+        guard consent == true, FileManager.default.fileExists(atPath: dataURL.path) else { return }
+        guard let data = try? Data(contentsOf: dataURL) else {
+            writable = false
+            return
+        }
+        if let stored = try? JSONDecoder().decode(Stored.self, from: data) {
             places = stored.places
             facts = stored.facts
+        } else {
+            // Not what Pip writes (written before saves were atomic, or by another version): kept
+            // aside, never overwritten.
+            try? FileManager.default.moveItem(at: dataURL, to: dir.appendingPathComponent("memory.unreadable-\(Int(Date().timeIntervalSince1970)).json"))
         }
     }
 
     func setConsent(_ yes: Bool) {
         consent = yes
-        UserDefaults.standard.set(yes, forKey: "pip.memoryConsent")
+        UserDefaults.standard.set(yes, forKey: Self.consentKey)
         if !yes { forgetAll() }
     }
 
@@ -100,6 +113,9 @@ final class SpaceMemory: ObservableObject {
         facts = [:]
         try? FileManager.default.removeItem(at: dataURL)
         try? FileManager.default.removeItem(at: mapURL)
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasPrefix("memory.unreadable") {
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+        }
         MapStore.removeAll()
         VisualMemoryStore.removeAll()
     }
@@ -115,7 +131,7 @@ final class SpaceMemory: ObservableObject {
     }
 
     private func save() {
-        guard consent == true, let data = try? JSONEncoder().encode(Stored(places: places, facts: facts)) else { return }
-        try? data.write(to: dataURL, options: .completeFileProtection)
+        guard consent == true, writable, let data = try? JSONEncoder().encode(Stored(places: places, facts: facts)) else { return }
+        try? data.write(to: dataURL, options: [.atomic, .completeFileProtection])
     }
 }

@@ -268,6 +268,7 @@ struct MemorySheet: View {
     @ObservedObject var ar: ARController
     @AppStorage(EdgeTAMSpike.enabledKey) private var edgeTAMTest = true
     @AppStorage(EdgeTAMSpike.maskKey) private var edgeTAMMask = false
+    @AppStorage(Diagnostics.key) private var testRecord = true
 
     var body: some View {
         NavigationStack {
@@ -299,11 +300,12 @@ struct MemorySheet: View {
                 Section {
                     Toggle("Follow objects with EdgeTAM", isOn: $edgeTAMTest)
                     Toggle("Show EdgeTAM's mask (cyan)", isOn: $edgeTAMMask)
+                    Toggle("Keep a test record", isOn: Binding(get: { testRecord }, set: { testRecord = $0; Diagnostics.setEnabled($0) }))
                     ForEach(ar.spikeStatus.sorted { $0.key < $1.key }.map(\.value), id: \.self) { Text($0).font(.caption.monospaced()) }
                 } header: {
                     Text("Tests")
                 } footer: {
-                    Text("The room is mapped on its own while you use Pip, and recognised at the next start. The measurements go to the app's documents.")
+                    Text("The room is mapped on its own while you use Pip, and recognised at the next start. The test record (every look, EdgeTAM's frames, what you saw, the logs) stays on this iPhone, out of backups; switching it off deletes it.")
                 }
             }
             .navigationTitle("What Pip remembers")

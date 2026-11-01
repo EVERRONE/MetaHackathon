@@ -3,8 +3,13 @@ import Foundation
 import PipCore
 
 /// Where Pip's map pieces live: one JSON file each (keyframes, location, light) and ARKit's own
-/// map of that piece, in Documents/memory/pieces. Only written with the user's consent.
+/// map of that piece, in Documents/memory/pieces. Only written with the user's consent, asked
+/// again at the moment of writing: a save under way when consent is withdrawn writes nothing.
 enum MapStore {
+    /// Writes and the removal in order, on one queue.
+    private static let io = DispatchQueue(label: "pip.mapstore", qos: .utility)
+    private static var allowed: Bool { UserDefaults.standard.bool(forKey: SpaceMemory.consentKey) }
+
     static var dir: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let d = docs.appendingPathComponent("memory/pieces")
@@ -26,12 +31,18 @@ enum MapStore {
 
     static func save(_ piece: MapPiece) {
         guard let data = try? JSONEncoder().encode(piece) else { return }
-        try? data.write(to: pieceURL(piece.id), options: [.atomic, .completeFileProtection])
+        io.sync {
+            guard allowed else { return }
+            try? data.write(to: pieceURL(piece.id), options: [.atomic, .completeFileProtection])
+        }
     }
 
     static func saveWorldMap(_ map: ARWorldMap, for id: UUID) {
         guard let data = try? NSKeyedArchiver.archivedData(withRootObject: map, requiringSecureCoding: true) else { return }
-        try? data.write(to: worldMapURL(id), options: [.atomic, .completeFileProtection])
+        io.sync {
+            guard allowed else { return }
+            try? data.write(to: worldMapURL(id), options: [.atomic, .completeFileProtection])
+        }
     }
 
     static func hasWorldMap(_ id: UUID) -> Bool { FileManager.default.fileExists(atPath: worldMapURL(id).path) }
@@ -42,6 +53,6 @@ enum MapStore {
     }
 
     static func removeAll() {
-        try? FileManager.default.removeItem(at: dir)
+        io.sync { _ = try? FileManager.default.removeItem(at: dir) }
     }
 }

@@ -12,7 +12,8 @@ import UniformTypeIdentifiers
 /// seen again. The device test (spike T1, docs/research-precision.md): EdgeTAM agreed with SAM 3.1
 /// on every kept frame about whether the object was in view, box IoU 0.87–0.94, at 9–10 fps.
 /// Per frame a line in Documents/edgetam.log; every second a frame with its mask in
-/// Documents/edgetam/<start>/, to compare with SAM 3.1 on the Mac. One object at a time.
+/// Documents/edgetam/<start>/, to compare with SAM 3.1 on the Mac (the test record, see
+/// Diagnostics). One object at a time.
 final class EdgeTAMSpike {
     static let enabledKey = "pip.edgetamSpike"
     static var enabled: Bool {
@@ -124,18 +125,18 @@ final class EdgeTAMSpike {
         fast.stop()
         lastTaken = nil
         disagreements = 0
-        Self.pruneRuns()
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let folder = Self.documents.appendingPathComponent("edgetam/\(stamp)")
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        self.folder = folder
+        folder = Diagnostics.newRun(in: "edgetam", named: stamp, keep: Self.keepRuns)
         let size = CGSize(width: snapshot.image.width, height: snapshot.image.height)
         let mask = EdgeTAM.Input.mask(polygons: instance.outlinePoints, in: size)
         // The seed, for comparing with SAM 3.1 later: the snapshot and SAM's own outline.
-        Self.write(jpeg: snapshot.image, to: folder.appendingPathComponent("seed.jpg"))
-        let meta: [String: Any] = ["mark": markID % 1000, "phrase": phrase ?? "", "box": instance.box, "polygons": instance.polygons,
-                                   "size": [snapshot.image.width, snapshot.image.height]]
-        try? JSONSerialization.data(withJSONObject: meta).write(to: folder.appendingPathComponent("seed.json"))
+        if let folder {
+            let image = snapshot.image
+            Diagnostics.write(to: folder.appendingPathComponent("seed.jpg")) { Self.jpeg(image) }
+            let meta: [String: Any] = ["mark": markID % 1000, "phrase": phrase ?? "", "box": instance.box, "polygons": instance.polygons,
+                                       "size": [snapshot.image.width, snapshot.image.height]]
+            Diagnostics.write(to: folder.appendingPathComponent("seed.json")) { try? JSONSerialization.data(withJSONObject: meta) }
+        }
         status("EdgeTAM: loading…")
         worker.seed(image: snapshot.image, mask: mask) { [weak self] result in
             guard let self, self.run == me else { return }
@@ -390,14 +391,6 @@ final class EdgeTAMSpike {
         return simd_length(smoothedVelocity) < Self.stillSpeed ? .zero : smoothedVelocity
     }
 
-    /// Keeps the kept frames of the last few runs only.
-    static func pruneRuns() {
-        let dir = documents.appendingPathComponent("edgetam")
-        let runs = ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
-            .filter(\.hasDirectoryPath).sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for old in runs.dropLast(keepRuns - 1) { try? FileManager.default.removeItem(at: old) }
-    }
-
     /// The mask where the camera image shows it: the 1024² square is the upright image stretched.
     private func draw(_ f: EdgeTAM.Frame, display: CGAffineTransform, viewSize: CGSize) {
         guard f.present, !f.crop.isEmpty, let image = Self.maskImage(f) else {
@@ -440,7 +433,6 @@ final class EdgeTAMSpike {
 
     // MARK: Files
 
-    static var documents: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
 
     static func now() -> String { ISO8601DateFormatter().string(from: Date()) }
 
@@ -454,22 +446,17 @@ final class EdgeTAMSpike {
         }
     }
 
-    private static let appendQueue = DispatchQueue(label: "pip.edgetam.log")
-
     /// Columns: time, mark, prep ms, encode ms, decode ms, total ms, score, predicted IoU, area,
     /// box (x0 y0 x1 y1, upright 0…1), world centre, depth samples, ARKit fps, EdgeTAM fps, heat,
     /// seconds from the frame to its mask, then the decoder's parts: bank, propagator, reading (ms).
-    static func append(_ line: String) {
-        appendQueue.async {
-            let url = documents.appendingPathComponent("edgetam.log")
-            if let h = try? FileHandle(forWritingTo: url) {
-                h.seekToEndOfFile()
-                h.write(Data(line.utf8))
-                try? h.close()
-            } else {
-                try? Data(line.utf8).write(to: url)
-            }
-        }
+    /// About 20 lines a second: kept to 8 MB (and the one before).
+    static func append(_ line: String) { Diagnostics.append(line, to: "edgetam.log", limit: 8_000_000) }
+
+    static func jpeg(_ image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data as CFMutableData, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+        return CGImageDestinationFinalize(dest) ? data as Data : nil
     }
 
     static func write(jpeg image: CGImage, to url: URL) {

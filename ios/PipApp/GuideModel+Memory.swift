@@ -332,8 +332,9 @@ extension GuideModel {
         memory.forget(fact: key)
     }
 
-    /// Places (also this session's), facts, the room map and the visual memory.
+    /// Places (also this session's), facts, the room map, the visual memory and the test record.
     func forgetEverything() {
+        Diagnostics.removeAll()
         ar.forgetAllPlaces()
         keyframes.forgetAll()
         mapKeeper.begin(continuing: nil, others: [])

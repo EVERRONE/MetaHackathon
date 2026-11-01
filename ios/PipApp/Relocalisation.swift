@@ -114,19 +114,5 @@ final class Relocalisation {
         }
     }
 
-    private static let appendQueue = DispatchQueue(label: "pip.relocalise.log")
-
-    static func log(_ line: String) {
-        let text = ISO8601DateFormatter().string(from: Date()) + "\t" + line + "\n"
-        appendQueue.async {
-            let url = EdgeTAMSpike.documents.appendingPathComponent("relocalise.log")
-            if let h = try? FileHandle(forWritingTo: url) {
-                h.seekToEndOfFile()
-                h.write(Data(text.utf8))
-                try? h.close()
-            } else {
-                try? Data(text.utf8).write(to: url)
-            }
-        }
-    }
+    static func log(_ line: String) { Diagnostics.log(line, to: "relocalise.log") }
 }

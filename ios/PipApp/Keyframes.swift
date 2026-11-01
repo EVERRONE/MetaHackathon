@@ -115,12 +115,10 @@ final class Keyframes {
         let id = UUID()
         let generation = self.generation
         let piece = currentPiece
-        let persist = self.persist
-        // Encoding, depth sampling and writing happen off the main thread.
+        // Encoding and depth sampling happen off the main thread; it is written once kept.
         Task.detached(priority: .utility) { [weak self] in
             guard let jpeg = SetOfMarks.jpeg(snap.image, quality: 0.6) else { return }
             let depth = Self.depthGrid(snap)
-            if persist { VisualMemoryStore.write(id: id, jpeg: jpeg, depth: depth) }
             let kept = Frame(id: id, time: Date(), width: snap.image.width, height: snap.image.height, cameraTransform: snap.cameraTransform,
                              sensorSize: snap.sensorSize, intrinsics: snap.intrinsics, depthW: Self.depthW, depthH: Self.depthH,
                              piece: piece, located: true, jpegData: jpeg, depthData: depth)
@@ -129,7 +127,9 @@ final class Keyframes {
     }
 
     private func keep(_ frame: Frame, generation: Int) {
+        // Forgotten meanwhile: dropped. Written only if the user agrees now, not when it was taken.
         guard self.generation == generation else { return }
+        if persist, let jpeg = frame.jpegData, let depth = frame.depthData { VisualMemoryStore.write(id: frame.id, jpeg: jpeg, depth: depth) }
         frames.append(frame)
         indexDirty = persist
         kept += 1
@@ -274,22 +274,44 @@ enum VisualMemoryStore {
         return d
     }
 
+    /// All file work in order, on one queue: a removal comes after every write queued before it.
+    private static let io = DispatchQueue(label: "pip.visualmemory", qos: .utility)
+
     static func loadIndex() -> [Stored] {
-        (try? Data(contentsOf: dir.appendingPathComponent("index.json"))).flatMap { try? JSONDecoder().decode([Stored].self, from: $0) } ?? []
+        io.sync {
+            let url = dir.appendingPathComponent("index.json")
+            guard let data = try? Data(contentsOf: url) else { return [] }
+            guard let stored = try? JSONDecoder().decode([Stored].self, from: data) else {
+                // Not what Pip writes: kept aside, never overwritten.
+                try? FileManager.default.moveItem(at: url, to: dir.appendingPathComponent("index.unreadable-\(Int(Date().timeIntervalSince1970)).json"))
+                return []
+            }
+            // Snapshots without an entry (the app ended before the index was saved) can never be
+            // used: they go, once they are an hour old.
+            let known = Set(stored.map(\.id.uuidString))
+            let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+            for file in files where ["jpg", "depth"].contains(file.pathExtension) && !known.contains(file.deletingPathExtension().lastPathComponent) {
+                let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                if Date().timeIntervalSince(modified) > 3600 { try? FileManager.default.removeItem(at: file) }
+            }
+            return stored
+        }
     }
 
     static func saveIndex(_ stored: [Stored]) {
-        let url = dir.appendingPathComponent("index.json")
-        Task.detached(priority: .utility) {
+        io.async {
+            let url = dir.appendingPathComponent("index.json")
             if let data = try? JSONEncoder().encode(stored) { try? data.write(to: url, options: [.atomic, .completeFileProtection]) }
         }
     }
 
     static func write(id: UUID, jpeg: Data, depth: [Float16]) {
-        let d = dir
-        try? jpeg.write(to: d.appendingPathComponent("\(id.uuidString).jpg"), options: .completeFileProtection)
-        let raw = depth.withUnsafeBufferPointer { Data(buffer: $0) }
-        try? raw.write(to: d.appendingPathComponent("\(id.uuidString).depth"), options: .completeFileProtection)
+        io.async {
+            let d = dir
+            try? jpeg.write(to: d.appendingPathComponent("\(id.uuidString).jpg"), options: [.atomic, .completeFileProtection])
+            let raw = depth.withUnsafeBufferPointer { Data(buffer: $0) }
+            try? raw.write(to: d.appendingPathComponent("\(id.uuidString).depth"), options: [.atomic, .completeFileProtection])
+        }
     }
 
     static func jpeg(_ id: UUID) -> Data? {
@@ -302,8 +324,8 @@ enum VisualMemoryStore {
     }
 
     static func remove(_ ids: [UUID]) {
-        let d = dir
-        Task.detached(priority: .utility) {
+        io.async {
+            let d = dir
             for id in ids {
                 try? FileManager.default.removeItem(at: d.appendingPathComponent("\(id.uuidString).jpg"))
                 try? FileManager.default.removeItem(at: d.appendingPathComponent("\(id.uuidString).depth"))
@@ -312,6 +334,6 @@ enum VisualMemoryStore {
     }
 
     static func removeAll() {
-        try? FileManager.default.removeItem(at: dir)
+        io.async { _ = try? FileManager.default.removeItem(at: dir) }
     }
 }
