@@ -85,6 +85,25 @@ One core in PipCore decides; the app and the offline replay run it unchanged:
   takes a sharp live view every 1.5 s, and reports to `GuideModel.spaceLinked` (snapshots carried,
   places back) and to the screen (status line "space").
 
+## The home graph: one set of coordinates
+
+A remembered thing has the 3D coordinates of the session that saw it. Once the live session is linked
+to that session, the arrow points at those coordinates carried into the live ones. The home graph
+(PipCore `HomeGraph`) makes that work also when the live session never saw the same place as that
+session: every session link the live session makes is kept (`Documents/memory/home-graph.json`,
+with the memory consent), and a thing is carried along the strongest chain of links. Each pair keeps
+its strongest link; a link that closes a loop is checked against the chain it bypasses (20 cm and 8°:
+two sessions' drift) and refused beyond; a link made afresh after the live session's tracking broke
+replaces the old one.
+
+Measured on the user's four coffee-table sessions (`pipeval home`): the five session links join them,
+every loop within tolerance. The larger golden statue, outlined in the session that remembered it and
+carried through the graph into the morning session it was never linked to directly (three links):
+2.1 cm from where that session saw it (7.3 cm from another snapshot); into the other morning session
+(two links): 3.5 and 3.8 cm. Within one session the same statue, lifted from two snapshots, lands
+7-12 cm apart (a small shiny object: LiDAR sometimes measures the table behind it), so the chain is as
+good as the measurements themselves.
+
 ## How to read a device test
 
 - `space: N snapshots of M earlier sessions to link this one to`, then `space: … described (X ms

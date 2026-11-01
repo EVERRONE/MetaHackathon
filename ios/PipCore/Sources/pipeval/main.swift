@@ -15,6 +15,10 @@ func fail(_ message: String) -> Never {
 var args = Array(CommandLine.arguments.dropFirst())
 
 // pipeval track <clip folder> <phrase> [x y] [--every N] [--out dir]: see Track.swift.
+if args.first == "home" {
+    homeGraph(args)
+    exit(0)
+}
 if args.first == "retrieval" {
     retrieval(args)
     exit(0)

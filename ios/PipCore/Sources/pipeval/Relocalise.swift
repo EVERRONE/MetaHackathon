@@ -244,3 +244,44 @@ func retrieval(_ args: [String]) {
     }
     print("  ranks: " + ranks.map(String.init).joined(separator: " "))
 }
+
+// pipeval home <memory/frames folder> <pieces A,B,…> [--carry piece x y z --to piece]
+//   The home graph the app would build from these sessions: every pair's session link (its strongest
+//   agreeing view link) added strongest first, loops checked. With --carry, a point of one session
+//   carried into another through the graph.
+func homeGraph(_ args: [String]) {
+    guard args.count >= 3 else { fail("pipeval home <memory/frames> <pieces A,B,…> [--carry piece x y z --to piece]") }
+    let dir = URL(fileURLWithPath: args[1])
+    let names = args[2].split(separator: ",").map(String.init)
+    let views = loadViews(dir, pieces: Set(names))
+    let byPiece = Dictionary(grouping: views, by: pieceName)
+    var ids: [String: UUID] = [:]
+    for v in views { if let p = v.frame.piece, let u = UUID(uuidString: p) { ids[pieceName(v)] = u } }
+    let settings = SessionLink.Settings()
+    var candidates: [HomeGraph.Edge] = []
+    for (i, a) in names.enumerated() {
+        for b in names[(i + 1)...] {
+            guard let va = byPiece[a], let vb = byPiece[b], let ua = ids[a], let ub = ids[b] else { continue }
+            let links = viewLinks(va, vb, settings: settings)
+            guard let core = SessionLink.consensus(links, settings: settings), let best = core.max(by: { $0.inliers < $1.inliers }) else { continue }
+            candidates.append(HomeGraph.Edge(from: ua, to: ub, transform: best.transform, matches: core.reduce(0) { $0 + $1.inliers },
+                                             views: Set(core.map(\.to)).count, centre: best.centre))
+        }
+    }
+    var graph = HomeGraph()
+    let name = Dictionary(uniqueKeysWithValues: ids.map { ($0.value, $0.key) })
+    for e in candidates.sorted(by: { $0.matches > $1.matches }) {
+        print("\(name[e.from]!) → \(name[e.to]!) (\(e.matches) matches): \(graph.add(e))")
+    }
+    if let k = args.firstIndex(of: "--carry"), args.count > k + 6, let from = ids[args[k + 1]], let to = ids[args[k + 6]],
+       let x = Float(args[k + 2]), let y = Float(args[k + 3]), let z = Float(args[k + 4]) {
+        let p = SIMD3(x, y, z)
+        if let t = graph.transform(from: from, to: to) {
+            let q = t.apply(p)
+            let path = graph.strongestPath(from: from, to: to)?.map { name[$0.to]! } ?? []
+            print(String(format: "carried from %@ to %@ via %@: (%.3f, %.3f, %.3f)", args[k + 1], args[k + 6], path.joined(separator: " → "), q.x, q.y, q.z))
+        } else {
+            print("\(args[k + 1]) and \(args[k + 6]) are not joined")
+        }
+    }
+}

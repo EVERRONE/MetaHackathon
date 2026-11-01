@@ -107,6 +107,7 @@ extension GuideModel {
         spaceLinker.onChange = { [weak self] piece, change in self?.spaceLinked(piece, change) }
         spaceLinker.onStatus = { [weak self] line in self?.ar.setStatusLine("space", line) }
         let current = mapKeeper.current.id
+        homeGraph = HomeGraphStore.load()
         spaceLinker.begin(with: keyframes.frames.filter { $0.piece != nil && $0.piece != current })
         if let here {
             let locations = Dictionary(uniqueKeysWithValues: pieces.map { ($0.id, $0.location) })
@@ -164,18 +165,48 @@ extension GuideModel {
         }
         lastCarried[piece] = Date()
         let linker = spaceLinker
-        let n = keyframes.carry(piece) { linker.carriedPose(of: $0) }
-        guard change == .linked else { return }
-        // Places come back once, on anchors of their own (ARKit keeps those with this session's map
-        // from then on); each is stored again only when found on sight.
+        let live = mapKeeper.current.id
+        // The link joins the two sessions in the home graph (its strongest view link), unless it
+        // disagrees with a chain already joining them.
+        if let link = linker.linked[piece], let best = link.core.max(by: { $0.inliers < $1.inliers }) {
+            // Linked afresh after this session's tracking broke: its coordinates may have moved.
+            if change == .relinked { homeGraph.removeLink(between: piece, and: live) }
+            let edge = HomeGraph.Edge(from: piece, to: live, transform: best.transform, matches: link.matches, views: link.views, centre: best.centre)
+            switch homeGraph.add(edge) {
+            case .joined, .replaced:
+                if memory.consent == true { HomeGraphStore.save(homeGraph) }
+            case .refused(let apart):
+                log(String(format: "space: the link to %@ disagrees with the home's other links by %.0f cm; not kept in the home graph",
+                           String(piece.uuidString.prefix(4)), apart * 100))
+            case .weaker:
+                break
+            }
+        }
+        // The linked session's snapshots, by its own links (nearest evidence); every other session
+        // joined to it in the home graph, through the strongest chain.
+        var n = keyframes.carry(piece) { linker.carriedPose(of: $0) }
+        let through = homeGraph.component(of: live).subtracting([live, piece])
+        var chains: [UUID: UprightTransform] = [:]
+        for q in through {
+            guard let t = homeGraph.transform(from: q, to: live) else { continue }
+            chains[q] = t
+            n += keyframes.carry(q) { t.matrix * $0.storedPose }
+        }
+        // Places of all of them come back, each once, on an anchor of its own (ARKit keeps those with
+        // this session's map from then on); each is stored again only when found on sight.
         let here = Set(ar.places.values.map(\.id))
         var back: [String] = []
-        for place in memory.places where place.piece == piece && !here.contains(place.id) {
-            guard let pose = place.pose.map(ARController.matrix), let carried = linker.carry(anchor: pose, of: piece) else { continue }
+        for place in memory.places where !here.contains(place.id) {
+            guard let from = place.piece, let pose = place.pose.map(ARController.matrix) else { continue }
+            let carried = from == piece ? linker.carry(anchor: pose, of: piece) : chains[from].map { $0.matrix * pose }
+            guard let carried else { continue }
             ar.restoreLinked(place, at: carried)
             back.append(place.name)
         }
-        log("space: \(n) snapshots of that session can be pointed at here" + (back.isEmpty ? "" : "; places back: \(back.joined(separator: ", "))"))
+        if change != .strengthened || !back.isEmpty {
+            log("space: \(n) snapshots of \(1 + chains.count) earlier session\(chains.isEmpty ? "" : "s") can be pointed at here"
+                + (chains.isEmpty ? "" : " (\(chains.count) through the home graph)") + (back.isEmpty ? "" : "; places back: \(back.joined(separator: ", "))"))
+        }
     }
 
     /// No more saved rooms are tried this session (`reason`: why, for the log).
@@ -360,6 +391,8 @@ extension GuideModel {
             keyframes.stopPersisting()
             pendingPlaces = []
             pendingFacts = []
+            homeGraph = HomeGraph()
+            HomeGraphStore.remove()
         }
     }
 
@@ -437,6 +470,8 @@ extension GuideModel {
         facts = [:]
         pendingPlaces = []
         pendingFacts = []
+        homeGraph = HomeGraph()
+        HomeGraphStore.remove()
         memory.forgetAll()
     }
 }
