@@ -41,6 +41,11 @@ final class EdgeTAMSpike {
     var onOutline: ((Int, [[simd_float3]], simd_float3, TimeInterval) -> Void)?
     /// Not seen in this frame; `moving`: it moved just before.
     var onLost: ((Int, Bool) -> Void)?
+    /// Whether an image lock saw this mark's object face recently (ARController).
+    var lockHeld: ((Int) -> Bool)?
+    /// Where the outline was drawn on the camera frame of a given time, if it was (ARController):
+    /// what the user saw, to compare with where the mask of that same frame finds the object.
+    var drawnAt: ((Int, TimeInterval) -> simd_float3?)?
     private var centres: [(t: TimeInterval, p: simd_float3)] = []
 
     private let worker = EdgeTAMWorker()
@@ -95,6 +100,8 @@ final class EdgeTAMSpike {
         smoothedVelocity = .zero
         lastDrawn = nil
         checks = []
+        shownChecks = []
+        rejected = 0
         Self.pruneRuns()
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let folder = Self.documents.appendingPathComponent("edgetam/\(stamp)")
@@ -159,7 +166,8 @@ final class EdgeTAMSpike {
         if keep { lastKept = t; kept += 1 }
         let index = kept
         let request = EdgeTAMWorker.Request(buffer: frame.capturedImage, depth: DepthCopy(frame.sceneDepth), camera: frame.camera, time: t,
-                                            keep: keep ? folder?.appendingPathComponent(String(format: "%03d", index)) : nil)
+                                            keep: keep ? folder?.appendingPathComponent(String(format: "%03d", index)) : nil,
+                                            lockHeld: lockHeld?(id) ?? false)
         let display = frame.displayTransform(for: .portrait, viewportSize: viewSize)
         let arFps = arTimes.count
         worker.track(request) { [weak self] result in
@@ -193,6 +201,23 @@ final class EdgeTAMSpike {
     /// Pip's outline follows the mask; when the object is not seen, it waits where it was, unless
     /// it was moving (then it is hidden until seen again).
     private func steer(_ id: Int, _ r: EdgeTAMWorker.Tracked, time: TimeInterval) {
+        if case .reject(let d) = r.verdict {
+            // A look-alike, or the object taken away faster than the masks show: not drawn there.
+            rejected += 1
+            Self.append(String(format: "%@\treject\t%d\t%.1f\t%d\t%d\n", Self.now(), id % 1000, d * 1000, r.uncertain ? 1 : 0, r.recentlyLost ? 1 : 0))
+            if time - lastRejectLog >= 2 {
+                lastRejectLog = time
+                log(String(format: "edgetam: mark %d: a mask %.0f mm from where it lay was not taken%@ (%d so far)", id % 1000, d * 1000,
+                           r.recentlyLost ? ", just after losing it" : "", rejected))
+            }
+            if r.uncertain { onLost?(id, true) }
+            return
+        }
+        if r.verdict == .moved {
+            log("edgetam: mark \(id % 1000) was moved; its outline follows it to the new place")
+            centres = []
+            smoothedVelocity = .zero
+        }
         if r.frame.present, r.outline.count >= 3, let c = r.world {
             check(id, r, now: c)
             centres.append((r.time, c))
@@ -212,7 +237,12 @@ final class EdgeTAMSpike {
     /// object, like the image lock's check; a summary every three seconds.
     private var lastDrawn: simd_float3?
     private var checks: [(px: Double, mm: Double, moved: Double)] = []
+    /// The outline as shown on the mask's own camera frame against the mask: mm, and whether the
+    /// object was moving.
+    private var shownChecks: [(mm: Double, px: Double, moving: Bool)] = []
     private var lastCheckLog: TimeInterval = 0
+    private var rejected = 0
+    private var lastRejectLog: TimeInterval = 0
 
     private func check(_ id: Int, _ r: EdgeTAMWorker.Tracked, now c: simd_float3) {
         defer { lastDrawn = c }
@@ -229,14 +259,44 @@ final class EdgeTAMSpike {
         let mm = px / Double(k[0][0]) * Double(d) * 1000
         let moved = Double(simd_distance(drawn, c)) * 1000
         checks.append((px, mm, moved))
-        Self.append(String(format: "%@\tcheck\t%d\t%.1f\t%.1f\t%.1f\t%.2f\n", Self.now(), id % 1000, px, mm, moved, d))
+        // What the user saw on this very frame (the outline with its lead or glide), against
+        // where this frame's mask finds the object.
+        var shown = "-"
+        // Like with like: the drawn outline's centre is the mean of its evenly spaced points, so
+        // the mask's outline is compared by the mean of its points too (not by its area's centre).
+        if let s = drawnAt?(id, r.time), !r.outline.isEmpty {
+            let oc = Contour.centroid(r.outline)
+            func pixel(_ w: simd_float3) -> CGPoint? {
+                let q = simd_inverse(cam.transform) * simd_float4(w, 1)
+                guard q.z < -0.05 else { return nil }
+                return CGPoint(x: Double(k[2][0] + k[0][0] * q.x / -q.z), y: Double(k[2][1] - k[1][1] * q.y / -q.z))
+            }
+            if let sp = pixel(s), let op = pixel(oc) {
+                let spx = hypot(sp.x - op.x, sp.y - op.y)
+                let smm = Double(simd_distance(s, oc)) * 1000
+                let moving = moved > 5 || simd_length(smoothedVelocity) >= Self.stillSpeed
+                shownChecks.append((smm, spx, moving))
+                shown = String(format: "%.1f\t%.1f\t%d", spx, smm, moving ? 1 : 0)
+            }
+        }
+        Self.append(String(format: "%@\tcheck\t%d\t%.1f\t%.1f\t%.1f\t%.2f\t%@\n", Self.now(), id % 1000, px, mm, moved, d, shown))
         let t = CACurrentMediaTime()
         guard t - lastCheckLog >= 3, !checks.isEmpty else { return }
         lastCheckLog = t
         let mms = checks.map(\.mm).sorted(), moves = checks.map(\.moved).sorted()
         log(String(format: "edgetam check mark %d: outline %.1f mm off (median of %d, max %.1f mm) at %.2f m; object moved %.0f mm per update (max %.0f)",
                    id % 1000, mms[mms.count / 2], mms.count, mms.last!, d, moves[moves.count / 2], moves.last!))
+        func summary(_ xs: [Double]) -> String {
+            guard !xs.isEmpty else { return "none" }
+            let s = xs.sorted()
+            return String(format: "median %.1f mm, p90 %.1f, max %.1f (%d)", s[s.count / 2], s[min(s.count - 1, s.count * 9 / 10)], s.last!, s.count)
+        }
+        if !shownChecks.isEmpty {
+            log("edgetam shown mark \(id % 1000): outline on screen vs the object — still: " + summary(shownChecks.filter { !$0.moving }.map(\.mm))
+                + "; moving: " + summary(shownChecks.filter(\.moving).map(\.mm)))
+        }
         checks = []
+        shownChecks = []
     }
 
     /// The object's velocity over the last 0.35 s of masks; below 5 cm/s it counts as still (on
@@ -354,6 +414,8 @@ private final class EdgeTAMWorker: @unchecked Sendable {
         let time: TimeInterval
         /// Where to keep this frame and its mask (without extension), or nil.
         let keep: URL?
+        /// An image lock saw the object's face recently (see TrackGate).
+        let lockHeld: Bool
     }
 
     struct Seeded: Sendable {
@@ -374,6 +436,11 @@ private final class EdgeTAMWorker: @unchecked Sendable {
         /// The camera of this frame, to measure how far the outline drawn before was off.
         let camera: ARCamera
         let depth: Float?
+        /// Whether this mask was taken (see TrackGate); nil when there was nothing to judge.
+        let verdict: TrackGate.Verdict?
+        /// Masks disagree with where the object lay: its outline waits, hidden.
+        let uncertain: Bool
+        let recentlyLost: Bool
     }
 
     enum Failure: Error, CustomStringConvertible {
@@ -387,6 +454,11 @@ private final class EdgeTAMWorker: @unchecked Sendable {
     /// to a centimetre from frame to frame; a jump of 3 cm is the object moving and is taken at once.
     private var depthFilter: Float?
     static let depthJump: Float = 0.03
+    /// Keeps the object from jumping to a look-alike (on the queue, with every mask in order).
+    private var gate = TrackGate()
+    /// When EdgeTAM last did not see the object.
+    private var lastAbsent: TimeInterval?
+    static let lostFor: TimeInterval = 1.5
     private let input = EdgeTAM.Input()
     private let context = CIContext(options: [.cacheIntermediates: false])
     private let keepQueue = DispatchQueue(label: "pip.edgetam.keep", qos: .utility)
@@ -416,6 +488,8 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                 let t0 = CACurrentMediaTime()
                 let f = try tracker.seed(image: pixels, mask: mask)
                 depthFilter = nil
+                gate.reset()
+                lastAbsent = nil
                 return Seeded(frame: f, ms: (CACurrentMediaTime() - t0) * 1000, loadSeconds: tracker.loadSeconds)
             }
             DispatchQueue.main.async { done(result) }
@@ -431,6 +505,7 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                 let prep = (CACurrentMediaTime() - t0) * 1000
                 let f = try tracker.track(image: pixels)
                 let (rawWorld, samples, rawDepth) = Self.centre(f, depth: r.depth, camera: r.camera)
+                let depthBefore = depthFilter
                 let depth = rawDepth.map { d -> Float in
                     let smooth = depthFilter.map { abs(d - $0) > Self.depthJump ? d : $0 + 0.35 * (d - $0) } ?? d
                     depthFilter = smooth
@@ -438,6 +513,19 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                 }
                 let world = depth.flatMap { d in f.centroid.map { Self.lift([$0], depth: d, camera: r.camera)[0] } } ?? rawWorld
                 let outline = depth.map { Self.lift(f.outline, depth: $0, camera: r.camera) } ?? []
+                // A mask on a look-alike is neither shown nor remembered: EdgeTAM forgets the frame
+                // at once, before the next one, so it keeps looking for the right object.
+                let recentlyLost = lastAbsent.map { r.time - $0 < Self.lostFor } ?? false
+                var verdict: TrackGate.Verdict?
+                if f.present, let w = world {
+                    verdict = gate.judge(time: r.time, position: w, lockHeld: r.lockHeld, recentlyLost: recentlyLost)
+                    if case .reject = verdict {
+                        tracker.forgetLatest()
+                        depthFilter = depthBefore
+                    }
+                } else if !f.present {
+                    lastAbsent = r.time
+                }
                 let ms = (CACurrentMediaTime() - t0) * 1000
                 // Kept frames are written on the side, so they never hold up the next frame.
                 if let keep = r.keep {
@@ -445,7 +533,7 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                     self.keepQueue.async { self.keep(buffer, f, world: world, at: keep) }
                 }
                 return Tracked(frame: f, prepMs: prep, ms: ms, world: world, outline: outline, depthSamples: samples, time: r.time,
-                               camera: r.camera, depth: depth)
+                               camera: r.camera, depth: depth, verdict: verdict, uncertain: gate.uncertain, recentlyLost: recentlyLost)
             }
             DispatchQueue.main.async { done(result) }
         }

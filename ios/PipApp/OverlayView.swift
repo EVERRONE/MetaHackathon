@@ -63,6 +63,7 @@ final class OverlayView: UIView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer.sublayers?.filter { $0 !== dangerBanner.layer }.forEach { $0.removeFromSuperlayer() }
+        hintSpots = []
         var generalDanger: String?
         let dangerShown = annotations.contains { if case .danger = $0.cue { return true } else { return false } }
         // Labels keep clear of the status line at the top, and of the danger banner.
@@ -191,6 +192,9 @@ final class OverlayView: UIView {
         return polys.contains(where: { $0.contains(where: { bounds.insetBy(dx: -20, dy: -20).contains($0) }) }) ? polys : nil
     }
 
+    /// Edge buttons drawn this frame: two marks the same way get one button.
+    private var hintSpots: [CGPoint] = []
+
     /// A round button at the screen edge pointing at a mark that is out of view (`p`, see `aim`),
     /// clear of the status line at the top and the controls at the bottom.
     private func edgeHint(_ p: CGPoint?, palette: CueArt.Palette, force: Bool = false) {
@@ -204,6 +208,9 @@ final class OverlayView: UIView {
         guard abs(dx) + abs(dy) > 1 else { return }
         // Onto the border of `inner`, along the line from its centre towards the mark.
         let t = min(inner.width / 2 / max(abs(dx), 1e-6), inner.height / 2 / max(abs(dy), 1e-6))
-        add(CueArt.edgeHint(at: CGPoint(x: c.x + dx * t, y: c.y + dy * t), angle: atan2(dy, dx), palette: palette))
+        let spot = CGPoint(x: c.x + dx * t, y: c.y + dy * t)
+        guard !hintSpots.contains(where: { hypot($0.x - spot.x, $0.y - spot.y) < 44 }) else { return }
+        hintSpots.append(spot)
+        add(CueArt.edgeHint(at: spot, angle: atan2(dy, dx), palette: palette))
     }
 }

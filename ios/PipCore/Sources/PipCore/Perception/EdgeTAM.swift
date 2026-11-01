@@ -219,6 +219,12 @@ public final class EdgeTAM: @unchecked Sendable {
         recent = []
     }
 
+    /// Takes the last tracked frame out of the memory bank: its mask was on something else (see
+    /// TrackGate), and remembering it would make EdgeTAM follow that from then on.
+    public func forgetLatest() {
+        if !recent.isEmpty { recent.removeLast() }
+    }
+
     private func fillBank(seed: Memory) {
         let slotSize = Self.tokens * Self.dim
         let temporal = self.temporal

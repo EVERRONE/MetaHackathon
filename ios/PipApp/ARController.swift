@@ -43,6 +43,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     static let followMoving: TimeInterval = 0.04
     static let followStill: TimeInterval = 0.12
     private var lastRender: TimeInterval = 0
+    /// Where each steered outline's centre was drawn, per shown camera frame (its time), for the
+    /// last second: EdgeTAM's check compares it with the mask of the same frame.
+    private var drawnHistory: [Int: [(t: TimeInterval, p: simd_float3)]] = [:]
     /// What the user saw while a cue was drawn, kept for judging a test (see OverlayShots).
     private let shots = OverlayShots()
     /// How recognising the saved room at start goes, and how well the room is being mapped.
@@ -94,6 +97,14 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         edgeSpike.onLog = { [weak self] s in self?.onLockLog?(s) }
         edgeSpike.onOutline = { [weak self] id, world, velocity, time in self?.steer(id, world: world, velocity: velocity, at: time) }
         edgeSpike.onLost = { [weak self] id, moving in self?.steerLost(id, moving: moving) }
+        edgeSpike.lockHeld = { [weak self] id in
+            let now = CACurrentMediaTime()
+            return self?.imageLocks.values.contains { $0.markID == id && $0.seen && now - $0.lastTracked < 3 } ?? false
+        }
+        edgeSpike.drawnAt = { [weak self] id, t in
+            // The shown frame with this time (frames are 1/60 s apart).
+            self?.drawnHistory[id]?.min { abs($0.t - t) < abs($1.t - t) }.flatMap { abs($0.t - t) < 0.009 ? $0.p : nil }
+        }
         if EdgeTAMSpike.enabled { edgeSpike.preload() }
     }
 
@@ -288,6 +299,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             steerHidden.remove(id)
             steerMotion[id] = nil
             steerShape[id] = nil
+            drawnHistory[id] = nil
         }
         let gone = imageLocks.filter { marks[$0.value.markID] == nil }.map(\.key)
         if !gone.isEmpty {
@@ -379,6 +391,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
                 onLockLog?("lock: mark \(id % 1000) found on its object; following it in 3D")
             }
             lock.tracked = anchor.isTracked
+            if anchor.isTracked { lock.lastTracked = CACurrentMediaTime() }
             imageLocks[name] = lock
             guard anchor.isTracked else { continue }
             let s = Float(anchor.estimatedScaleFactor)
@@ -616,6 +629,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     private func renderNow() {
         let now = CACurrentMediaTime()
+        // The camera frame on screen: the outline must match it, not the world at this instant
+        // (ARKit's frame is some 40-60 ms old when it is drawn).
+        let shownFrame = arView.session.currentFrame?.timestamp ?? now
         let dt = lastRender > 0 ? min(0.1, now - lastRender) : 1.0 / 60
         lastRender = now
         // Steered outlines take up their latest mask (see `steerShape`); a face ARKit's image
@@ -653,12 +669,20 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             }
             // A moving object steered by EdgeTAM: drawn where it has got to since its mask.
             if let motion = steerMotion[id] {
-                // Ahead by the mask's age, and by the time the drawn outline takes to follow it.
-                var lead = motion.velocity * Float(min(max(0, now - motion.time) + Self.followMoving, Self.maxLead))
+                // Ahead by the mask's age at the shown frame, and by the time the drawn outline
+                // takes to follow it.
+                var lead = motion.velocity * Float(min(max(0, shownFrame - motion.time) + Self.followMoving, Self.maxLead))
                 if simd_length(lead) > 0.05 { lead = simd_normalize(lead) * 0.05 }
                 if lead != m.lead { m.lead = lead; changed = true }
             }
             if changed { marks[id] = m }
+        }
+        for id in steered {
+            guard let m = marks[id], !steerHidden.contains(id) else { continue }
+            var h = drawnHistory[id] ?? []
+            if h.last?.t != shownFrame { h.append((shownFrame, m.centroid)) }
+            if h.count > 90 { h.removeFirst(h.count - 90) }
+            drawnHistory[id] = h
         }
         trackVisibility(now: now)
         board.tick(now)

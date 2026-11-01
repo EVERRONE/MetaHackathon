@@ -19,6 +19,9 @@ struct ImageLock {
     let local: [[simd_float3]]
     var tracked = false
     var seen = false
+    /// When ARKit last tracked the face (CACurrentMediaTime): a lock seen moments ago still says
+    /// where the object is (see TrackGate).
+    var lastTracked: TimeInterval = 0
     /// When the lock was made: the oldest gives way when there are too many.
     let created = Date()
 
