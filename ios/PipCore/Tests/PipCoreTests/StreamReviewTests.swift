@@ -109,11 +109,14 @@ import Testing
         config.protocolClasses = [StreamStub.self]
         let client = PipClient(baseURL: URL(string: "https://pip.test")!, token: "t", session: URLSession(configuration: config))
         var order: [String] = []
+        var warned: Cue?
         for try await event in LookPipeline(client: client).run(LookRequest(frame: Self.frame(), utterance: "is this safe?")) {
-            if case .sentence = event { order.append("sentence") }
+            if case .sentence(let s, _) = event { order.append("sentence"); warned = s.cues.first?.cue }
             if case .grounded = event { order.append("grounded") }
         }
-        #expect(order.first == "sentence", "\(order)")
+        #expect(order == ["sentence", "grounded"], "\(order)")
+        // It keeps its mark: the wire is outlined once found, not only a banner (1 Nov review).
+        if case .danger(let mark, _)? = warned { #expect(mark != nil) } else { Issue.record("no warning: \(String(describing: warned))") }
     }
 
     @Test func anErrorSentMidStreamCutsTheAnswerOff() async {

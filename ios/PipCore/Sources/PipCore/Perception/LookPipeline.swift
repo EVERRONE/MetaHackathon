@@ -189,6 +189,8 @@ public struct LookPipeline: Sendable {
         var cutOff: String?
         /// The model finished its answer (a connection that drops after that lost nothing).
         var answerFinished = false
+        /// Marks of warnings said before they were found, and since when: the look waits for them.
+        var awaitedDanger: [Int: Date] = [:]
 
         func handle(_ events: [CueStreamEvent]) {
             for e in events {
@@ -222,6 +224,14 @@ public struct LookPipeline: Sendable {
                 var traces: [CueTrace] = []
                 var kept: [TimedCue] = []
                 for timed in s.cues {
+                    // A warning said before its mark is found keeps the mark: the overlay shows the
+                    // warning at once and outlines its object once the mark is grounded.
+                    if timed.cue.isDanger, let m = timed.cue.marks.first, grounding.contains(m), !resolved.contains(m) {
+                        traces.append(CueTrace(raw: timed.raw, decision: .accept(timed.cue)))
+                        kept.append(timed)
+                        awaitedDanger[m] = awaitedDanger[m] ?? Date()
+                        continue
+                    }
                     let decision = validator.validate(timed.cue, marks: marks, hasEvidence: { _ in false })
                     traces.append(CueTrace(raw: timed.raw, decision: decision))
                     if let cue = decision.cue { kept.append(TimedCue(cue: cue, anchor: timed.anchor, raw: timed.raw)) }
@@ -265,7 +275,8 @@ public struct LookPipeline: Sendable {
                 break
             }
             flush()
-            if chatDone && pending.isEmpty { break }
+            // Done once everything is said, and the warnings said early have their marks (or the wait is over).
+            if chatDone && pending.isEmpty && awaitedDanger.allSatisfy({ resolved.contains($0.key) || since($0.value) > groundingTimeout }) { break }
         }
         if let cutOff { throw LookError.chat(cutOff) }
 

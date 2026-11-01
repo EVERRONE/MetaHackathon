@@ -162,8 +162,8 @@ public struct Grounder: Sendable {
             chosen = prompted
             method = "point prompt"
         }
-        // 4. The nearest instance, if close.
-        if chosen == nil, let near = concept.min(by: { Grounding.distance(local, $0.boxRect) < Grounding.distance(local, $1.boxRect) }),
+        // 4. The nearest instance, if close (and, as above, not a whole panel round the point).
+        if chosen == nil, let near = concept.filter({ Double($0.area) < cropArea * 0.4 }).min(by: { Grounding.distance(local, $0.boxRect) < Grounding.distance(local, $1.boxRect) }),
            Grounding.distance(local, near.boxRect) < 0.6 * sqrt(Double(near.area)) {
             chosen = near
             method = "nearest"
@@ -237,7 +237,10 @@ public struct Grounder: Sendable {
         }
         if method != "text", let z = zoomPick {
             if let current = chosen, Self.agree(current, z) {
-                if z.area < current.area { chosen = z }
+                // Unless the first is SAM's unsure sliver at the model's point and the second a solid
+                // object holding it (a strip lying on a statue, for the statue).
+                let sliver = method == "point prompt" && !Self.solid(current) && Self.solid(z)
+                if z.area < current.area || sliver { chosen = z }
                 method += " + zoom"
             } else if !spec.small, method == "point" {
                 // A whole object under the model's own point, of the kind it named: that point is
@@ -271,6 +274,11 @@ public struct Grounder: Sendable {
                     .filter { $0.id != current.id && Double($0.area) < 0.6 * Double(current.area) && Double($0.area) > 0.02 * Double(current.area) }
                     .filter { Grounding.distance(local, $0.boxRect) <= reach }
                     .filter { inner in !lookalikes.contains { $0.id == inner.id } }
+                    // Only four go along: SAM's own mask for the point first, then the nearest.
+                    .sorted { a, b in
+                        (a.objectId == 1) != (b.objectId == 1) ? a.objectId == 1
+                            : Grounding.distance(local, a.boxRect) < Grounding.distance(local, b.boxRect)
+                    }
                 lookalikes += inner.prefix(4)
             }
             // The point's own mask is not a solid object (a sliver, unsure): the most solid mask of the
@@ -285,6 +293,8 @@ public struct Grounder: Sendable {
                 }), Grounding.distance(local, best.boxRect) <= 1.5 * ringRadius {
                     chosen = best
                     method = "point ring"
+                    // Chosen by geometry, without the verifier: its look-alikes were the sliver's size.
+                    lookalikes = []
                 }
             }
             // Verification chooses between look-alikes. One object under the model's own point

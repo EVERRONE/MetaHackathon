@@ -49,7 +49,11 @@ extension GuideModel {
                 say(phrases.found(what, at: frame.time, where: place.components(separatedBy: ";").first ?? place))
                 return
             }
-            if case .elsewhere(let frame) = outcome { elsewhere = elsewhere ?? frame }
+            // Seen last in a room not recognised here: older batches would only give older places.
+            if case .elsewhere(let frame) = outcome {
+                elsewhere = frame
+                break
+            }
         }
         if let elsewhere {
             // Where it was, from the snapshot itself: the room and what it lay on.
@@ -81,15 +85,18 @@ extension GuideModel {
         let sightings = (try? await MemorySearch(client: client).find(what, in: readable.map(\.1))) ?? []
         if Task.isCancelled { return .none }
         log(String(format: "memory search %.1fs over %d snapshots: %d sightings", Date().timeIntervalSince(t0), readable.count, sightings.count))
-        var elsewhere: Keyframes.Frame?
         for s in sightings where readable.indices.contains(s.index) {
             let frame = readable[s.index].0
+            let jpeg = readable[s.index].1
             guard frame.located else {
-                // Seen in a room this session has not recognised yet: say when, not where.
-                elsewhere = elsewhere ?? frame
+                // Seen in a room this session has not recognised (its session is not linked): said,
+                // when, not where. The newest sighting is where the thing is, so an older one is not
+                // pointed at instead; confirmed in its own snapshot first, like a pointed-at one.
+                if (try? await MemorySearch(client: client).pinpoint(what, in: jpeg)) != nil { return .elsewhere(frame) }
+                if Task.isCancelled { return .none }
+                log("sighting elsewhere not confirmed (not found again in the snapshot)")
                 continue
             }
-            let jpeg = readable[s.index].1
             guard let image = UIImage(data: jpeg)?.cgImage else { continue }
             guard let pin = try? await MemorySearch(client: client).pinpoint(what, in: jpeg) else {
                 if Task.isCancelled { return .none }
@@ -109,7 +116,7 @@ extension GuideModel {
             let world = inst.regularized().outlinePoints.map { ring in ring.map { frame.worldPoint(atPixel: $0, depth: depth) } }
             return .found(world: world, frame: frame, spec: TargetSpec(x: 500, y: 500, phrase: spec.phrase, text: spec.text))
         }
-        return elsewhere.map { .elsewhere($0) } ?? .none
+        return .none
     }
 
     // MARK: Places of other maps of this room
