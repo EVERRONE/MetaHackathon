@@ -82,9 +82,15 @@ struct Phrases {
         dutch ? "Ik zag \(what) \(ago(date)): \(place). Volg de pijl. Het kan intussen verplaatst zijn."
               : "I saw \(what) \(ago(date)): \(place). Follow the arrow. It may have been moved since."
     }
-    func foundElsewhere(_ what: String, at date: Date) -> String {
-        dutch ? "Ik zag \(what) \(ago(date)), in een ruimte die ik nu nog niet herken. Loop er even naartoe, dan wijs ik het aan."
-              : "I saw \(what) \(ago(date)), in a room I haven't recognised yet this time. Walk over there and I'll point it out."
+    /// Seen in a room this session has not recognised: where it was, from the snapshot, but no way
+    /// there (Pip does not know where that room is from here).
+    func foundElsewhere(_ what: String, at date: Date, place: String?) -> String {
+        if let place {
+            return dutch ? "Ik zag \(what) \(ago(date)) \(place). De weg erheen ken ik van hieruit nog niet; als je daar bent, wijs ik het aan."
+                         : "I saw \(what) \(ago(date)) \(place). I don't know the way there from here yet; once you're there, I'll point it out."
+        }
+        return dutch ? "Ik zag \(what) \(ago(date)), in een ruimte die ik nu nog niet herken. Als je daar bent, wijs ik het aan."
+                     : "I saw \(what) \(ago(date)), in a room I haven't recognised yet this time. Once you're there, I'll point it out."
     }
     func notFound(_ what: String, since date: Date?) -> String {
         guard let date else {

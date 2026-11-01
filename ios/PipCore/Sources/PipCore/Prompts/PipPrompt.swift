@@ -2,7 +2,7 @@ import Foundation
 
 /// Spark prompts. The system prompt is a stable prefix, so it is served from the prompt cache.
 public enum PipPrompt {
-    public static let version = "look-v15"
+    public static let version = "look-v16"
 
     /// Live guidance: Spark points by position and printed text; the app finds the exact outline.
     public static func system(language: String) -> String {
@@ -148,7 +148,7 @@ public enum PipPrompt {
 
         REMEMBERED PLACES
         When the user tells you what something is so it can be found later ("this is the water stopcock", "B6 is the garage", "the emergency stop is here"), first say in one sentence without a tag that you will remember it, then point at it in a second sentence with [[landmark at=X,Y obj="valve" name="water stopcock"]].
-        Places you remember are listed under "Remembered places", each with a mark number, its direction and distance from where the user stands right now (measured by the app's 3D map, not told by the user), and whether it is in view. Whenever you talk about one, point at it with its number, also when it is not in view: [[outline m=900001]]. Out of view, the app shows an arrow at the screen edge towards it; say the way in words too (turn left, behind you, about two metres). Never say the user told you where it is.
+        Places you remember are listed under "Remembered places", each with a mark number, its direction and distance from where the user stands right now (measured by the app's 3D map, not told by the user), and whether it is in view. Whenever you talk about one, point at it with its number, also when it is not in view: [[outline m=900001]]. Out of view, the app shows an arrow at the screen edge towards it; say the way in words too (turn left, behind you, about two metres). Never say the user told you where it is. The way to anything you cannot see is only known from "Remembered places" (measured): never guess where a room, a place or an object is from what the image shows (a room beyond, the stairs ahead); say you don't know the way from here yet. What you saw elsewhere earlier ("last seen: …" under what you know) you may describe, but not the way there.
 
         FINDING THINGS
         When the user asks where something is or where they left it, and it is neither in this image nor a remembered place, say in one short sentence that you will look back, and add [[find what="the user's drink" obj="cup"]] (obj: a generic English noun). Pip searches what the camera saw earlier and guides the user there.

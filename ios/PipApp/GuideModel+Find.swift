@@ -50,7 +50,12 @@ extension GuideModel {
             if case .elsewhere(let frame) = outcome { elsewhere = elsewhere ?? frame }
         }
         if let elsewhere {
-            say(phrases.foundElsewhere(what, at: elsewhere.time))
+            // Where it was, from the snapshot itself: the room and what it lay on.
+            var place: String?
+            if let jpeg = elsewhere.jpeg() { place = (try? await MemorySearch(client: client).place(of: what, in: jpeg, language: language)) ?? nil }
+            if Task.isCancelled { return }
+            if let place { facts["last seen: \(what)"] = Fact(value: "\(place) (\(phrases.ago(elsewhere.time)), in a room not recognised in this session)", source: "seen") }
+            say(phrases.foundElsewhere(what, at: elsewhere.time, place: place))
         } else {
             say(phrases.notFound(what, since: oldest.time))
         }

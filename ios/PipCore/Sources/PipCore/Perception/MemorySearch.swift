@@ -124,6 +124,28 @@ public struct MemorySearch: Sendable {
         return Pinpoint(x: out.x, y: out.y, noun: out.noun.trimmingCharacters(in: .whitespaces).lowercased())
     }
 
+    /// Where in the home a snapshot was taken, around `what`: the room and what it lies on or next
+    /// to, in one short sentence, for someone to find it ("on the dark marble coffee table between
+    /// the white sofas, in the living room"). Only what the photo shows.
+    public func place(of what: String, in snapshot: Data, language: String) async throws -> String? {
+        let question = """
+        This photo from the user's phone shows "\(what)". Say where it is, for someone who has to go and find it: the room         if the photo shows which, and what it lies on or stands next to (furniture, surfaces, colours). One short phrase in         \(language) that starts with a preposition ("on the …", "op de …"), without "\(what)" itself and without anything the         photo does not show. Empty if the photo does not show it.
+        """
+        let schema: JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object(["place": .object(["type": .string("string")])]),
+            "required": .array([.string("place")]),
+            "additionalProperties": .bool(false),
+        ])
+        var request = ChatRequest(messages: [ChatMessage(role: .user, parts: [.text(question), .imageJPEG(snapshot)])], stream: false,
+                                  reasoningEffort: .minimal, responseFormat: ResponseFormat(name: "place", schema: schema))
+        request.model = model
+        let (text, _) = try await client.chat(request)
+        struct Out: Decodable { var place: String }
+        let place = try JSONDecoder().decode(Out.self, from: Data(text.utf8)).place.trimmingCharacters(in: .whitespacesAndNewlines)
+        return place.isEmpty ? nil : place
+    }
+
     /// A 4×4 contact sheet of portrait tiles (192×256), each with its number in a corner.
     static func sheet(_ tiles: [Data], firstNumber: Int) -> Data? {
         let tw = 192, th = 256, cols = 4
