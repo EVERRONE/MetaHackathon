@@ -182,13 +182,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         awaitingFirstRelocalisation = true
         recognitionWait = Self.nextRelocaliseWait
         relocalisingSince = nil
-        removeMarks { _ in true }
-        places = [:]
-        pendingPlaces = [:]
-        clearCues()
-        coordinates += 1
-        arView.session.run(Self.configuration(initialMap: initialMap), options: [.resetTracking, .removeExistingAnchors])
-        imagesCleared()
+        startAfresh(Self.configuration(initialMap: initialMap))
     }
 
     /// The saved room was not recognised (Pip is in another room): start fresh, so tracking works
@@ -196,13 +190,52 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     func restartFresh() {
         awaitingFirstRelocalisation = false
         relocalisingSince = nil
+        startAfresh(Self.configuration(initialMap: nil))
+    }
+
+    /// A pointed-at object on screen when tracking had to start afresh: its cue stays, and it is
+    /// found again in the new session, from what the model asked for, around where it was on
+    /// screen (GuideModel.findAgain). On 1 Nov every outline vanished in the middle of a test
+    /// when the saved room was given up.
+    struct Carried {
+        let id: Int
+        let spec: TargetSpec
+    }
+    /// Tracking started afresh with these objects on screen.
+    var onStartedAfresh: (([Carried]) -> Void)?
+
+    /// Starts tracking afresh (new coordinates, no anchors): the remembered places come back
+    /// with their room's anchors; the objects with a cue on screen are found again.
+    private func startAfresh(_ config: ARWorldTrackingConfiguration) {
+        var carried: [Carried] = []
+        if let snap = snapshot() {
+            let w = Double(snap.image.width), h = Double(snap.image.height)
+            for (id, box) in visibleMarkBoxes(in: snap) where id < Self.foundMarkBase {
+                guard var spec = tracks[id]?.spec else { continue }
+                spec.x = Double(box.midX) / w * 1000
+                spec.y = Double(box.midY) / h * 1000
+                carried.append(Carried(id: id, spec: spec))
+            }
+        }
         removeMarks { _ in true }
         places = [:]
         pendingPlaces = [:]
-        clearCues()
+        board.keep(marks: Set(carried.map(\.id)))
+        board.resolveDanger()
+        renderNow()
         coordinates += 1
-        arView.session.run(Self.configuration(initialMap: nil), options: [.resetTracking, .removeExistingAnchors])
+        arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
         imagesCleared()
+        if !carried.isEmpty { onStartedAfresh?(carried) }
+    }
+
+    /// Whether the camera has a pose to place outlines with (tracking normal, or running in the
+    /// session's own coordinates while a saved room is recognised).
+    var cameraPoseUsable: Bool {
+        switch arView.session.currentFrame?.camera.trackingState {
+        case .normal?, .limited(.relocalizing)?: return true
+        default: return false
+        }
     }
 
     func snapshot() -> FrameSnapshot? {

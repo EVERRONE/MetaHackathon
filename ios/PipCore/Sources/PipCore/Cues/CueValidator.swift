@@ -137,6 +137,11 @@ public struct AnnotationBoard: Sendable {
         annotations.removeAll { $0.lifetime == .untilResolved }
     }
 
+    /// Only the cues on these marks stay (tracking started afresh, and these are found again).
+    public mutating func keep(marks kept: Set<Int>) {
+        annotations.removeAll { !$0.cue.marks.isEmpty && !Set($0.cue.marks).isSubset(of: kept) || $0.cue.marks.isEmpty && $0.lifetime != .untilResolved }
+    }
+
     public var activeMarks: Set<Int> { Set(annotations.flatMap { $0.cue.marks }) }
 
     private static func sameFamily(_ a: Cue, _ b: Cue) -> Bool {

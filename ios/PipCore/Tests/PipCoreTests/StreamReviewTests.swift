@@ -204,3 +204,17 @@ import Testing
         #expect(one.locals.count == 1)
     }
 }
+
+@Suite struct FreshStartTests {
+    @Test func aFreshStartKeepsTheCuesOfObjectsFoundAgain() {
+        var board = AnnotationBoard()
+        board.show(.ring(mark: 1001, label: "1"), at: 0)
+        board.show(.ring(mark: 1002, label: "2"), at: 0)
+        board.show(.outline(mark: 900_001), at: 0)
+        board.show(.danger(mark: nil, reason: "hot"), at: 0)
+        board.keep(marks: [1001, 1002])
+        #expect(Set(board.annotations.flatMap(\.cue.marks)) == [1001, 1002])
+        // A hazard stays until it is resolved.
+        #expect(board.annotations.contains { if case .danger = $0.cue { return true } else { return false } })
+    }
+}

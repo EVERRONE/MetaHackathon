@@ -138,9 +138,10 @@ extension ARController {
     /// For the next saved room, when the first was not it.
     static let nextRelocaliseWait: TimeInterval = 15
 
-    /// Giving up wipes this session's outlines (a fresh start): while some are on screen it waits,
-    /// up to this much longer in all.
-    static let maxRecognitionExtension: TimeInterval = 60
+    /// While cues are on screen it waits a little longer before giving up (a look grounded across
+    /// the fresh start would be dropped); the cues themselves are found again afterwards. On 1 Nov
+    /// the wait of up to 60 s kept the image locks off (they wait for the room) all test long.
+    static let maxRecognitionExtension: TimeInterval = 20
 
     /// When the wait for a saved room is over: try another (or start fresh), unless this session's
     /// cues are on screen; then a while longer, since a fresh start would wipe them.
@@ -149,9 +150,9 @@ extension ARController {
             guard let self, self.relocalisingSince == since else { return }
             if firstTry, self.awaitingFirstRelocalisation {
                 if self.hasPointedMarks, self.recognitionExtended < Self.maxRecognitionExtension {
-                    self.recognitionExtended += 15
+                    self.recognitionExtended += 10
                     self.onLockLog?("map: still recognising the room; cues are on screen, so a while longer")
-                    self.scheduleRecognitionCheck(since: since, firstTry: true, after: 15)
+                    self.scheduleRecognitionCheck(since: since, firstTry: true, after: 10)
                     return
                 }
                 // The saved room is not this one: another saved room, or start fresh.

@@ -56,6 +56,9 @@ extension GuideModel {
         mapKeeper.begin(continuing: continuing, others: pieces.filter { $0.id != continuing?.id })
         mapKeeper.onLog = { [weak self] line in self?.log(line) }
         ar.onRelocaliseGaveUp = { [weak self] in self?.relocalisationGaveUp() }
+        ar.onStartedAfresh = { [weak self] carried in
+            Task { @MainActor [weak self] in await self?.findAgain(carried) }
+        }
         // Recognised: places remembered in other maps of this room are looked for here, quietly,
         // once Pip is free (see adoptPlacesOfThisRoom).
         ar.onRecognised = { [weak self] in
@@ -153,6 +156,41 @@ extension GuideModel {
         mapKeeper.startNewPiece()
         keyframes.pieceChanged(to: mapKeeper.current.id)
         ar.relocalisation.trying(nil, detail: "after the saved rooms")
+    }
+
+    /// Tracking started afresh (the saved room was given up) while these objects were pointed at:
+    /// each is found again in the new session, from what the model asked for, around where it was
+    /// on screen, so its cue goes on its object again and it is locked to it again.
+    func findAgain(_ carried: [ARController.Carried]) async {
+        // Tracking needs a moment to start (up to 5 s).
+        var waited = 0.0
+        repeat {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            waited += 0.25
+        } while !ar.cameraPoseUsable && waited < 5
+        guard ar.cameraPoseUsable, let snapshot = ar.snapshot() else {
+            log("map: started afresh; tracking not back, \(carried.count) outlines not found again")
+            return
+        }
+        let grounder = Grounder(client: client, frameJPEG: SetOfMarks.jpeg(snapshot.image, quality: 0.8) ?? Data())
+        let found = await withTaskGroup(of: (ARController.Carried, SegmentInstance?).self) { group -> [(ARController.Carried, SegmentInstance?)] in
+            for c in carried {
+                group.addTask { (c, await grounder.ground(c.spec, id: c.id, frame: snapshot.image).instance) }
+            }
+            var out: [(ARController.Carried, SegmentInstance?)] = []
+            for await r in group { out.append(r) }
+            return out
+        }
+        for (c, inst) in found.sorted(by: { $0.0.id < $1.0.id }) {
+            guard let inst else {
+                log("mark \(c.id % 1000) not found again after the fresh start")
+                continue
+            }
+            let key = inst.renumbered(c.id)
+            let anchoring = ar.addMark(key, snapshot: snapshot, spec: c.spec)
+            if anchoring != "assumed depth" { lockToObject(c.id, key: key, on: c.spec.on, snapshot: snapshot) }
+            log("mark \(c.id % 1000) found again after the fresh start, anchored on \(anchoring)")
+        }
     }
 
     /// A saved room's map, unless it drifted when it was saved (older versions saved such maps).
