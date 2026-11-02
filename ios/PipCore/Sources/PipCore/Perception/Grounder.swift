@@ -19,6 +19,11 @@ public struct TargetSpec: Equatable, Sendable {
     /// What the model said the target is ("the grey pen in the middle"), kept with the mark and a
     /// remembered place: finding it again among look-alikes (three pens side by side) needs it.
     public var description: String?
+    /// What it looked like when it was pointed at: a crop round it with its outline drawn
+    /// (`Grounder.reference`). Finding it again, that very object is chosen by it, not whatever of
+    /// its kind lies where it is expected (2 Nov, 20:40: of three pens side by side, the one nearest
+    /// the camera was taken for "the first black pen, closest to you", and stored as it).
+    public var reference: Data?
 
     public init(x: Double, y: Double, phrase: String, text: [String] = [], on: String? = nil, small: Bool = false, description: String? = nil) {
         self.x = x
@@ -420,6 +425,38 @@ public struct Grounder: Sendable {
             chosen = holder
             method += " (the \(spec.phrase) it is on)"
         }
+        // Finding a remembered object again, or one back in view among look-alikes: that very object,
+        // compared with what it looked like when it was pointed at (`TargetSpec.reference`). 2 Nov,
+        // 20:40: of three pens side by side, the place of "the first black pen, closest to you" was
+        // found again on the pen nearest the camera from the other side of the desk, and stored there.
+        // Not taken when the comparison says none of them, or could not be made. Not for keys and
+        // buttons (their printed text and their place in the row tell them apart), nor for an object
+        // found by its printed text.
+        if refinding || measuringAgain, spec.reference != nil, !spec.small, method != "text", let pick = chosen {
+            let centre = CGPoint(x: pick.boxRect.midX, y: pick.boxRect.midY)
+            let others = Array(concept
+                .filter { $0.id != pick.id && $0.prompts.contains(spec.phrase) && Double($0.area) < cropArea * 0.4 && !Self.agree($0, pick) }
+                .filter { Grounding.distance(centre, $0.boxRect) <= 4 * sqrt(Double(pick.area)) }
+                .sorted { Grounding.distance(centre, $0.boxRect) < Grounding.distance(centre, $1.boxRect) }
+                .prefix(4))
+            // Measuring again in this session: only among look-alikes (one of its kind alone there is it).
+            if refinding || !others.isEmpty {
+                let verdict = await Self.withBudget(Self.verifyBudget) { await self.verify(spec, description: spec.description, candidates: [pick] + others, in: crop) } ?? .failed
+                switch verdict {
+                case .picked(let same) where same.id == pick.id:
+                    method += " (as remembered)"
+                case .picked(let same):
+                    chosen = same
+                    method += " (as remembered: the one beside it)"
+                case .noneOfThem:
+                    chosen = nil
+                    method = "not the remembered \(spec.phrase) (\(method))"
+                case .failed:
+                    chosen = nil
+                    method = "not compared with the remembered \(spec.phrase) (\(method))"
+                }
+            }
+        }
         // Finding or measuring again: an object the model did not point at, and that SAM did not
         // find as the kind, is only whatever lay at the expected point (2 Nov: the ink bottle beside
         // the pen). Nothing is taken then: the outline stays, and Pip looks again a little later.
@@ -435,6 +472,22 @@ public struct Grounder: Sendable {
         if nearby.isEmpty && !spec.text.isEmpty && !symbol { problems.append("text not found nearby") }
         return GroundingResult(instance: result, method: method + (problems.isEmpty ? "" : " (\(problems.joined(separator: "; ")))"),
                                seconds: Date().timeIntervalSince(t0), description: describe?())
+    }
+
+    /// What a pointed-at object looks like: a crop round it, with room for what lies beside it (three
+    /// pens side by side: which one it is), its outline drawn in yellow. Kept with its mark and a
+    /// remembered place, to find that very object again (`TargetSpec.reference`).
+    public static func reference(of instance: SegmentInstance, in image: CGImage) -> Data? {
+        let box = instance.boxRect
+        guard box.width >= 2, box.height >= 2 else { return nil }
+        let side = max(2.4 * max(box.width, box.height), 160)
+        let rect = CGRect(x: box.midX - side / 2, y: box.midY - side / 2, width: side, height: side)
+            .intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height)).integral
+        guard rect.width >= 8, rect.height >= 8 else { return nil }
+        let scale = min(2.5, 448 / max(rect.width, rect.height))
+        guard let view = SetOfMarks.crop(image, to: rect, scale: scale),
+              let outlined = SetOfMarks.outline(view, instance: instance.mapped(into: rect, scale: scale)) else { return nil }
+        return SetOfMarks.jpeg(outlined, quality: 0.8)
     }
 
     /// The key or button a printed symbol is on: the smallest instance of that kind holding the
@@ -500,22 +553,30 @@ public struct Grounder: Sendable {
         }
         // Nothing to go on (finding an outline again, without the conversation): the first point,
         // which is where the object was on screen, is better than a guess.
-        guard !spec.text.isEmpty || description != nil || asked != nil else { return nil }
+        guard !spec.text.isEmpty || description != nil || asked != nil || spec.reference != nil else { return nil }
         let shows: String
         if spec.text.isEmpty { shows = "" }
         else if Self.symbolOnly(spec.text) { shows = " showing " + spec.text.map(Self.describeSymbol).joined(separator: " or ") }
         else { shows = " with \"\(spec.text.joined(separator: " / "))\" printed on it" }
         let context = asked.map { "The user asked: \"\($0)\". " } ?? ""
         let said = description.map { " and said: \"\($0)\"" } ?? ""
-        let question = "\(context)A guide answered by pointing at a \(spec.phrase)\(shows)\(said). In this zoomed-in photo, point at that \(spec.phrase). "
+        var question = "\(context)A guide answered by pointing at a \(spec.phrase)\(shows)\(said). In this zoomed-in photo, point at that \(spec.phrase). "
             + "Give the centre of that one \(spec.phrase) as x and y on a 0-1000 grid of this image (0,0 top left, 1000,1000 bottom right). If you cannot see it, answer x=-1, y=-1."
+        var images: [ChatMessage.Part] = [.imageJPEG(jpeg)]
+        if let reference = spec.reference {
+            let looks = description.map { " (\($0))" } ?? ""
+            question = "The first photo shows one particular \(spec.phrase)\(looks), outlined in yellow, as the user asked Pip to remember it. "
+                + "In the second photo, zoomed in, point at that very same \(spec.phrase): compare colour, shape, details and printed text; a similar \(spec.phrase) beside it is not it. "
+                + "Give its centre as x and y on a 0-1000 grid of the second photo (0,0 top left, 1000,1000 bottom right). If it is not in the second photo, answer x=-1, y=-1."
+            images = [.imageJPEG(reference), .imageJPEG(jpeg)]
+        }
         let schema: JSONValue = .object([
             "type": .string("object"),
             "properties": .object(["x": .object(["type": .string("integer")]), "y": .object(["type": .string("integer")])]),
             "required": .array([.string("x"), .string("y")]),
             "additionalProperties": .bool(false),
         ])
-        let request = ChatRequest(messages: [ChatMessage(role: .user, parts: [.text(question), .imageJPEG(jpeg)])], stream: false, reasoningEffort: .minimal,
+        let request = ChatRequest(messages: [ChatMessage(role: .user, parts: [.text(question)] + images)], stream: false, reasoningEffort: .minimal,
                                   responseFormat: ResponseFormat(name: "point", schema: schema))
         struct Point: Decodable { var x: Int; var y: Int }
         let answer = try? await client.chat(request)
@@ -673,8 +734,16 @@ public struct Grounder: Sendable {
               let jpeg = SetOfMarks.jpeg(marked, quality: 0.85) else { return .failed }
         let printed = spec.text.joined(separator: " / ")
         let pointed = point == nil ? "" : " The yellow cross is where the guide pointed; it may be a little off."
-        let question: String
-        if let description, spec.text.isEmpty {
+        var question: String
+        var images: [ChatMessage.Part] = [.imageJPEG(jpeg)]
+        if let reference = spec.reference {
+            // That very object, as it was remembered: not one of its look-alikes.
+            let looks = description.map { " (\($0))" } ?? ""
+            question = "The first photo shows one particular \(spec.phrase)\(looks), outlined in yellow, as the user asked Pip to remember it. "
+                + "In the second photo, which numbered outline is that very same \(spec.phrase)? Compare colour, shape, details and printed text with the first photo; "
+                + "a similar \(spec.phrase) is not it. The numbers are labels next to the outlines. Answer with its number, or 0 if none of them is that very \(spec.phrase)."
+            images = [.imageJPEG(reference), .imageJPEG(jpeg)]
+        } else if let description, spec.text.isEmpty {
             let context = asked.map { "The user asked: \"\($0)\". " } ?? ""
             question = "\(context)A guide pointed at a \(spec.phrase) and said: \"\(description)\".\(pointed) Which numbered outline is the \(spec.phrase) the guide means? The numbers are labels next to the outlines; look at what is inside each outline. Answer with its number, or 0 if none of them is."
         } else if spec.text.isEmpty {
@@ -693,7 +762,7 @@ public struct Grounder: Sendable {
             "required": .array([.string("mark")]),
             "additionalProperties": .bool(false),
         ])
-        let request = ChatRequest(messages: [ChatMessage(role: .user, parts: [.text(question), .imageJPEG(jpeg)])], stream: false, reasoningEffort: .minimal,
+        let request = ChatRequest(messages: [ChatMessage(role: .user, parts: [.text(question)] + images)], stream: false, reasoningEffort: .minimal,
                                   responseFormat: ResponseFormat(name: "pick", schema: schema))
         struct Pick: Decodable { var mark: Int }
         let answer = try? await client.chat(request)

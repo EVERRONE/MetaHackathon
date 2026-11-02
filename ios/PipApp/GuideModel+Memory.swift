@@ -41,6 +41,7 @@ extension GuideModel {
         }
         ar.follower.onLog = { [weak self] line in self?.log(line) }
         ar.onLockLog = { [weak self] line in self?.log(line) }
+        ar.placeReference = { [weak self] id in self?.memory.reference(for: id) }
         ar.onPlaceMoved = { [weak self] place in
             guard let self else { return }
             var p = place
@@ -199,9 +200,15 @@ extension GuideModel {
     /// Returns whether the place was made (the mark is there to anchor it on).
     @discardableResult
     func rememberPlace(name: String, mark: Int) -> Bool {
+        let reference = ar.tracks[mark]?.spec?.reference
         guard var place = ar.rememberPlace(name: name, mark: mark) else { return false }
         place.piece = mapKeeper.current.id
-        log("remembered place: \(name)")
+        log("remembered place: \(name)" + (reference == nil ? " (no reference photo)" : ""))
+        // What that very object looks like: to find it again, and not a look-alike of it.
+        if let reference {
+            memory.setReference(reference, for: place.id)
+            if let kind = place.phrase { describeAppearance(of: place, kind: kind, reference: reference) }
+        }
         switch memory.consent {
         case true?:
             memory.add(place)
@@ -213,6 +220,24 @@ extension GuideModel {
             break
         }
         return true
+    }
+
+    /// A remembered object's looks, in words, from its reference photo: kept with the place, and the
+    /// words it is found again by and that the model knows it by.
+    private func describeAppearance(of place: SpaceMemory.Place, kind: String, reference: Data) {
+        Task {
+            guard let looks = try? await MemorySearch(client: client).appearance(of: place.name, kind: kind, in: reference) else {
+                log("remembered place \(place.name): its looks could not be described")
+                return
+            }
+            log("remembered place \(place.name) looks like: \(looks)")
+            ar.setAppearance(looks, of: place.id)
+            if let i = pendingPlaces.firstIndex(where: { $0.id == place.id }) { pendingPlaces[i].appearance = looks }
+            if var stored = memory.places.first(where: { $0.id == place.id }) {
+                stored.appearance = looks
+                memory.update([stored])
+            }
+        }
     }
 
     func rememberLongTerm(_ key: String, _ value: String, source: String) {

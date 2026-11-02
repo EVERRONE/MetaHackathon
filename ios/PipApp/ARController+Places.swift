@@ -57,7 +57,11 @@ extension ARController {
         anchors[id] = (anchor, t)
         places[id] = place
         if !measured, let phrase = place.phrase {
-            tracks[id] = ObjectTrack(place: TargetSpec(x: 500, y: 500, phrase: phrase, text: place.text ?? [], description: place.description), now: CACurrentMediaTime())
+            // Found again on sight as that very object: by its reference photo and its looks, not by
+            // the words the model pointed with, which may say where it lay ("closest to you").
+            var spec = TargetSpec(x: 500, y: 500, phrase: phrase, text: place.text ?? [], description: place.appearance ?? place.description)
+            spec.reference = placeReference?(place.id)
+            tracks[id] = ObjectTrack(place: spec, now: CACurrentMediaTime())
         }
         if !measured { carried.insert(id) }
     }
@@ -83,6 +87,16 @@ extension ARController {
         return moved
     }
 
+    /// A remembered place's looks, once described (`GuideModel.describeAppearance`): kept when the
+    /// place is stored again after it was found on sight.
+    func setAppearance(_ looks: String, of placeID: UUID) {
+        for (id, p) in places where p.id == placeID {
+            var q = p
+            q.appearance = looks
+            places[id] = q
+        }
+    }
+
     func forgetPlace(_ placeID: UUID) {
         guard let (id, _) = places.first(where: { $0.value.id == placeID }) else { return }
         removeMarks { $0 == id }
@@ -103,7 +117,7 @@ extension ARController {
     /// Where each remembered place is from the user right now, in words the model can pass on.
     func placeDescriptions() -> [String] {
         places.sorted { $0.key < $1.key }.compactMap { id, place in
-            describe(mark: id, dutch: false).map { "\(id): \(place.name) — \($0)" }
+            describe(mark: id, dutch: false).map { "\(id): \(place.name)" + (place.appearance.map { " (looks: \($0))" } ?? "") + " — \($0)" }
         }
     }
 

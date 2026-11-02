@@ -35,8 +35,10 @@ public struct MemorySearch: Sendable {
         return spread + Array((count - recent)..<count)
     }
 
-    /// `snapshots` are JPEGs, oldest first. Returns the most recent sightings first.
-    public func find(_ what: String, in snapshots: [Data]) async throws -> [Sighting] {
+    /// `snapshots` are JPEGs, oldest first. Returns the most recent sightings first. `reference`: what
+    /// that very object looked like when the user asked Pip to remember it (outlined), so a look-alike
+    /// is not taken for it (2 Nov: "the user's book" found as another book on the same counter).
+    public func find(_ what: String, in snapshots: [Data], reference: Data? = nil) async throws -> [Sighting] {
         let picked = Self.sample(count: snapshots.count, max: Self.tilesPerSheet * Self.maxSheets)
         let recent = picked.map { snapshots[$0] }
         guard !recent.isEmpty else { return [] }
@@ -45,8 +47,9 @@ public struct MemorySearch: Sendable {
             let tiles = Array(recent[start..<min(start + Self.tilesPerSheet, recent.count)])
             if let sheet = Self.sheet(tiles, firstNumber: start + 1) { sheets.append(sheet) }
         }
+        let remembered = reference == nil ? "" : "The first image shows that very object, outlined in yellow, as the user asked Pip to remember it: find that one, not a look-alike. The other images are contact sheets. "
         let question = """
-        These are numbered snapshots from the user's phone camera, \(recent.count) in total; a higher number is more recent. \
+        \(remembered)These are numbered snapshots from the user's phone camera, \(recent.count) in total; a higher number is more recent. \
         Find: "\(what)". Look at every tile carefully. List where it appears, the most recent sightings first (at most 3): \
         tile is the number on the tile, and x, y the centre of the object within that tile on a 0–1000 grid (x from the left, y from the top). \
         Only list tiles where you clearly see it; if you do not see it anywhere, found is false.
@@ -70,7 +73,8 @@ public struct MemorySearch: Sendable {
             "required": .array([.string("found"), .string("sightings")]),
             "additionalProperties": .bool(false),
         ])
-        var request = ChatRequest(messages: [ChatMessage(role: .user, parts: [.text(question)] + sheets.map { .imageJPEG($0) })], stream: false,
+        let first: [ChatMessage.Part] = reference.map { [.imageJPEG($0)] } ?? []
+        var request = ChatRequest(messages: [ChatMessage(role: .user, parts: [.text(question)] + first + sheets.map { .imageJPEG($0) })], stream: false,
                                   reasoningEffort: .minimal, responseFormat: ResponseFormat(name: "memory_search", schema: schema))
         request.model = model
         let (text, _) = try await client.chat(request)
@@ -122,6 +126,31 @@ public struct MemorySearch: Sendable {
         let out = try JSONDecoder().decode(Out.self, from: Data(text.utf8))
         guard out.found, (0...1000).contains(out.x), (0...1000).contains(out.y) else { return nil }
         return Pinpoint(x: out.x, y: out.y, noun: out.noun.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
+    /// What a remembered object looks like, from its reference photo (outlined): a few English words
+    /// that tell it from others of its kind, whatever the viewpoint ("black fountain pen with a clear
+    /// barrel and a silver clip"). The model's words when it was pointed at often say where it was
+    /// ("the first black pen, closest to you"), which is wrong from anywhere else.
+    public func appearance(of name: String, kind: String, in reference: Data) async throws -> String? {
+        let question = """
+        The photo shows one particular \(kind), outlined in yellow, that the user calls "\(name)". Describe how it looks in at most 12 English words, \
+        so it can be told apart from other \(kind)s: colour, material, shape, details, printed text. Not where it is, not what is around it. \
+        Empty if the outline shows no \(kind).
+        """
+        let schema: JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object(["looks": .object(["type": .string("string")])]),
+            "required": .array([.string("looks")]),
+            "additionalProperties": .bool(false),
+        ])
+        var request = ChatRequest(messages: [ChatMessage(role: .user, parts: [.text(question), .imageJPEG(reference)])], stream: false,
+                                  reasoningEffort: .minimal, responseFormat: ResponseFormat(name: "appearance", schema: schema))
+        request.model = model
+        let (text, _) = try await client.chat(request)
+        struct Out: Decodable { var looks: String }
+        let looks = try JSONDecoder().decode(Out.self, from: Data(text.utf8)).looks.trimmingCharacters(in: .whitespacesAndNewlines)
+        return looks.isEmpty ? nil : looks
     }
 
     /// Where in the home a snapshot was taken, around `what`: the room and what it lies on or next

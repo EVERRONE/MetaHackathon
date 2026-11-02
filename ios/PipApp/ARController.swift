@@ -199,6 +199,10 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         place(m)
         measured[m.id] = m
         if let obs = m.observation {
+            // What it looks like here, to find this very object again (among look-alikes, and once
+            // it is a remembered place, in later sessions).
+            var spec = spec
+            if spec != nil { spec?.reference = Grounder.reference(of: inst, in: snapshot.image) }
             tracks[m.id] = ObjectTrack(observation: obs, spec: spec)
             // Found again in the live image when its cue shows, then followed there.
             follower.start(m.id, image: snapshot.image, box: inst.boxRect)
@@ -554,6 +558,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
 
     /// A remembered place was measured again: its new pose and outline, to store.
     var onPlaceMoved: ((SpaceMemory.Place) -> Void)?
+    /// A remembered place's reference photo, from storage (`SpaceMemory.reference`).
+    var placeReference: ((UUID) -> Data?)?
 
     /// When tracking was last limited, lost or in the dark.
     var lastTrackingTrouble: CFTimeInterval = 0

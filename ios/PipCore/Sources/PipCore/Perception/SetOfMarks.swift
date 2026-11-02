@@ -8,6 +8,32 @@ import UniformTypeIdentifiers
 /// Draws numbered marks on a frame (set-of-marks prompting), so Spark can choose between
 /// SAM instances by number instead of drawing its own, less precise boxes.
 public enum SetOfMarks {
+    /// One instance's outline in yellow, without a number: what is meant in a reference photo.
+    public static func outline(_ image: CGImage, instance: SegmentInstance) -> CGImage? {
+        let w = image.width, h = image.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.translateBy(x: 0, y: CGFloat(h))
+        ctx.scaleBy(x: 1, y: -1)
+        let line = max(2, CGFloat(max(w, h)) / 220)
+        for ring in instance.outlinePoints where ring.count >= 3 {
+            let path = CGMutablePath()
+            path.addLines(between: ring)
+            path.closeSubpath()
+            ctx.addPath(path)
+            ctx.setStrokeColor(CGColor(red: 0, green: 0, blue: 0, alpha: 0.7))
+            ctx.setLineWidth(line * 2.2)
+            ctx.strokePath()
+            ctx.addPath(path)
+            ctx.setStrokeColor(CGColor(red: 1, green: 0.9, blue: 0, alpha: 1))
+            ctx.setLineWidth(line)
+            ctx.strokePath()
+        }
+        return ctx.makeImage()
+    }
+
     /// Thin outlines plus a number badge near the top of each instance.
     public static func render(_ image: CGImage, instances: [SegmentInstance]) -> CGImage? {
         let w = image.width

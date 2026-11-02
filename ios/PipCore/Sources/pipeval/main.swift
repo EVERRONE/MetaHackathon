@@ -52,6 +52,29 @@ if args.first == "track" {
     exit(0)
 }
 
+// pipeval reference <look dir> <out.jpg> [instance index]: the reference photo of a look's grounded
+// instance (Grounder.reference), as a remembered place keeps it.
+if args.first == "reference", args.count >= 3 {
+    let dir = URL(fileURLWithPath: args[1])
+    guard let data = FileManager.default.contents(atPath: dir.appendingPathComponent("frame.jpg").path), let frame = SetOfMarks.load(data, maxSide: 4096),
+          let json = FileManager.default.contents(atPath: dir.appendingPathComponent("instances.json").path),
+          let instances = try? JSONDecoder().decode([SegmentInstance].self, from: json), !instances.isEmpty else { fail("cannot read the look in \(args[1])") }
+    let i = args.count > 3 ? Int(args[3]) ?? 0 : 0
+    guard let ref = Grounder.reference(of: instances[min(i, instances.count - 1)], in: frame) else { fail("no reference") }
+    try? ref.write(to: URL(fileURLWithPath: args[2]))
+    print("wrote \(args[2]) (\(ref.count) bytes)")
+    exit(0)
+}
+
+// pipeval appearance <reference.jpg> <name> <kind>: what a remembered object looks like, in words.
+if args.first == "appearance", args.count >= 4 {
+    let env = ProcessInfo.processInfo.environment
+    guard let ref = FileManager.default.contents(atPath: args[1]) else { fail("cannot read \(args[1])") }
+    let client = PipClient(baseURL: URL(string: env["PIP_URL"] ?? "https://pip.unveil.be")!, token: env["PIP_APP_TOKEN"] ?? "")
+    print((try? await MemorySearch(client: client).appearance(of: args[2], kind: args[3], in: ref)) ?? "nil")
+    exit(0)
+}
+
 // pipeval ground <image> <x> <y> <phrase> [text|alternatives]: grounds one target and times it.
 if args.first == "ground", args.count >= 5 {
     let env = ProcessInfo.processInfo.environment
@@ -60,7 +83,10 @@ if args.first == "ground", args.count >= 5 {
     // ground <image> <x> <y> <phrase> [text or -] [description] [small]
     let text = args.count > 5 && args[5] != "-" ? CueTag.alternatives(args[5]) : []
     let description = args.count > 6 ? args[6] : nil
-    let spec = TargetSpec(x: Double(args[2])!, y: Double(args[3])!, phrase: args[4], text: text, small: args.count > 7 && args[7] == "small")
+    var spec = TargetSpec(x: Double(args[2])!, y: Double(args[3])!, phrase: args[4], text: text, small: args.count > 7 && args[7] == "small")
+    // PIP_REFERENCE=<jpg>: what the object looked like when it was remembered (see TargetSpec.reference).
+    if let r = env["PIP_REFERENCE"] { spec.reference = FileManager.default.contents(atPath: r) }
+    spec.description = description
     let t0 = Date()
     var grounder = Grounder(client: client, frameJPEG: SetOfMarks.jpeg(frame)!)
     grounder.asked = env["PIP_ASKED"]

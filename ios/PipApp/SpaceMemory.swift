@@ -27,6 +27,10 @@ final class SpaceMemory: ObservableObject {
         /// What the model said it is ("the grey pen in the middle"): finding it again among
         /// look-alikes (three pens side by side) is done by it.
         var description: String? = nil
+        /// What it looks like, from its reference photo, whatever the viewpoint ("black pen with a
+        /// translucent dark-grey barrel"): the model's words often said where it lay ("the first black
+        /// pen, closest to you"), which named another pen from the other side of the desk (2 Nov).
+        var appearance: String? = nil
     }
 
     struct Fact: Codable, Equatable {
@@ -46,6 +50,10 @@ final class SpaceMemory: ObservableObject {
     /// leaves it alone rather than overwrite it with less.
     private var writable = true
     private var mapURL: URL { dir.appendingPathComponent("room.arworldmap") }
+    /// Each place's reference photo (`TargetSpec.reference`): what that very object looked like.
+    private var referencesDir: URL { dir.appendingPathComponent("places") }
+    /// Reference photos of places not stored yet (no consent yet): written when the place is.
+    private var unsavedReferences: [UUID: Data] = [:]
     private var dataURL: URL { dir.appendingPathComponent("memory.json") }
 
     private struct Stored: Codable {
@@ -81,9 +89,31 @@ final class SpaceMemory: ObservableObject {
 
     func add(_ place: Place) {
         guard consent == true else { return }
+        for old in places where old.name.lowercased() == place.name.lowercased() && old.id != place.id { removeReference(old.id) }
         places.removeAll { $0.name.lowercased() == place.name.lowercased() }
         places.append(place)
+        if let data = unsavedReferences.removeValue(forKey: place.id) { writeReference(data, for: place.id) }
         save()
+    }
+
+    /// What the place's object looked like when it was pointed at. Kept with the place: written now
+    /// if the user agreed to the memory, else once the place is stored.
+    func setReference(_ data: Data, for id: UUID) {
+        if consent == true, places.contains(where: { $0.id == id }) { writeReference(data, for: id) } else { unsavedReferences[id] = data }
+    }
+
+    func reference(for id: UUID) -> Data? {
+        unsavedReferences[id] ?? (try? Data(contentsOf: referencesDir.appendingPathComponent("\(id.uuidString).jpg")))
+    }
+
+    private func writeReference(_ data: Data, for id: UUID) {
+        try? FileManager.default.createDirectory(at: referencesDir, withIntermediateDirectories: true)
+        try? data.write(to: referencesDir.appendingPathComponent("\(id.uuidString).jpg"), options: [.atomic, .completeFileProtection])
+    }
+
+    private func removeReference(_ id: UUID) {
+        unsavedReferences[id] = nil
+        try? FileManager.default.removeItem(at: referencesDir.appendingPathComponent("\(id.uuidString).jpg"))
     }
 
     /// Replaces stored places (after they moved into another map piece).
@@ -97,6 +127,7 @@ final class SpaceMemory: ObservableObject {
 
     func remove(_ id: UUID) {
         places.removeAll { $0.id == id }
+        removeReference(id)
         save()
     }
 
@@ -114,6 +145,8 @@ final class SpaceMemory: ObservableObject {
     func forgetAll() {
         places = []
         facts = [:]
+        unsavedReferences = [:]
+        try? FileManager.default.removeItem(at: referencesDir)
         try? FileManager.default.removeItem(at: dataURL)
         try? FileManager.default.removeItem(at: mapURL)
         for name in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasPrefix("memory.unreadable") {

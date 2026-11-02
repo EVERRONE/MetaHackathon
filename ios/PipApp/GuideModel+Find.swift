@@ -22,6 +22,13 @@ extension GuideModel {
         let banner = phrases.searchingMemory(what)
         preparing = banner
         defer { if preparing == banner { preparing = shownBefore } }
+        // A thing the user asked Pip to remember: that very one, by its reference photo and its looks,
+        // not a look-alike (2 Nov, 20:33: "the user's book" was found as another book on the counter).
+        func score(_ p: SpaceMemory.Place) -> Int { PlaceName.score(what, names: [p.name, p.phrase ?? ""]) }
+        let remembered = memory.places.filter { score($0) > 0 }.max { score($0) < score($1) }
+        let reference = remembered.flatMap { memory.reference(for: $0.id) }
+        let looks = remembered?.appearance
+        if let remembered { log("find: \(what) is the remembered \(remembered.name)" + (reference == nil ? "" : ", by its reference photo") + (looks.map { " (\($0))" } ?? "")) }
         let now = Date()
         let recent = all.filter { now.timeIntervalSince($0.time) <= Keyframes.recentFor }
         let older = all.filter { now.timeIntervalSince($0.time) > Keyframes.recentFor }.reversed()
@@ -35,7 +42,7 @@ extension GuideModel {
         var elsewhere: Keyframes.Frame?
         for (n, batch) in batches.enumerated() {
             if n == 1 { say(phrases.searchingFurther) }
-            let outcome = await search(what, phrase: phrase, in: batch)
+            let outcome = await search(what, phrase: phrase, in: batch, reference: reference, looks: looks)
             if Task.isCancelled { return }
             if case .found(let world, let frame, let spec) = outcome {
                 // A place remembered under this name and brought back here lies there already: it is
@@ -182,11 +189,13 @@ extension GuideModel {
     /// pinpointed in its own snapshot at full resolution and outlined like a question's target
     /// (the contact sheet's point can be far off: on 1 Nov on the carpet beside the statue's table),
     /// with depth to place it in the room. Nothing is pointed at on a guess.
-    func search(_ what: String, phrase: String, in batch: [Keyframes.Frame]) async -> Recall {
+    func search(_ what: String, phrase: String, in batch: [Keyframes.Frame], reference: Data? = nil, looks: String? = nil) async -> Recall {
         // Only snapshots that can still be read; their order is kept for the mapping back.
         let readable = batch.compactMap { f in f.jpeg().map { (f, $0) } }
         let t0 = Date()
-        let sightings = (try? await MemorySearch(client: client).find(what, in: readable.map(\.1))) ?? []
+        // Asked by what it looks like too, when that is known (a remembered thing).
+        let described = looks.map { "\(what) (\($0))" } ?? what
+        let sightings = (try? await MemorySearch(client: client).find(described, in: readable.map(\.1), reference: reference)) ?? []
         if Task.isCancelled { return .none }
         log(String(format: "memory search %.1fs over %d snapshots: %d sightings", Date().timeIntervalSince(t0), readable.count, sightings.count))
         for s in sightings where readable.indices.contains(s.index) {
@@ -196,20 +205,20 @@ extension GuideModel {
                 // Seen in a room this session has not recognised (its session is not linked): said,
                 // when, not where. The newest sighting is where the thing is, so an older one is not
                 // pointed at instead; confirmed in its own snapshot first, like a pointed-at one.
-                if (try? await MemorySearch(client: client).pinpoint(what, in: jpeg)) != nil { return .elsewhere(frame) }
+                if (try? await MemorySearch(client: client).pinpoint(described, in: jpeg)) != nil { return .elsewhere(frame) }
                 if Task.isCancelled { return .none }
                 log("sighting elsewhere not confirmed (not found again in the snapshot)")
                 continue
             }
             guard let image = UIImage(data: jpeg)?.cgImage else { continue }
-            guard let pin = try? await MemorySearch(client: client).pinpoint(what, in: jpeg) else {
+            guard let pin = try? await MemorySearch(client: client).pinpoint(described, in: jpeg) else {
                 if Task.isCancelled { return .none }
                 log("sighting not confirmed (not found again in the snapshot)")
                 continue
             }
             let point = CGPoint(x: pin.x / 1000 * Double(frame.width), y: pin.y / 1000 * Double(frame.height))
             let spec = TargetSpec(x: pin.x, y: pin.y, phrase: pin.noun.isEmpty ? (phrase.isEmpty ? "object" : phrase) : pin.noun)
-            let grounded = await Grounder(client: client, frameJPEG: jpeg).ground(spec, id: 1, frame: image, describe: { what })
+            let grounded = await Grounder(client: client, frameJPEG: jpeg).ground(spec, id: 1, frame: image, describe: { described })
             if Task.isCancelled { return .none }
             guard let inst = grounded.instance, Double(inst.area) <= 0.3 * Double(image.width * image.height),
                   let depth = frame.depth(atPixel: inst.centre) ?? frame.depth(atPixel: point) else {
@@ -218,8 +227,11 @@ extension GuideModel {
             }
             log("sighting confirmed (\(grounded.method))")
             let world = inst.regularized().outlinePoints.map { ring in ring.map { frame.worldPoint(atPixel: $0, depth: depth) } }
-            // Found again on sight by the user's words for it (see `ARController.carried`).
-            return .found(world: world, frame: frame, spec: TargetSpec(x: 500, y: 500, phrase: spec.phrase, text: spec.text, description: what))
+            // Found again on sight as that very object: by the remembered thing's reference photo and
+            // looks, or by what it looked like in this snapshot (see `ARController.carried`).
+            var found = TargetSpec(x: 500, y: 500, phrase: spec.phrase, text: spec.text, description: looks ?? what)
+            found.reference = reference ?? Grounder.reference(of: inst, in: image)
+            return .found(world: world, frame: frame, spec: found)
         }
         return .none
     }

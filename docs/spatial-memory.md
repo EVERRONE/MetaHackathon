@@ -210,6 +210,33 @@ Engine compiles it), later 0.4 s.
   comes back with the link and that the question names is pointed at, unless the user asked
   something else meanwhile.
 
+## Finding that very object again (2 Nov, evening)
+
+A remembered place kept the model's words for what it pointed at, and those often said where it
+lay: the user's fancy pen was "the first black pen, closest to you", the book "the book to
+remember". Found again on sight from the other side of the desk (20:40), the pen nearest the camera
+was taken, and the place was stored again on it; before the room was recognised, "the user's book"
+was taken for another book on the counter.
+
+- **A reference photo.** Every pointed-at object keeps a crop round it with its outline in yellow
+  (`Grounder.reference`), and a remembered place keeps it beside it (`memory/places/<id>.jpg`).
+- **Its looks in words.** From that photo the model describes it whatever the viewpoint ("black pen
+  with a translucent dark-grey barrel"): the words it is found again by, and that the model knows it
+  by, also before its room is recognised.
+- **Compared before it is taken.** Finding a remembered object again, or an object back in view
+  among look-alikes, the pick is compared with the reference photo (the model sees both and says
+  which outline is that very object); none, or no answer: nothing is taken, and Pip looks again.
+  Not for keys and buttons, which their printed text and their place in the row tell apart.
+- **Searching the visual memory** for a remembered thing shows its reference photo with the
+  contact sheets.
+
+On the desk snapshot of 20:40:10, expected at the top pen: with the fancy pen's reference, the
+fancy pen 3 of 3; with the gold-banded pen's reference, that pen 3 of 3; with the fancy pen's
+reference expected at the yellow pen, the fancy pen 2 of 2. Places remembered before this have no
+reference photo: they are best remembered again. An object that fills the whole view is grounded as
+a part of it (on 2 Nov the book as the letter H of its cover): remember things from a little further
+away, the whole object in view.
+
 ## Steps
 
 1. **Within one session**: what Pip pointed at or saw is found again ("where did I leave…": the

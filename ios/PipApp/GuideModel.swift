@@ -570,6 +570,14 @@ final class GuideModel: ObservableObject {
         let pipeline = LookPipeline(client: client, language: language)
         var known = facts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.value) (\(Self.provenance($0.value.source)))" }
         if let here = spaceLinker.whereabouts { known.append(here) }
+        // What the user asked Pip to remember elsewhere, and what it looks like (2 Nov, 20:34: "the
+        // user's book" was taken for another book on the counter before the room was recognised).
+        let placesHere = Set(ar.places.values.map(\.id))
+        let elsewhere = memory.places.filter { !placesHere.contains($0.id) }
+        if !elsewhere.isEmpty {
+            known.append("Remembered things not located from here yet (their place is known once Pip recognises where they lie; never point at a look-alike for one): "
+                + elsewhere.map { $0.name + ($0.appearance.map { " (looks: \($0))" } ?? "") }.joined(separator: " | "))
+        }
         let places = ar.placeDescriptions()
         if !places.isEmpty { known.append("Remembered places (point with m=number; direction and distance from the user now, measured by the app): " + places.joined(separator: " | ")) }
         if !shopping.isEmpty {
