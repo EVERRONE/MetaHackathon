@@ -99,6 +99,7 @@ extension ARController {
             adjust[id] = ImageFollower.Adjust(from: .zero, to: .zero, scale: 1, hidden: true)
         }
         overlay.adjust = adjust
+        overlay.unconfirmed = carried.union(tracks.compactMap { $0.value.unconfirmed ? $0.key : nil })
         // Points behind the camera are never drawn (a projection would mirror them onto the
         // view); the edge arrow points the way instead, from the camera's own frame.
         let view = arView.session.currentFrame?.camera.viewMatrix(for: .portrait)

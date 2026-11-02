@@ -37,6 +37,10 @@ final class OverlayView: UIView {
     /// Marks whose object moved in the image: drawn where the object is now (see ImageFollower).
     var adjust: [Int: ImageFollower.Adjust] = [:]
 
+    /// Marks not confirmed on sight (from storage, or not found where expected yet): their outline
+    /// is dotted, as an outline that says "about here", until Pip has found the object itself.
+    var unconfirmed: Set<Int> = []
+
     /// `project`: a world point on screen, nil behind the camera. `direction`: the way to turn
     /// towards a world point on screen (x right, y down), also when it is behind the camera.
     func render(_ annotations: [AnnotationBoard.Annotation], now: TimeInterval, marks: [Int: AnchoredMark],
@@ -89,7 +93,8 @@ final class OverlayView: UIView {
             }
             switch a.cue {
             case .outline(let m):
-                if let p = polygons(m) { mark(p, CueArt.action, a, opacity: alpha) } else { edgeHint(aim(marks[m]), palette: CueArt.action) }
+                if let p = polygons(m) { mark(p, CueArt.action, a, dash: unconfirmed.contains(m) ? CueArt.dots : nil, opacity: alpha) }
+                else { edgeHint(aim(marks[m]), palette: CueArt.action) }
             case .candidates(let ms):
                 // Look-alikes: dotted, numbered, no emphasis on any of them.
                 for (i, m) in ms.enumerated() {
@@ -100,7 +105,7 @@ final class OverlayView: UIView {
                 // A small target: its contour, tinted, a reticle round it when it is small on
                 // screen, and its step number above it.
                 guard let p = polygons(m) else { edgeHint(aim(marks[m]), palette: CueArt.action); continue }
-                mark(p, CueArt.action, a, fill: 0.14, opacity: alpha, label: label)
+                mark(p, CueArt.action, a, fill: 0.14, dash: unconfirmed.contains(m) ? CueArt.dots : nil, opacity: alpha, label: label)
             case .move(let m, let dir):
                 guard let target = marks[m] else { continue }
                 let project = proj(target)
@@ -139,7 +144,7 @@ final class OverlayView: UIView {
                 generalDanger = reason
             case .landmark(let m, let name):
                 guard let p = polygons(m) else { continue }
-                mark(p, CueArt.action, a, fill: 0.1, opacity: alpha, label: name)
+                mark(p, CueArt.action, a, fill: 0.1, dash: unconfirmed.contains(m) ? CueArt.dots : nil, opacity: alpha, label: name)
             case .offscreen(let m):
                 edgeHint(aim(marks[m]), palette: CueArt.action, force: true)
             case .verified(let m):

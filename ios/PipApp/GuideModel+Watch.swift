@@ -153,6 +153,11 @@ extension GuideModel {
         // beside the pen was taken for the pen, "moved").
         var refinder = grounder
         refinder.refinding = true
+        // Any other object back in view is measured again as itself too: of its kind, by its printed
+        // text, or pointed at by the model by its description; never whatever lies there now. Until
+        // then it keeps its outline, dotted, and is looked for again (`ObjectTrack.retryAfter`).
+        var again = grounder
+        again.measuringAgain = true
         let specs = Dictionary(uniqueKeysWithValues: candidates.compactMap { c in
             c.reason == .reentry ? ar.spec(for: c.id, in: snapshot, box: c.box).map { (c.id, $0) } : nil
         })
@@ -163,8 +168,7 @@ extension GuideModel {
                 let stored = fromStorage.contains(c.id)
                 group.addTask {
                     if let spec {
-                        let found = stored ? await refinder.ground(spec, id: c.id, frame: snapshot.image, describe: { spec.description })
-                            : await grounder.ground(spec, id: c.id, frame: snapshot.image)
+                        let found = await (stored ? refinder : again).ground(spec, id: c.id, frame: snapshot.image, describe: { spec.description })
                         return (c.id, c.box, c.reason, found)
                     }
                     let inst = await grounder.reground(box: c.box, id: c.id, frame: snapshot.image)

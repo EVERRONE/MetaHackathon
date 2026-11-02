@@ -68,6 +68,11 @@ public struct Grounder: Sendable {
     /// region is wider, the object is pointed at again by its description, and only an object of
     /// its kind, or one the model pointed at, is taken: never whatever lies at the expected point.
     public var refinding = false
+    /// Measuring again an object Pip points at in this session (it came back into view): its
+    /// expected point is close, but the object may have been taken away meanwhile. As when finding
+    /// again, whatever lies there is not taken for it unless SAM finds it as the object's kind, its
+    /// printed text is there, or the model points at it by its description.
+    public var measuringAgain = false
     /// Whole-frame SAM results per phrase, shared by all targets of one look.
     let wholeFrame: WholeFrameSegments
 
@@ -389,9 +394,11 @@ public struct Grounder: Sendable {
             chosen = holder
             method += " (the \(spec.phrase) it is on)"
         }
-        // Finding again: an object the model did not point at, and that SAM did not find as the
-        // kind, is only whatever lay at the expected point (2 Nov: the ink bottle beside the pen).
-        if refinding, let pick = chosen, !pick.prompts.contains(spec.phrase),
+        // Finding or measuring again: an object the model did not point at, and that SAM did not
+        // find as the kind, is only whatever lay at the expected point (2 Nov: the ink bottle beside
+        // the pen). Nothing is taken then: the outline stays, and Pip looks again a little later.
+        // (A symbol SAM found as an icon is of the kind of a key that shows it.)
+        if refinding || measuringAgain, let pick = chosen, !pick.prompts.contains(spec.phrase), !(iconLike && pick.prompts.contains("icon")),
            !(method == "text" || method.contains("zoom") || method.contains("verified")) {
             chosen = nil
             method = "no \(spec.phrase) where expected (\(method))"

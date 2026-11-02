@@ -58,6 +58,8 @@ if args.first == "ground", args.count >= 5 {
     grounder.asked = env["PIP_ASKED"]
     // PIP_REFIND=1: finding a remembered object again at an expected point (see Grounder.refinding).
     grounder.refinding = env["PIP_REFIND"] != nil
+    // PIP_MEASURE_AGAIN=1: measuring again an object back in view (see Grounder.measuringAgain).
+    grounder.measuringAgain = env["PIP_MEASURE_AGAIN"] != nil
     let r = await grounder.ground(spec, id: 1, frame: frame, describe: { description })
     print(String(format: "%.2fs", Date().timeIntervalSince(t0)), r.method, r.instance.map { "box \($0.box) conf \($0.confidence)" } ?? "nil")
     exit(0)

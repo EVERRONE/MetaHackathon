@@ -67,7 +67,17 @@ struct ObjectTrack {
     static let checkInterval: TimeInterval = 8
     /// Outside a task, new views are measured for this long after Pip pointed.
     static let followFor: TimeInterval = 5 * 60
-    static let maxFailures = 3
+
+    /// Not found where expected: looked for again, less and less often (after 2, 4, 8 and 16 s, then
+    /// every 30 s), as long as it is in view, until it is found on sight. Pip never stops checking
+    /// before it has found the object (2 Nov: after three tries a stored thing kept the link's
+    /// place for good). Meanwhile no other measurement moves it.
+    static func retryAfter(failures: Int) -> TimeInterval {
+        min(30, minInterval * pow(2, Double(max(0, failures - 1))))
+    }
+
+    /// Looked for and not found since it needed a check: drawn as not confirmed.
+    var unconfirmed: Bool { needsCheck && failures > 0 }
 
     init(observation: RayFusion.Observation, spec: TargetSpec?) {
         observations = [observation]
@@ -108,7 +118,7 @@ struct ObjectTrack {
     /// Why to measure the object now, or nil.
     func reason(now: TimeInterval, camera: simd_float3, centre: simd_float3, taskActive: Bool) -> Reason? {
         guard now - max(lastMeasured, lastTried) >= Self.minInterval else { return nil }
-        if needsCheck { return failures < Self.maxFailures ? .reentry : nil }
+        if needsCheck { return now - lastTried >= Self.retryAfter(failures: failures) ? .reentry : nil }
         if taskActive || now - created < Self.followFor {
             let direction = simd_normalize(centre - camera)
             let nearest = observations.map { simd_distance(camera, $0.origin) }.min() ?? 0
@@ -152,10 +162,10 @@ struct ObjectTrack {
         return Update(position: RayFusion.fuse(observations), views: observations.count, reset: reset, offset: offset)
     }
 
+    /// Not found where expected: it stays to be checked, and is looked for again later (`retryAfter`).
     mutating func failed(now: TimeInterval) {
         lastTried = now
         failures += 1
-        if failures >= Self.maxFailures { needsCheck = false }
     }
 
     /// Brings the earlier views along with ARKit's correction of the object's anchor.
