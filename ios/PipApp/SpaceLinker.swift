@@ -69,8 +69,10 @@ final class SpaceLinker {
     private var dinoWorking = false
     private var dinoLinksSince = 0
     static let dinoInterval: TimeInterval = 3
-    /// Stored views a live view is laid against: the most alike by DINOv2's whole-view token.
+    /// Stored views a live view is laid against: the most alike by DINOv2's whole-view token; more
+    /// while no session is linked yet.
     nonisolated static let dinoPerView = 3
+    nonisolated static let dinoPerViewSearching = 5
 
     static let interval: TimeInterval = 1.5
     /// Stored views matched with each live view (about 1-2 ms each), the hot ones first.
@@ -228,16 +230,21 @@ final class SpaceLinker {
     /// Every few seconds the live view is laid against the stored views it looks most like
     /// (DinoLink), on the DINOv2 queue; what links goes into the same book as the corners' links.
     private func considerAcrossLight(_ snap: FrameSnapshot, view: Int, time: TimeInterval) {
-        guard let features = Self.features, !dinoWorking, time - lastDino >= Self.dinoInterval else { return }
+        // Until a session is linked, every live view and more stored views each: the first minute
+        // decides whether Pip knows where it is (2 Nov, evening: in the bathroom 2 view links in a
+        // minute at one live view in 3 s against 3 stored, not enough; linked in the room later).
+        let searching = book.linked.isEmpty
+        guard let features = Self.features, !dinoWorking, time - lastDino >= (searching ? Self.interval : Self.dinoInterval) else { return }
         let candidates = wholes.filter { !elsewhere.contains($0.key) }
         guard !candidates.isEmpty else { return }
         lastDino = time
         dinoWorking = true
+        let perView = searching ? Self.dinoPerViewSearching : Self.dinoPerView
         let breaks = self.breaks, generation = self.generation, stored = self.stored, dinoViews = self.dinoViews
         dinoQueue.async { [weak self] in
             var links: [(Int, ViewLink)] = []
             if let live = Self.dinoView(snap, features: features) {
-                let ranked = candidates.map { ($0.key, Self.dot($0.value, live.features.whole)) }.sorted { $0.1 > $1.1 }.prefix(Self.dinoPerView)
+                let ranked = candidates.map { ($0.key, Self.dot($0.value, live.features.whole)) }.sorted { $0.1 > $1.1 }.prefix(perView)
                 for (i, _) in ranked where stored.indices.contains(i) {
                     guard let storedView = dinoViews.view(i, frame: stored[i], features: features) else { continue }
                     if let l = DinoLink.link(storedView, live, from: i, to: view) { links.append((i, l)) }
@@ -390,7 +397,7 @@ final class SpaceLinker {
 final class DinoViews: @unchecked Sendable {
     private var views: [Int: DinoLink.View] = [:]
     private var order: [Int] = []
-    static let keep = 12
+    static let keep = 20
 
     func view(_ i: Int, frame: Keyframes.Frame, features: ViewFeatures) -> DinoLink.View? {
         if let v = views[i] {
