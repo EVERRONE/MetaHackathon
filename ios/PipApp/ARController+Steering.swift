@@ -98,6 +98,7 @@ extension ARController {
             reanchor(led.filter { !planarFollowed.contains($0) })
         }
         planarHidden.remove(id)
+        planarUnsure.remove(id)
         let points = rings.flatMap { $0 }
         guard !points.isEmpty else { return }
         let centre = points.reduce(.zero, +) / Float(points.count)
@@ -113,9 +114,15 @@ extension ARController {
     }
 
     /// The planar follower lost these marks' object: hidden if it was moving (it is elsewhere now),
-    /// otherwise left where it lay.
+    /// otherwise left where it lay, dotted (not sure), until found again or hidden.
     func planarLost(_ ids: [Int], moving: Bool) {
-        if moving { planarHidden.formUnion(ids.filter { planarFollowed.contains($0) }) }
+        let followed = ids.filter { planarFollowed.contains($0) }
+        if moving {
+            planarHidden.formUnion(followed)
+            planarUnsure.subtract(followed)
+        } else {
+            planarUnsure.formUnion(followed)
+        }
     }
 
     /// Back on room anchors where they are drawn now, followed in the image and measured afresh

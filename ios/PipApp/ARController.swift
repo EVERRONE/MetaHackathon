@@ -58,6 +58,9 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     let planar = PlanarFollower()
     var planarFollowed = Set<Int>()
     var planarHidden = Set<Int>()
+    /// Lost while it lay still: left where it lay, dotted, until found again there (or hidden once
+    /// it is not, see PlanarFollower).
+    var planarUnsure = Set<Int>()
     /// A followed mark's centre in the room, its velocity and the frame they are from: drawn ahead
     /// by the time from that frame to the one on screen (the tracker is a frame or two behind).
     var planarMotion: [Int: (centre: simd_float3, velocity: simd_float3, time: TimeInterval)] = [:]
@@ -285,6 +288,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             riders[id] = nil
             planarFollowed.remove(id)
             planarHidden.remove(id)
+            planarUnsure.remove(id)
             planarMotion[id] = nil
             measured[id] = nil
             carried.remove(id)

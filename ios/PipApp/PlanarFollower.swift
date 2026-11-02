@@ -18,6 +18,10 @@ import simd
 final class PlanarFollower {
     /// Tracking size: upright, half the camera's 1440×1920.
     static let width = 720, height = 960
+    /// Lost while it seemed still and not found where it lay, that place in view, for this long:
+    /// taken as moved, and hidden until found (a hand over it, or blur, mostly passes sooner: on
+    /// 2 Nov 26 of 30 finds where it lay came within half a second; a later one shows it again).
+    static let notWhereItLayAfter: TimeInterval = 0.7
 
     private struct Object {
         var tracker: PlanarTracker
@@ -31,6 +35,9 @@ final class PlanarFollower {
         var cornersWorld: [simd_float3]
         var lostSince: TimeInterval?
         var lostMoving = false
+        /// Lost while it seemed still, and not found where it lay although that place was in view:
+        /// it was moved after all (for the log).
+        var notWhereItLay = false
         var lastTry: TimeInterval = 0
         /// The reference is still the snapshot (a live frame takes over once it is followed well).
         var onSnapshot = true
@@ -138,7 +145,9 @@ final class PlanarFollower {
                     if let found = r.found { self.onLog?("follow: marks \(Self.label(live.targets.keys)) found again \(found)") }
                     if let lost = r.lost {
                         self.onLost?(lost.filter { live.targets[$0] != nil }, object.lostMoving)
-                        self.onLog?("follow: marks \(Self.label(lost)) lost\(object.lostMoving ? " while moving: hidden until found again" : "; kept where they lay, looked for there")")
+                        let why = object.notWhereItLay ? " not where they lay: hidden until found again"
+                            : (object.lostMoving ? " lost while moving: hidden until found again" : " lost; kept where they lay, dotted, looked for there")
+                        self.onLog?("follow: marks \(Self.label(lost))\(why)")
                     }
                 }
             }
@@ -148,20 +157,32 @@ final class PlanarFollower {
     /// One frame for one object: its marks' outlines in the room, and the marks just lost.
     private static func step(_ object: inout Object, image: GrayImage, camera: ARCamera, depth: CVPixelBuffer?, time: TimeInterval) -> ([Int: [[simd_float3]]], [Int]?) {
         let now = CACurrentMediaTime()
-        if object.lostSince != nil {
-            // Looked for again a few times a second: where it was (cheap), else anywhere in the
-            // frame by its described corners (moved far, turned).
-            guard now - object.lastTry > 0.2 else { return ([:], nil) }
-            object.lastTry = now
+        if let since = object.lostSince {
             let predicted = predict(object, camera: camera)
-            // Only when it can be in view: it was moving, or where it lay is in view.
-            guard predicted != nil || object.lostMoving else { return ([:], nil) }
+            // Lost while it seemed still, and not found where it lay while that place is in view: it
+            // was moved, slowly enough that the last 0.3 s did not show it. Its outlines are hidden
+            // rather than left on whatever lies there now (2 Nov: a laptop pushed across the desk;
+            // its key rings stayed on the touchpad for 26 s).
+            var hideNow = false
+            if !object.lostMoving, predicted != nil, now - since > notWhereItLayAfter {
+                object.lostMoving = true
+                object.notWhereItLay = true
+                hideNow = true
+            }
+            let lostAgain: [Int]? = hideNow ? Array(object.targets.keys) : nil
+            // Looked for again a few times a second, where it was (cheap) and anywhere in the frame by
+            // its described corners (moved far, turned). With its place out of view, once a second
+            // anywhere: it may have been moved into view (2 Nov: found again only after 26 to 113 s,
+            // when the phone came back to where it had lain).
+            guard now - object.lastTry > (predicted != nil || object.lostMoving ? 0.2 : 1.0) else { return ([:], lostAgain) }
+            object.lastTry = now
             // Checked by its described corners (never a look-alike); without them (blur) only right
             // after a brief loss of an object that lay still, where it was predicted.
-            let brief = now - (object.lostSince ?? now) < 0.5 && !object.lostMoving
-            guard let found = object.tracker.reacquire(in: image, predicted: predicted, trustPrediction: brief) else { return ([:], nil) }
+            let brief = now - since < 0.5 && !object.lostMoving
+            guard let found = object.tracker.reacquire(in: image, predicted: predicted, trustPrediction: brief) else { return ([:], lostAgain) }
             object.foundBy = found == .byCorners ? "by its corners" : "where it was"
             object.lostSince = nil
+            object.notWhereItLay = false
             object.recent = []
             object.lastCheck = now
             if object.onSnapshot { rebase(&object, on: image, checked: found != .wherePredictedUnchecked) }
