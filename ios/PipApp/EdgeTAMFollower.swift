@@ -85,14 +85,19 @@ final class EdgeTAMFollower {
 
     /// Loads the models at start (the first load on a phone also compiles them for the Neural
     /// Engine, several seconds), so the first pointed-at object is followed at once.
-    func preload() {
+    /// A load that fails at start is tried again a few seconds later (2 Nov: Core ML could not
+    /// build the execution plan once, right at launch, and the next launch loaded at once); the
+    /// first object to follow would otherwise wait for the load itself.
+    func preload(attempt: Int = 1) {
         worker.load { [weak self] result in
             switch result {
             case .success(let seconds):
-                self?.log(String(format: "edgetam: models loaded in %.1f s", seconds))
+                self?.log(String(format: "edgetam: models loaded in %.1f s%@", seconds, attempt > 1 ? " (attempt \(attempt))" : ""))
                 Self.append(String(format: "%@\tload\t%.2f\n", Self.now(), seconds))
             case .failure(let e):
-                self?.log("edgetam: cannot load: \(e)")
+                self?.log("edgetam: cannot load (attempt \(attempt)): \(e)")
+                guard attempt < 3 else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self?.preload(attempt: attempt + 1) }
             }
         }
     }

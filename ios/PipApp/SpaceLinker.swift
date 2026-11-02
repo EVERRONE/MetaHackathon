@@ -102,8 +102,10 @@ final class SpaceLinker {
             dropped.insert(piece)
         }
         let back = Set(elsewhere.subtracting(now).compactMap { stored[$0].piece })
+        let newlyDropped = Set(now.subtracting(elsewhere).compactMap { stored[$0].piece })
         elsewhere = now
-        if !dropped.isEmpty { onLog?("space: \(dropped.count) earlier sessions were mapped elsewhere; not linked to") }
+        // Said when it changes, not with every fix (2 Nov: the same line five to seven times at each start).
+        if !newlyDropped.isEmpty { onLog?("space: \(dropped.count) earlier sessions were mapped elsewhere; not linked to") }
         if !back.isEmpty {
             onLog?("space: \(back.count) earlier sessions are of this place after all; linked to again")
             startDescribing()
