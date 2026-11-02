@@ -56,12 +56,16 @@ func dinoLinks(_ args: [String]) {
             let t1 = Date()
             var links: [ViewLink] = []
             var outcomes: [String: Int] = [:]
+            var uncertainties: [Float] = []
             var bestTry: (matches: Int, ransac: Int, overlap: Float, rms: Float, turn: Float) = (0, 0, 0, 0, 0)
             for (ib, vb) in b.enumerated() {
                 let ranked = a.indices.sorted { a[$0].view.features.similarity(to: vb.view.features) > a[$1].view.features.similarity(to: vb.view.features) }
                 for ia in ranked.prefix(top) {
                     var trace = DinoLink.Trace()
-                    if let l = DinoLink.link(a[ia].view, vb.view, from: ia, to: ib, settings: linkSettings, trace: &trace) { links.append(l) }
+                    if let l = DinoLink.link(a[ia].view, vb.view, from: ia, to: ib, settings: linkSettings, trace: &trace) {
+                        links.append(l)
+                        uncertainties.append(trace.shiftUncertainty)
+                    }
                     outcomes[trace.outcome, default: 0] += 1
                     if trace.ransac > bestTry.ransac || (trace.ransac == bestTry.ransac && trace.matches > bestTry.matches) {
                         bestTry = (trace.matches, trace.ransac, trace.overlap, trace.rms, trace.correctionTurn * 180 / .pi)
@@ -74,6 +78,7 @@ func dinoLinks(_ args: [String]) {
                 print("  outcomes:", outcomes.sorted { $0.value > $1.value }.map { "\($0.key) \($0.value)" }.joined(separator: ", "))
                 print(String(format: "  furthest: %d matches, %d agree, depth overlap %.0f%%, rms %.1f cm, corrected %.1f°", bestTry.matches, bestTry.ransac,
                              bestTry.overlap * 100, bestTry.rms * 100, bestTry.turn))
+                print(String(format: "  surfaces' shift uncertainty of the links: %@", uncertainties.sorted().map { String(format: "%.1f", $0 * 1000) }.joined(separator: " ") + " mm"))
             }
             for l in links.sorted(by: { $0.inliers > $1.inliers }).prefix(12) {
                 print(String(format: "  A%03d → B%03d: %2d agree, laid to %.1f cm, at (%.2f, %.2f, %.2f) reach %.2f m: %@", l.from, l.to, l.inliers, l.residual * 100,

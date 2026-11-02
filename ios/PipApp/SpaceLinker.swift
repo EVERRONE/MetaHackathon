@@ -55,24 +55,45 @@ final class SpaceLinker {
     // link sessions in the same light; on 2 Nov the same rooms at 15:22 and at 16:40 in low sun gave
     // one corner view link, and the session was never linked. This runs beside them, on a queue of
     // its own (the corners' start is not held up), every few seconds.
-    /// The model (Models/DINOv2, see ios/scripts/convert-dinov2.py); nil without it.
+    /// Whether the app has the model (looked up without loading it).
+    nonisolated private static let hasModel = Bundle.main.url(forResource: ViewFeatures.modelName, withExtension: "mlmodelc") != nil
+    /// The model (Models/DINOv2, see ios/scripts/convert-dinov2.py); nil without it. Loaded on first
+    /// use, which is always on a background queue after `dinoDelay` (never on the main thread).
     nonisolated private static let features: ViewFeatures? = {
         guard let url = Bundle.main.url(forResource: ViewFeatures.modelName, withExtension: "mlmodelc") else { return nil }
         return try? ViewFeatures.load(from: url)
     }()
     private let dinoQueue = DispatchQueue(label: "pip.spacelinker.dino", qos: .utility)
+    /// The stored snapshots' whole-view tokens are made here, one at a time, at the lowest priority.
+    private let wholesQueue = DispatchQueue(label: "pip.spacelinker.wholes", qos: .background)
     /// Each stored snapshot's whole-view token: which stored views look like a live view, whatever the light.
     private var wholes: [Int: [Float]] = [:]
+    /// Stored snapshots waiting for their whole-view token, and whether one is being made.
+    private var wholesPending: [Int] = []
+    private var wholeInFlight = false
+    private var wholesTimer: Timer?
+    /// DINOv2 starts this long after a session: EdgeTAM loads first, and the speech gets going (2 Nov,
+    /// 17:59: all stored snapshots described with DINOv2 at once, EdgeTAM failed to load three times
+    /// and the speech service fell behind the audio).
+    static let dinoDelay: TimeInterval = 15
+    private var dinoStart = Date.distantFuture
+    /// One stored snapshot's whole-view token this often, at most.
+    static let wholeEvery: TimeInterval = 0.25
     /// Stored views prepared for DinoLink, the last few used (used on `dinoQueue` only).
     private let dinoViews = DinoViews()
     private var lastDino: TimeInterval = 0
     private var dinoWorking = false
     private var dinoLinksSince = 0
+    private var dinoMs: [Double] = []
     static let dinoInterval: TimeInterval = 3
+    /// Until a session is linked, more often, against more stored views.
+    static let dinoIntervalSearching: TimeInterval = 2
     /// Stored views a live view is laid against: the most alike by DINOv2's whole-view token; more
-    /// while no session is linked yet.
+    /// while no session is linked yet. Of those, at most this many not prepared yet (each a DINOv2
+    /// pass of its own): the rest wait for a later live view.
     nonisolated static let dinoPerView = 3
-    nonisolated static let dinoPerViewSearching = 5
+    nonisolated static let dinoPerViewSearching = 4
+    nonisolated static let dinoNewPerView = 2
 
     static let interval: TimeInterval = 1.5
     /// Stored views matched with each live view (about 1-2 ms each), the hot ones first.
@@ -96,6 +117,10 @@ final class SpaceLinker {
         described = [:]
         prints = [:]
         wholes = [:]
+        wholesPending = []
+        wholesTimer?.invalidate()
+        wholesTimer = nil
+        dinoStart = Date().addingTimeInterval(Self.dinoDelay)
         let dinoViews = self.dinoViews
         dinoQueue.async { dinoViews.clear() }
         describing = []
@@ -167,7 +192,8 @@ final class SpaceLinker {
                     if let described {
                         self.described[i] = described.points
                         self.prints[i] = described.print
-                        self.describeWhole(i, frame)
+                        self.wholesPending.append(i)
+                        self.startWholes()
                     } else {
                         self.undescribable.insert(i)
                     }
@@ -214,14 +240,37 @@ final class SpaceLinker {
         }
     }
 
-    /// A stored snapshot's whole-view token, on the DINOv2 queue.
-    private func describeWhole(_ i: Int, _ frame: Keyframes.Frame) {
-        guard let features = Self.features else { return }
-        let generation = self.generation
-        dinoQueue.async { [weak self] in
-            guard let jpeg = frame.jpeg(), let image = UIImage(data: jpeg)?.cgImage, let whole = try? features.describe(image).whole else { return }
+    /// The stored snapshots' whole-view tokens, one at a time (`wholeEvery`), from `dinoStart` on,
+    /// the newest snapshots first.
+    private func startWholes() {
+        guard Self.hasModel, wholesTimer == nil else { return }
+        wholesTimer = Timer.scheduledTimer(withTimeInterval: Self.wholeEvery, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.describeNextWhole() }
+        }
+    }
+
+    private func describeNextWhole() {
+        guard Date() >= dinoStart, !wholeInFlight else { return }
+        wholesPending.removeAll { elsewhere.contains($0) || wholes[$0] != nil }
+        guard let i = wholesPending.max(by: { stored[$0].time < stored[$1].time }) else {
+            if describing.isEmpty && describeTimer == nil {
+                wholesTimer?.invalidate()
+                wholesTimer = nil
+            }
+            return
+        }
+        wholesPending.removeAll { $0 == i }
+        wholeInFlight = true
+        let frame = stored[i], generation = self.generation
+        wholesQueue.async { [weak self] in
+            let whole: [Float]? = {
+                guard let features = Self.features, let jpeg = frame.jpeg(), let image = UIImage(data: jpeg)?.cgImage else { return nil }
+                return try? features.describe(image).whole
+            }()
             DispatchQueue.main.async {
-                guard let self, self.generation == generation else { return }
+                guard let self else { return }
+                self.wholeInFlight = false
+                guard self.generation == generation, let whole else { return }
                 self.wholes[i] = whole
             }
         }
@@ -234,7 +283,8 @@ final class SpaceLinker {
         // decides whether Pip knows where it is (2 Nov, evening: in the bathroom 2 view links in a
         // minute at one live view in 3 s against 3 stored, not enough; linked in the room later).
         let searching = book.linked.isEmpty
-        guard let features = Self.features, !dinoWorking, time - lastDino >= (searching ? Self.interval : Self.dinoInterval) else { return }
+        guard Self.hasModel, !dinoWorking, Date() >= dinoStart,
+              time - lastDino >= (searching ? Self.dinoIntervalSearching : Self.dinoInterval) else { return }
         let candidates = wholes.filter { !elsewhere.contains($0.key) }
         guard !candidates.isEmpty else { return }
         lastDino = time
@@ -242,17 +292,25 @@ final class SpaceLinker {
         let perView = searching ? Self.dinoPerViewSearching : Self.dinoPerView
         let breaks = self.breaks, generation = self.generation, stored = self.stored, dinoViews = self.dinoViews
         dinoQueue.async { [weak self] in
+            let t0 = Date()
             var links: [(Int, ViewLink)] = []
-            if let live = Self.dinoView(snap, features: features) {
+            if let features = Self.features, let live = Self.dinoView(snap, features: features) {
                 let ranked = candidates.map { ($0.key, Self.dot($0.value, live.features.whole)) }.sorted { $0.1 > $1.1 }.prefix(perView)
+                var newLeft = Self.dinoNewPerView
                 for (i, _) in ranked where stored.indices.contains(i) {
+                    if !dinoViews.has(i) {
+                        guard newLeft > 0 else { continue }
+                        newLeft -= 1
+                    }
                     guard let storedView = dinoViews.view(i, frame: stored[i], features: features) else { continue }
                     if let l = DinoLink.link(storedView, live, from: i, to: view) { links.append((i, l)) }
                 }
             }
+            let ms = Date().timeIntervalSince(t0) * 1000
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.dinoWorking = false
+                self.dinoMs.append(ms)
                 guard self.breaks == breaks, self.generation == generation, !links.isEmpty else { return }
                 self.dinoLinksSince += links.count
                 let found = links.compactMap { i, l in self.stored[i].piece.map { (session: $0, link: l) } }
@@ -346,12 +404,16 @@ final class SpaceLinker {
         lastSummary = Date()
         let ms = viewMs.sorted()
         let linkedNow = book.linked.isEmpty ? "none yet" : book.linked.map { "\(when($0.key)) (\($0.value.views) views)" }.joined(separator: ", ")
-        let dino = Self.features == nil ? "no DINOv2 model" : "\(dinoLinksSince) across light (DINOv2, \(wholes.count) stored views described)"
+        let dinoTimes = dinoMs.sorted()
+        let dino = !Self.hasModel ? "no DINOv2 model"
+            : String(format: "%d across light (DINOv2: %d live views, %.0f ms each, median; %d stored views described)", dinoLinksSince, dinoTimes.count,
+                     dinoTimes.isEmpty ? 0 : dinoTimes[dinoTimes.count / 2], wholes.count)
         onLog?(String(format: "space: %d live views in the last minute, %d view links, %@; %.0f ms per live view (median); linked: %@",
                       viewsSince, viewLinksSince, dino, ms.isEmpty ? 0 : ms[ms.count / 2], linkedNow))
         viewsSince = 0
         viewLinksSince = 0
         dinoLinksSince = 0
+        dinoMs = []
         viewMs = []
         onStatus?(status())
     }
@@ -397,7 +459,7 @@ final class SpaceLinker {
 final class DinoViews: @unchecked Sendable {
     private var views: [Int: DinoLink.View] = [:]
     private var order: [Int] = []
-    static let keep = 20
+    static let keep = 16
 
     func view(_ i: Int, frame: Keyframes.Frame, features: ViewFeatures) -> DinoLink.View? {
         if let v = views[i] {
@@ -415,6 +477,8 @@ final class DinoViews: @unchecked Sendable {
         if order.count > Self.keep { views[order.removeFirst()] = nil }
         return v
     }
+
+    func has(_ i: Int) -> Bool { views[i] != nil }
 
     func clear() {
         views = [:]

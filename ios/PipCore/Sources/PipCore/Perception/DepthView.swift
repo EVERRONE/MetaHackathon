@@ -117,6 +117,9 @@ public enum DepthAlign {
         public var rms: Float
         /// Those points, in the first session's room: where the evidence is.
         public var agreeing: [SIMD3<Float>]
+        /// How sure the surfaces make the turn (radians) and the shift at the evidence (metres).
+        public var turnUncertainty: Float = 0
+        public var shiftUncertainty: Float = 0
     }
 
     /// `start`: from `a`'s room to `b`'s. Points nearer than `minDepth` to either camera are left out.
@@ -174,16 +177,43 @@ public enum DepthAlign {
         // grid's cells, 3 to 6 cm apart at a few metres), and by its cell.
         var agreeing: [SIMD3<Float>] = []
         var sumSquares: Float = 0
+        // What the agreeing surface pins down: its information on the turn and the shift.
+        var info = simd_double4x4(0)
         for p in source {
             guard let (q, target, n) = associate(p, m), simd_distance(q, target) < 0.08 else { continue }
             let across = abs(simd_dot(n, q - target))
             if across < 0.015 {
                 agreeing.append(p)
                 sumSquares += across * across
+                let turned = q - m.t
+                let j = SIMD4<Double>(Double(n.x * turned.z - n.z * turned.x), Double(n.x), Double(n.y), Double(n.z))
+                info += simd_double4x4(columns: (j * j.x, j * j.y, j * j.z, j * j.w))
             }
         }
         guard !agreeing.isEmpty else { return nil }
-        return Result(transform: m, overlap: Float(agreeing.count) / Float(source.count), rms: sqrt(sumSquares / Float(agreeing.count)), agreeing: agreeing)
+        let rms = sqrt(sumSquares / Float(agreeing.count))
+        let centre = agreeing.reduce(.zero, +) / Float(agreeing.count)
+        let (turnStd, shiftStd) = Self.uncertainty(info, at: m.apply(centre) - m.t, sigma: Double(max(rms, 0.005)))
+        return Result(transform: m, overlap: Float(agreeing.count) / Float(source.count), rms: rms, agreeing: agreeing,
+                      turnUncertainty: turnStd, shiftUncertainty: shiftStd)
+    }
+
+    /// How sure the surfaces make the fit: the turn's standard deviation (radians) and the shift's at
+    /// the evidence (metres, the root of the summed variances along x, y and z), for surfaces
+    /// measured to `sigma`. A wall and the floor alone leave the shift along the wall free (a wall
+    /// slides along itself, 31 Oct): there it is metres, and the link is the appearance's alone.
+    static func uncertainty(_ info: simd_double4x4, at turned: SIMD3<Float>, sigma: Double) -> (Float, Float) {
+        let cov = (info + simd_double4x4(diagonal: SIMD4(repeating: 1e-9))).inverse
+        // The evidence moves with the turn about the vertical (its arm from the axis) and the shift.
+        let arm = SIMD3<Double>(Double(turned.z), 0, -Double(turned.x))
+        var shiftVariance = 0.0
+        for k in 0..<3 {
+            // Row k of A = [arm | I]: d(position_k) = arm_k dθ + dt_k.
+            let a = SIMD4<Double>(arm[k], k == 0 ? 1 : 0, k == 1 ? 1 : 0, k == 2 ? 1 : 0)
+            shiftVariance += simd_dot(a, cov * a)
+        }
+        let turn = sqrt(max(cov[0][0], 0)) * sigma, shift = sqrt(max(shiftVariance, 0)) * sigma
+        return (turn.isFinite ? Float(turn) : .infinity, shift.isFinite ? Float(shift) : .infinity)
     }
 }
 

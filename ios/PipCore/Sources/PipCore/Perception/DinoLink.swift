@@ -29,6 +29,11 @@ public enum DinoLink {
         /// mean square across it (2 Nov: the links found were laid to 0.3-0.8 cm).
         public var minOverlap: Float = 0.3
         public var maxRMS: Float = 0.01
+        /// The surfaces must pin the fit down in every direction: the shift at the evidence to this,
+        /// the turn to this (a wall and the floor alone leave the shift along the wall free: the
+        /// link would be the appearance's alone, and a look-alike door could pass).
+        public var maxShiftUncertainty: Float = 0.02
+        public var maxTurnUncertainty: Float = 1.5 * .pi / 180
         /// The depth may correct the appearance's fit by at most this much (else it settled elsewhere).
         public var maxCorrectionTurn: Float = 12 * .pi / 180
         public var maxCorrectionShift: Float = 0.35
@@ -101,7 +106,7 @@ public enum DinoLink {
     /// RANSAC's agreeing matches, and the depth's overlap and fit.
     public struct Trace: Sendable {
         public var pointsA = 0, pointsB = 0, matches = 0, ransac = 0
-        public var overlap: Float = 0, rms: Float = 0, correctionTurn: Float = 0
+        public var overlap: Float = 0, rms: Float = 0, correctionTurn: Float = 0, shiftUncertainty: Float = 0
         public var outcome = ""
         public init() {}
     }
@@ -146,9 +151,12 @@ public enum DinoLink {
         trace.overlap = laid.overlap
         trace.rms = laid.rms
         trace.correctionTurn = laid.transform.turn(to: fit)
+        trace.shiftUncertainty = laid.shiftUncertainty
         trace.outcome = "the depth disagreed"
         guard laid.overlap >= settings.minOverlap, laid.rms <= settings.maxRMS,
               laid.transform.turn(to: fit) <= settings.maxCorrectionTurn else { return nil }
+        trace.outcome = "the surfaces leave it free"
+        guard laid.shiftUncertainty <= settings.maxShiftUncertainty, laid.turnUncertainty <= settings.maxTurnUncertainty else { return nil }
         let centreA = close.map { pa[$0] }.reduce(.zero, +) / Float(close.count)
         guard laid.transform.distance(to: fit, at: centreA) <= settings.maxCorrectionShift else { return nil }
         trace.outcome = "linked"
