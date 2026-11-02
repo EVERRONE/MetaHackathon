@@ -23,6 +23,11 @@ final class CaptureGate {
 
     private var normalSince: TimeInterval?
     private var lostAt: TimeInterval?
+    /// ARKit has made a map of the room this session (its mapping status reached extending or
+    /// mapped). Before that, its poses are not settled: on 2 Nov three snapshots taken 2-5 s into a
+    /// session, before ARKit lost its few features and started again, were 60-70° off the rest of the
+    /// session, and linked it to an earlier one 60-70° wrong. Nothing is kept or linked before.
+    private var mapEstablished = false
     private var lastPose: simd_float4x4?
     private var lastTime: TimeInterval = 0
     private var speed: Float = 0
@@ -44,6 +49,12 @@ final class CaptureGate {
     func update(_ frame: ARFrame) {
         let t = frame.timestamp
         let pose = frame.camera.transform
+        switch frame.worldMappingStatus {
+        case .extending, .mapped: mapEstablished = true
+        default: break
+        }
+        // The session started again (no tracking at all): its map is new.
+        if case .notAvailable = frame.camera.trackingState { mapEstablished = false }
         if case .normal = frame.camera.trackingState {
             if normalSince == nil { normalSince = t }
         } else if normalSince != nil {
@@ -73,6 +84,7 @@ final class CaptureGate {
     /// here, for frames that would be kept.
     func accepts(_ frame: ARFrame) -> Bool {
         let t = frame.timestamp
+        guard mapEstablished, frame.worldMappingStatus != .notAvailable else { return false }
         guard case .normal = frame.camera.trackingState, let since = normalSince else { return false }
         let settle = lostAt.map { since - $0 < 5 } == true ? Self.settleAfterLoss : Self.settle
         guard t - since >= settle, speed < Self.maxSpeed, turnSpeed < Self.maxTurnSpeed else { return false }

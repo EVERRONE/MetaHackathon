@@ -47,6 +47,8 @@ func dinoLinks(_ args: [String]) {
     if let i = args.firstIndex(of: "--min-total") { consensusSettings.minTotalInliers = Int(args[i + 1]) ?? consensusSettings.minTotalInliers }
     var linkSettings = DinoLink.Settings()
     if let i = args.firstIndex(of: "--min-depth"), let v = Float(args[i + 1]) { linkSettings.minDepth = v }
+    if let i = args.firstIndex(of: "--min-inliers"), let v = Int(args[i + 1]) { linkSettings.minInliers = v }
+    if let i = args.firstIndex(of: "--inlier-distance"), let v = Float(args[i + 1]) { linkSettings.inlierDistance = v }
     let views = loadDinoViews(dir, pieces: pieces, features: features, minDepth: linkSettings.minDepth)
     print(String(format: "%d snapshots described in %.1f s", views.count, Date().timeIntervalSince(t0)))
     let byPiece = Dictionary(grouping: views) { String(($0.frame.piece ?? "????").prefix(4)) }
@@ -62,6 +64,13 @@ func dinoLinks(_ args: [String]) {
                 let ranked = a.indices.sorted { a[$0].view.features.similarity(to: vb.view.features) > a[$1].view.features.similarity(to: vb.view.features) }
                 for ia in ranked.prefix(top) {
                     var trace = DinoLink.Trace()
+                    defer {
+                        if args.contains("--trace-pairs") {
+                            print(String(format: "    pair A%03d B%03d sim %.2f: %@; points %d/%d, matches %d, ransac %d, overlap %.0f%%, rms %.1f cm, shift sd %.1f mm",
+                                         ia, ib, a[ia].view.features.similarity(to: vb.view.features), trace.outcome, trace.pointsA, trace.pointsB, trace.matches,
+                                         trace.ransac, trace.overlap * 100, trace.rms * 100, trace.shiftUncertainty * 1000))
+                        }
+                    }
                     if let l = DinoLink.link(a[ia].view, vb.view, from: ia, to: ib, settings: linkSettings, trace: &trace) {
                         links.append(l)
                         uncertainties.append(trace.shiftUncertainty)
@@ -80,7 +89,7 @@ func dinoLinks(_ args: [String]) {
                              bestTry.overlap * 100, bestTry.rms * 100, bestTry.turn))
                 print(String(format: "  surfaces' shift uncertainty of the links: %@", uncertainties.sorted().map { String(format: "%.1f", $0 * 1000) }.joined(separator: " ") + " mm"))
             }
-            for l in links.sorted(by: { $0.inliers > $1.inliers }).prefix(12) {
+            for l in links.sorted(by: { $0.inliers > $1.inliers }).prefix(args.contains("--all-links") ? 1000 : 12) {
                 print(String(format: "  A%03d → B%03d: %2d agree, laid to %.1f cm, at (%.2f, %.2f, %.2f) reach %.2f m: %@", l.from, l.to, l.inliers, l.residual * 100,
                              l.centre.x, l.centre.y, l.centre.z, l.reach, l.transform.description))
             }

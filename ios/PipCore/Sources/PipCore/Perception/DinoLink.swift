@@ -22,9 +22,14 @@ public enum DinoLink {
         public var maxRatio: Float = 0.97
         public var minMatches = 12
         public var ransacIterations = 500
-        /// RANSAC: a match agrees when it lands this close (metres; a patch is 14 px, a few cm at 2 m).
-        public var inlierDistance: Float = 0.06
-        public var minInliers = 10
+        /// RANSAC: a match agrees when it lands this close (metres; a patch is 14 px, 3 to 8 cm at
+        /// 1-3 m), and this many must. In a bathroom with a mirror over the basin, a glass shower
+        /// wall and a plain green wall (2 Nov, evening), the right stored views matched 15-53
+        /// patches but only 2-10 agreed within 6 cm: the reflections have the wrong depth. At 8 cm
+        /// and 6 the bathroom's own views linked (15-18° like the desk's), and no session of
+        /// another room linked; the depth, the surfaces' hold and two agreeing views decide after.
+        public var inlierDistance: Float = 0.08
+        public var minInliers = 6
         /// The depth's verdict: this share of the surface within 1.5 cm of the other's, at this root
         /// mean square across it (2 Nov: the links found were laid to 0.3-0.8 cm).
         public var minOverlap: Float = 0.3

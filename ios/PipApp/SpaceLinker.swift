@@ -1,4 +1,5 @@
 import ARKit
+import CoreML
 import Foundation
 import PipCore
 import UIKit
@@ -57,12 +58,10 @@ final class SpaceLinker {
     // its own (the corners' start is not held up), every few seconds.
     /// Whether the app has the model (looked up without loading it).
     nonisolated private static let hasModel = Bundle.main.url(forResource: ViewFeatures.modelName, withExtension: "mlmodelc") != nil
-    /// The model (Models/DINOv2, see ios/scripts/convert-dinov2.py); nil without it. Loaded on first
-    /// use, which is always on a background queue after `dinoDelay` (never on the main thread).
-    nonisolated private static let features: ViewFeatures? = {
-        guard let url = Bundle.main.url(forResource: ViewFeatures.modelName, withExtension: "mlmodelc") else { return nil }
-        return try? ViewFeatures.load(from: url)
-    }()
+    /// The model (Models/DINOv2, see ios/scripts/convert-dinov2.py), loaded on first use on a
+    /// background queue after `dinoDelay`, and loaded again when Core ML failed (2 Nov, 18:09: it
+    /// was not loaded, silently, and the session ran without it).
+    private let dino = DinoModel()
     private let dinoQueue = DispatchQueue(label: "pip.spacelinker.dino", qos: .utility)
     /// The stored snapshots' whole-view tokens are made here, one at a time, at the lowest priority.
     private let wholesQueue = DispatchQueue(label: "pip.spacelinker.wholes", qos: .background)
@@ -75,7 +74,7 @@ final class SpaceLinker {
     /// DINOv2 starts this long after a session: EdgeTAM loads first, and the speech gets going (2 Nov,
     /// 17:59: all stored snapshots described with DINOv2 at once, EdgeTAM failed to load three times
     /// and the speech service fell behind the audio).
-    static let dinoDelay: TimeInterval = 15
+    static let dinoDelay: TimeInterval = 8
     private var dinoStart = Date.distantFuture
     /// One stored snapshot's whole-view token this often, at most.
     static let wholeEvery: TimeInterval = 0.25
@@ -121,6 +120,7 @@ final class SpaceLinker {
         wholesTimer?.invalidate()
         wholesTimer = nil
         dinoStart = Date().addingTimeInterval(Self.dinoDelay)
+        dino.onLog = { [weak self] line in DispatchQueue.main.async { self?.onLog?(line) } }
         let dinoViews = self.dinoViews
         dinoQueue.async { dinoViews.clear() }
         describing = []
@@ -261,10 +261,10 @@ final class SpaceLinker {
         }
         wholesPending.removeAll { $0 == i }
         wholeInFlight = true
-        let frame = stored[i], generation = self.generation
+        let frame = stored[i], generation = self.generation, dino = self.dino
         wholesQueue.async { [weak self] in
             let whole: [Float]? = {
-                guard let features = Self.features, let jpeg = frame.jpeg(), let image = UIImage(data: jpeg)?.cgImage else { return nil }
+                guard let features = dino.model(), let jpeg = frame.jpeg(), let image = UIImage(data: jpeg)?.cgImage else { return nil }
                 return try? features.describe(image).whole
             }()
             DispatchQueue.main.async {
@@ -290,11 +290,11 @@ final class SpaceLinker {
         lastDino = time
         dinoWorking = true
         let perView = searching ? Self.dinoPerViewSearching : Self.dinoPerView
-        let breaks = self.breaks, generation = self.generation, stored = self.stored, dinoViews = self.dinoViews
+        let breaks = self.breaks, generation = self.generation, stored = self.stored, dinoViews = self.dinoViews, dino = self.dino
         dinoQueue.async { [weak self] in
             let t0 = Date()
             var links: [(Int, ViewLink)] = []
-            if let features = Self.features, let live = Self.dinoView(snap, features: features) {
+            if let features = dino.model(), let live = Self.dinoView(snap, features: features) {
                 let ranked = candidates.map { ($0.key, Self.dot($0.value, live.features.whole)) }.sorted { $0.1 > $1.1 }.prefix(perView)
                 var newLeft = Self.dinoNewPerView
                 for (i, _) in ranked where stored.indices.contains(i) {
@@ -483,5 +483,37 @@ final class DinoViews: @unchecked Sendable {
     func clear() {
         views = [:]
         order = []
+    }
+}
+
+/// Meta's DINOv2 for SpaceLinker: loaded on first use (on a background queue), and when Core ML
+/// fails to, tried again 10 s later, the third time without the Neural Engine (on 2 Nov Core ML
+/// could not build EdgeTAM's execution plan three times running at one start). Each outcome is said
+/// in the log.
+final class DinoModel: @unchecked Sendable {
+    private let lock = NSLock()
+    private var loaded: ViewFeatures?
+    private var failures = 0
+    private var nextTry = Date.distantPast
+    static let maxTries = 4
+    var onLog: ((String) -> Void)?
+
+    func model() -> ViewFeatures? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let loaded { return loaded }
+        guard failures < Self.maxTries, Date() >= nextTry,
+              let url = Bundle.main.url(forResource: ViewFeatures.modelName, withExtension: "mlmodelc") else { return nil }
+        let units: MLComputeUnits = failures >= 2 ? .cpuAndGPU : .all
+        let t0 = Date()
+        do {
+            loaded = try ViewFeatures.load(from: url, computeUnits: units)
+            onLog?(String(format: "space: DINOv2 loaded in %.1f s (%@)", Date().timeIntervalSince(t0), units == .all ? "Neural Engine" : "CPU and GPU"))
+        } catch {
+            failures += 1
+            nextTry = Date().addingTimeInterval(10)
+            onLog?("space: DINOv2 could not be loaded (attempt \(failures) of \(Self.maxTries)): \(error.localizedDescription)")
+        }
+        return loaded
     }
 }

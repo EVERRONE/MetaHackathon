@@ -432,6 +432,31 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         return MapLight(intensity: i[i.count / 2], temperature: t[t.count / 2])
     }
 
+    /// When the camera session was last run again after a failure.
+    private var lastCameraRestart: TimeInterval = 0
+
+    /// ARKit's session failed (2 Nov, 18:10: iOS's camera service crashed in its hardware feature
+    /// extraction for tracking, and the camera image stayed frozen: Pip looked crashed). It is run
+    /// again, at most every few seconds; the room's coordinates go on where ARKit finds itself again.
+    func session(_ session: ARSession, didFailWithError error: Error) {
+        onLockLog?("ar: the camera session failed (\(error.localizedDescription)); starting it again")
+        let now = CACurrentMediaTime()
+        guard now - lastCameraRestart > 3 else { return }
+        lastCameraRestart = now
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            self.arView.session.run(Self.configuration())
+        }
+    }
+
+    func sessionWasInterrupted(_ session: ARSession) {
+        onLockLog?("ar: the camera was interrupted")
+    }
+
+    func sessionInterruptionEnded(_ session: ARSession) {
+        onLockLog?("ar: the camera is back")
+    }
+
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         onFrame?(frame)
         if let light = frame.lightEstimate, Int(frame.timestamp * 60) % 6 == 0 {
