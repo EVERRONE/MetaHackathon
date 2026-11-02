@@ -42,6 +42,12 @@ public enum DinoLink {
         /// The depth may correct the appearance's fit by at most this much (else it settled elsewhere).
         public var maxCorrectionTurn: Float = 12 * .pi / 180
         public var maxCorrectionShift: Float = 0.35
+        /// The depth's fit must keep this many of the appearance's matches (within 6.4 cm): where it
+        /// keeps fewer, the depth settled on another fit than the one the views were found by.
+        /// Measured on 660 view links of three days' sessions (2 Nov): of 25 that disagreed with
+        /// their sessions' link beyond its drift (23 more came from 3 snapshots stored with a wrong
+        /// pose), 16 kept fewer than 3 matches; of 612 that agreed, 48 did.
+        public var minKept = 3
         /// Points nearer than this to the camera are left out (see above).
         public var minDepth: Float = 0.8
         /// A match the depth confirmed counts as this many described corners in a session link
@@ -112,6 +118,8 @@ public enum DinoLink {
     public struct Trace: Sendable {
         public var pointsA = 0, pointsB = 0, matches = 0, ransac = 0
         public var overlap: Float = 0, rms: Float = 0, correctionTurn: Float = 0, shiftUncertainty: Float = 0
+        /// The appearance's matches its own fit keeps, and those the depth's fit keeps.
+        public var close = 0, kept = 0
         public var outcome = ""
         public init() {}
     }
@@ -148,6 +156,7 @@ public enum DinoLink {
         guard best.count >= settings.minInliers else { return nil }
         var fit = UprightTransform.fit(best.map { pa[$0] }, best.map { pb[$0] })
         let close = pa.indices.filter { simd_distance(fit.apply(pa[$0]), pb[$0]) < tol * 0.8 }
+        trace.close = close.count
         guard close.count >= settings.minInliers else { return nil }
         fit = UprightTransform.fit(close.map { pa[$0] }, close.map { pb[$0] })
         // The surfaces decide.
@@ -164,9 +173,12 @@ public enum DinoLink {
         guard laid.shiftUncertainty <= settings.maxShiftUncertainty, laid.turnUncertainty <= settings.maxTurnUncertainty else { return nil }
         let centreA = close.map { pa[$0] }.reduce(.zero, +) / Float(close.count)
         guard laid.transform.distance(to: fit, at: centreA) <= settings.maxCorrectionShift else { return nil }
-        trace.outcome = "linked"
         // The appearance matches the depth's fit keeps, and where the evidence is: the surface laid.
         let agreeing = pa.indices.filter { simd_distance(laid.transform.apply(pa[$0]), pb[$0]) < tol * 0.8 }
+        trace.kept = agreeing.count
+        trace.outcome = "the depth kept too few matches"
+        guard agreeing.count >= settings.minKept else { return nil }
+        trace.outcome = "linked"
         let pts = laid.agreeing
         let centre = pts.reduce(.zero, +) / Float(pts.count)
         let spread = sqrt(pts.map { simd_distance_squared($0, centre) }.reduce(0, +) / Float(pts.count))

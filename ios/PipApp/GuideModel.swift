@@ -81,6 +81,10 @@ final class GuideModel: ObservableObject {
     /// Test clips of the camera, to replay object tracking on the Mac.
     let clipRecorder = ClipRecorder()
     var foundCount = 0
+    /// A find that saw its thing in a room not recognised then ("once you're there, I'll point it
+    /// out"): pointed at once that room is recognised (`followUpFind`).
+    var awaitingRoom: (what: String, phrase: String, frame: UUID, piece: UUID?, asked: Date)?
+    var followingUp = false
     /// When the shopping list last changed; basket checks stop after a long quiet spell.
     var listChangedAt = Date.distantPast
     struct ShoppingItem: Identifiable, Equatable {

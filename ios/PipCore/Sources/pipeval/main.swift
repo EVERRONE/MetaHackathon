@@ -35,6 +35,10 @@ if args.first == "dinolinks" {
     dinoLinks(args)
     exit(0)
 }
+if args.first == "dinolive" {
+    dinoLive(args)
+    exit(0)
+}
 if args.first == "relocalise" {
     relocalise(args)
     exit(0)

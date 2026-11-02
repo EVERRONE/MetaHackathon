@@ -91,6 +91,11 @@ struct Phrases {
         return dutch ? "Ik zag \(what) \(ago(date)), in een ruimte die ik nu nog niet herken. Als je daar bent, wijs ik het aan."
                      : "I saw \(what) \(ago(date)), in a room I haven't recognised yet this time. Once you're there, I'll point it out."
     }
+    /// A find that saw `what` in a room not recognised then: the room is recognised now.
+    func recognisedNow(_ what: String, where place: String) -> String {
+        dutch ? "Ik weet nu waar we zijn: \(what) ligt op \(place). Volg de pijl."
+              : "I know where we are now: \(what) is \(place). Follow the arrow."
+    }
     func notFound(_ what: String, since date: Date?) -> String {
         guard let date else {
             return dutch ? "Ik heb \(what) nog niet gezien. Waar was je het laatst?" : "I haven't seen \(what) yet. Where were you last?"

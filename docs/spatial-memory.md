@@ -163,6 +163,12 @@ centimetre: walls, floors and furniture are where they were whatever the light.
   1.5 cm of the live one's, at 1 cm root mean square across it, and the depth corrected DINOv2's fit
   by at most 12° and 35 cm. Each match the depth kept counts as three corners in the session link
   (`DinoLink.Settings.evidenceWeight`): two or more live views must agree (4 cm, 2°) over a metre.
+- **The depth keeps what found the views.** The depth's fit must keep at least 3 of the appearance's
+  matches within 6.4 cm (`DinoLink.Settings.minKept`); where it keeps fewer it settled on another fit
+  than the one the views were found by. Of 660 view links in three memory dumps, 25 disagreed with
+  their session's link beyond its drift (23 more came from 3 snapshots stored with a wrong pose,
+  taken before ARKit had a map): 16 of those 25 kept fewer than 3 matches, and 48 of the 612 that
+  agreed did. Every session link stayed the same; stray view links between other rooms went.
 - **Drift with distance.** A link from another part of the home may differ from the agreeing core by
   20 cm plus 6 cm per metre between their evidence (`SessionLink.Settings.driftPerMetre`) and still
   carry what lies near it: the day and low-sun links differed by 30 cm at the desk, 5 m from the hall
@@ -181,7 +187,23 @@ Measured with `pipeval dinolinks` (the app's code, the Core ML model on the Mac)
 No session of another room linked. A chain of two DINOv2 links (morning → morning → night) landed
 within 1° and 4.4 cm of the direct one. The live view takes about 3 ms to match and lay on the Mac
 per stored view; DINOv2 itself about 75 ms per view on the Mac (the iPhone's Neural Engine: to be
-measured), on a queue of its own.
+measured), on a queue of its own. On the iPhone: 82 ms per stored view and 261 ms per live view
+with two stored views prepared (2 Nov, 18:36), the first load after an install 45 s (the Neural
+Engine compiles it), later 0.4 s.
+
+- **Made once, kept.** Which stored views a live view is laid against is decided by DINOv2's
+  whole-view token. These were made again at every start, one per 0.25 s from 8 s in, the newest
+  snapshots first: on 2 Nov at 18:36 Pip started in the bathroom, whose views of an earlier session
+  were among the oldest; they were there 30 s in, as the user left the bathroom, and the session was
+  linked 53 s in, from the hall. Now each token is kept beside its snapshot
+  (`Documents/memory/frames/<id>.dinov2s-434x574.whole`, 768 bytes), made once (the session's own
+  snapshots in the background, for the sessions after it) and read at the start. Until a session is
+  linked every live view is laid (they come every 1.5 s), from 5 s in. Replayed on that session
+  (`pipeval dinolive`, its snapshots as live views, half as many as the app's): as built, linked 72 s
+  in; now 26 s in, in the bathroom, at -57.8° like the desk's later links.
+- **A promise kept.** "Once you're there, I'll point it out": a find that saw its thing in a room not
+  recognised yet is pointed at as soon as that room is (the remembered place of that name the link
+  brought back, else the sighting found again in its snapshot), unless it is pointed at already.
 
 ## Steps
 
@@ -203,9 +225,10 @@ measured), on a queue of its own.
    anchors of their own, found again on sight.
 7. **Light** (2 Nov, in the app): described corners link sessions in the same light only; on 2 Nov
    the same rooms at 15:22 in daylight and at 16:40 in low sun gave one corner view link and the
-   session was never linked. Beside them, every 3 s, `DinoLink`: Meta's DINOv2 (ViT-S/14, Core ML,
-   `ios/scripts/convert-dinov2.py`, in the app bundle) describes the live view, its three most alike
-   stored views (DINOv2's whole-view token) are matched patch by patch, each match lifted at its
+   session was never linked. Beside them, every live view until a session is linked and every 3 s
+   after, `DinoLink`: Meta's DINOv2 (ViT-S/14, Core ML, `ios/scripts/convert-dinov2.py`, in the app
+   bundle) describes the live view, its most alike stored views (DINOv2's whole-view token, kept
+   beside each snapshot) are matched patch by patch, each match lifted at its
    LiDAR depth, a turn and shift fitted (RANSAC), and that fit laid onto the surfaces (`DepthAlign`:
    point to plane, the turn about the vertical and the shift), which light does not move. See
    "Linking across light" above.
@@ -216,8 +239,12 @@ measured), on a queue of its own.
 
 ## Status (2 Nov, evening)
 
-Steps 1-8 are in the app: the light-robust linking (step 7) since 2 Nov; to be shown on the device
-across a change of light.
+Steps 1-8 are in the app. On the device (2 Nov): at 17:46 a session linked across light (afternoon
+→ evening lamps) within 25 s, 21 of its 25 view links from DINOv2; at 18:35 the bedroom linked to
+the bathroom session of 18:09 in 7 s once DINOv2 was loaded. At 18:36, started in the bathroom: not
+recognised there (the stored tokens came too late, see "Made once, kept"); the bedroom was
+recognised from the hall 53 s in, and Pip said where the pen was without seeing it, "ahead to the
+left, about six metres away" (it was 5.9 m), and found it on sight 2.4 cm from where it was carried.
 
 ## Status (1 Nov, evening)
 

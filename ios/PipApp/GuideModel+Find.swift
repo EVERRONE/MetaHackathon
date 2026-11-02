@@ -10,6 +10,8 @@ extension GuideModel {
     /// Wonder picks where the object was seen; SAM must find it there before Pip points. The last
     /// half hour first, then the week before it, newest first, a contact sheet batch at a time.
     func findInMemory(_ what: String, phrase: String) async {
+        // A new find replaces the promise of an earlier one.
+        awaitingRoom = nil
         let all = keyframes.frames
         guard let oldest = all.first else {
             say(phrases.notFound(what, since: nil))
@@ -73,9 +75,61 @@ extension GuideModel {
             if Task.isCancelled { return }
             if let place { facts["last seen: \(what)"] = Fact(value: "\(place) (\(phrases.ago(elsewhere.time)), in a room not recognised in this session)", source: "seen") }
             say(phrases.foundElsewhere(what, at: elsewhere.time, place: place))
+            log("find: \(what) seen \(phrases.ago(elsewhere.time)) in a room not recognised yet; pointed at once it is")
+            awaitingRoom = (what, phrase, elsewhere.id, elsewhere.piece, Date())
         } else {
             say(phrases.notFound(what, since: oldest.time))
         }
+    }
+
+    /// The room a find saw its thing in is recognised now: Pip points at it, as it said it would
+    /// (2 Nov, 18:36: asked in the bathroom 4 s in, the bedroom recognised from the hall 50 s later,
+    /// and the pen pointed at only when asked again). By the remembered place of that name that the
+    /// link brought back, else by the sighting itself, found again in its snapshot, which can be
+    /// placed here now. Not when it is pointed at already, and not over the user or Pip.
+    func followUpFind() async {
+        guard let pending = awaitingRoom, !followingUp else { return }
+        guard Date().timeIntervalSince(pending.asked) < 15 * 60 else {
+            awaitingRoom = nil
+            return
+        }
+        // A place of that name of the sighting's session, or one a link brought back: the same thing.
+        func score(_ place: SpaceMemory.Place) -> Int { PlaceName.score(pending.what, names: [place.name, place.phrase ?? ""]) }
+        let candidates = ar.places.filter { mark, place in
+            score(place) > 0 && ((pending.piece != nil && place.piece == pending.piece) || ar.carried.contains(mark))
+        }
+        var mark = candidates.max { score($0.value) < score($1.value) }?.key
+        var name = mark.flatMap { ar.places[$0] }.map { (language == "Dutch" ? "je " : "your ") + $0.name } ?? pending.what
+        followingUp = true
+        defer { followingUp = false }
+        if mark == nil {
+            guard let frame = keyframes.frames.first(where: { $0.id == pending.frame }), frame.located else { return }
+            awaitingRoom = nil
+            guard case .found(let world, _, let spec) = await search(pending.what, phrase: pending.phrase, in: [frame]) else {
+                log("find: \(pending.what): its room is recognised, but it was not found again in the snapshot")
+                return
+            }
+            foundCount += 1
+            let id = ARController.foundMarkBase + foundCount % 90_000
+            ar.giveWay()
+            ar.addFound(world: world, id: id, spec: spec)
+            mark = id
+            name = pending.what
+        }
+        awaitingRoom = nil
+        guard let mark else { return }
+        while speaker.isSpeaking || lookActive || phase == .hearing {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            if Task.isCancelled { return }
+        }
+        guard !ar.board.annotations.contains(where: { $0.cue.marks.contains(mark) }) else {
+            log("find: \(pending.what): its room is recognised; pointed at already")
+            return
+        }
+        ar.show(.outline(mark: mark))
+        let place = ar.describe(mark: mark, dutch: language == "Dutch") ?? ""
+        log("find: \(pending.what): its room is recognised now; pointed at (\(place))")
+        say(phrases.recognisedNow(name, where: place.components(separatedBy: ";").first ?? place))
     }
 
     enum Recall {

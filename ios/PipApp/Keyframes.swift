@@ -96,6 +96,9 @@ final class Keyframes {
     var persist = false
     /// The map piece this session builds: new snapshots belong to it.
     var currentPiece: UUID?
+    /// A snapshot was kept on storage (with the user's consent): SpaceLinker makes its whole-view
+    /// token for the sessions after this one.
+    var onKept: ((Frame) -> Void)?
     private var lastPose: simd_float4x4?
     private var lastTime: TimeInterval = 0
     private var indexDirty = false
@@ -156,6 +159,7 @@ final class Keyframes {
         if let p = lastPurge, frame.time >= p.since, frame.time < p.at { return }
         if persist, let jpeg = frame.jpegData, let depth = frame.depthData { VisualMemoryStore.write(id: frame.id, jpeg: jpeg, depth: depth) }
         frames.append(frame)
+        if persist { onKept?(frame) }
         indexDirty = persist
         kept += 1
         if kept % 40 == 0 { prune() }
@@ -277,8 +281,8 @@ final class Keyframes {
     }
 }
 
-/// Where the visual memory lives on this iPhone: a JPEG and a depth grid per snapshot, and one
-/// index, in Documents/memory/frames. Only written with the user's consent.
+/// Where the visual memory lives on this iPhone: a JPEG, a depth grid and a whole-view token per
+/// snapshot, and one index, in Documents/memory/frames. Only written with the user's consent.
 enum VisualMemoryStore {
     struct Stored: Codable {
         var id: UUID
@@ -314,10 +318,16 @@ enum VisualMemoryStore {
                 return []
             }
             // Snapshots without an entry (the app ended before the index was saved) can never be
-            // used: they go, once they are an hour old.
+            // used: they go, once they are an hour old. Whole-view tokens of another model go at once.
             let known = Set(stored.map(\.id.uuidString))
             let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-            for file in files where ["jpg", "depth"].contains(file.pathExtension) && !known.contains(file.deletingPathExtension().lastPathComponent) {
+            for file in files where ["jpg", "depth", "whole"].contains(file.pathExtension) {
+                let id = String(file.lastPathComponent.prefix { $0 != "." })
+                if file.pathExtension == "whole", known.contains(id), file.lastPathComponent != wholeName(id) {
+                    try? FileManager.default.removeItem(at: file)
+                    continue
+                }
+                guard !known.contains(id) else { continue }
                 let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
                 if Date().timeIntervalSince(modified) > 3600 { try? FileManager.default.removeItem(at: file) }
             }
@@ -356,7 +366,30 @@ enum VisualMemoryStore {
             for id in ids {
                 try? FileManager.default.removeItem(at: d.appendingPathComponent("\(id.uuidString).jpg"))
                 try? FileManager.default.removeItem(at: d.appendingPathComponent("\(id.uuidString).depth"))
+                try? FileManager.default.removeItem(at: d.appendingPathComponent(wholeName(id.uuidString)))
             }
+        }
+    }
+
+    /// A snapshot's DINOv2 whole-view token (ViewFeatures: which stored views show the same place),
+    /// kept beside it, so it is made once. Made again at every start, one per 0.25 s, the newest
+    /// snapshots first, an earlier session's bathroom views were there only 30 s in, as the user
+    /// left the bathroom (2 Nov, 18:36). Named after the model, whose tokens alone are read.
+    static func wholeName(_ id: String) -> String { "\(id).\(ViewFeatures.tag).whole" }
+
+    static func whole(_ id: UUID) -> [Float]? {
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent(wholeName(id.uuidString))), data.count == ViewFeatures.dim * 2 else { return nil }
+        return data.withUnsafeBytes { Array($0.bindMemory(to: Float16.self)) }.map(Float.init)
+    }
+
+    /// Written only beside a snapshot that is still kept (one removed meanwhile gets none).
+    static func writeWhole(_ id: UUID, _ whole: [Float]) {
+        guard whole.count == ViewFeatures.dim else { return }
+        io.async {
+            let d = dir
+            guard FileManager.default.fileExists(atPath: d.appendingPathComponent("\(id.uuidString).jpg").path) else { return }
+            let raw = whole.map { Float16($0) }.withUnsafeBufferPointer { Data(buffer: $0) }
+            try? raw.write(to: d.appendingPathComponent(wholeName(id.uuidString)), options: [.atomic, .completeFileProtection])
         }
     }
 

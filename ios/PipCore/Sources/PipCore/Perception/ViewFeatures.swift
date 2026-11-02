@@ -15,6 +15,9 @@ public final class ViewFeatures: @unchecked Sendable {
     public static let columns = 31, rows = 41, dim = 384
     public static let inputWidth = 434, inputHeight = 574
     public static let modelName = "DINOv2Small"
+    /// Names what made a token: the model and its input. Tokens kept on disk under another tag were
+    /// made by another conversion and are never read; a new conversion gets a new tag.
+    public static let tag = "dinov2s-434x574"
 
     private let model: MLModel
     private let lock = NSLock()

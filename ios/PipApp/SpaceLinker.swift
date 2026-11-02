@@ -65,16 +65,29 @@ final class SpaceLinker {
     private let dinoQueue = DispatchQueue(label: "pip.spacelinker.dino", qos: .utility)
     /// The stored snapshots' whole-view tokens are made here, one at a time, at the lowest priority.
     private let wholesQueue = DispatchQueue(label: "pip.spacelinker.wholes", qos: .background)
-    /// Each stored snapshot's whole-view token: which stored views look like a live view, whatever the light.
+    /// Each stored snapshot's whole-view token: which stored views look like a live view, whatever the
+    /// light. Kept beside the snapshots (VisualMemoryStore.whole), read at the start: made once, not
+    /// at every start (2 Nov, 18:36: made again one per 0.25 s, the newest snapshots first, so an
+    /// earlier session's bathroom views were there 30 s in, as the user left the bathroom, and the
+    /// session was linked 53 s in, from the hall. Replayed (`pipeval dinolive`, its snapshots as
+    /// live views): as built, linked 72 s in; with the tokens there from the start, every live view
+    /// while searching and DINOv2 from 5 s on, 26 s in, in the bathroom, at -57.8° like the desk's).
     private var wholes: [Int: [Float]] = [:]
     /// Stored snapshots waiting for their whole-view token, and whether one is being made.
     private var wholesPending: [Int] = []
     private var wholeInFlight = false
     private var wholesTimer: Timer?
+    /// Whether the kept tokens were read: none is made before (it may be on disk).
+    private var wholesRead = false
+    private var wholesMade = 0
+    private var wholesBegan = Date()
+    /// This session's own snapshots, whose tokens are made for the sessions after it (`noteKept`).
+    private var ownPending: [Keyframes.Frame] = []
     /// DINOv2 starts this long after a session: EdgeTAM loads first, and the speech gets going (2 Nov,
     /// 17:59: all stored snapshots described with DINOv2 at once, EdgeTAM failed to load three times
-    /// and the speech service fell behind the audio).
-    static let dinoDelay: TimeInterval = 8
+    /// and the speech service fell behind the audio). With the stored tokens kept, a start makes none
+    /// (only once after this was built), and EdgeTAM is loaded 2 s in.
+    static let dinoDelay: TimeInterval = 5
     private var dinoStart = Date.distantFuture
     /// One stored snapshot's whole-view token this often, at most.
     static let wholeEvery: TimeInterval = 0.25
@@ -85,8 +98,9 @@ final class SpaceLinker {
     private var dinoLinksSince = 0
     private var dinoMs: [Double] = []
     static let dinoInterval: TimeInterval = 3
-    /// Until a session is linked, more often, against more stored views.
-    static let dinoIntervalSearching: TimeInterval = 2
+    /// Until a session is linked, every live view (they come every 1.5 s; at 2 s it was every other
+    /// one), against more stored views.
+    static let dinoIntervalSearching: TimeInterval = 1.4
     /// Stored views a live view is laid against: the most alike by DINOv2's whole-view token; more
     /// while no session is linked yet. Of those, at most this many not prepared yet (each a DINOv2
     /// pass of its own): the rest wait for a later live view.
@@ -117,6 +131,9 @@ final class SpaceLinker {
         prints = [:]
         wholes = [:]
         wholesPending = []
+        wholesRead = false
+        wholesMade = 0
+        ownPending = []
         wholesTimer?.invalidate()
         wholesTimer = nil
         dinoStart = Date().addingTimeInterval(Self.dinoDelay)
@@ -131,6 +148,7 @@ final class SpaceLinker {
         describeTimer?.invalidate()
         describeTimer = nil
         startDescribing()
+        readKeptWholes()
     }
 
     /// Describes the stored snapshots not described yet, a few every half second.
@@ -160,6 +178,7 @@ final class SpaceLinker {
         if !back.isEmpty {
             onLog?("space: \(back.count) earlier sessions are of this place after all; linked to again")
             startDescribing()
+            startWholes()
         }
     }
 
@@ -192,8 +211,6 @@ final class SpaceLinker {
                     if let described {
                         self.described[i] = described.points
                         self.prints[i] = described.print
-                        self.wholesPending.append(i)
-                        self.startWholes()
                     } else {
                         self.undescribable.insert(i)
                     }
@@ -240,38 +257,89 @@ final class SpaceLinker {
         }
     }
 
-    /// The stored snapshots' whole-view tokens, one at a time (`wholeEvery`), from `dinoStart` on,
-    /// the newest snapshots first.
-    private func startWholes() {
-        guard Self.hasModel, wholesTimer == nil else { return }
-        wholesTimer = Timer.scheduledTimer(withTimeInterval: Self.wholeEvery, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.describeNextWhole() }
+    /// The whole-view tokens kept beside the stored snapshots; the others are made from `dinoStart`
+    /// on, and kept beside them too.
+    private func readKeptWholes() {
+        guard Self.hasModel, !stored.isEmpty else { return }
+        let ids = stored.map(\.id), generation = self.generation
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var kept: [Int: [Float]] = [:]
+            for (i, id) in ids.enumerated() {
+                if let w = VisualMemoryStore.whole(id) { kept[i] = w }
+            }
+            DispatchQueue.main.async {
+                guard let self, self.generation == generation else { return }
+                self.wholes.merge(kept) { now, _ in now }
+                self.wholesRead = true
+                self.wholesPending = ids.indices.filter { kept[$0] == nil }
+                self.wholesBegan = Date()
+                self.onLog?("space: \(kept.count) of \(ids.count) stored snapshots' whole-view tokens kept beside them"
+                    + (kept.count < ids.count ? "; the other \(ids.count - kept.count) are made once, from \(Int(Self.dinoDelay)) s on" : ""))
+                self.startWholes()
+            }
         }
     }
 
-    private func describeNextWhole() {
+    /// A snapshot this session kept: its whole-view token is made in the background, after the
+    /// stored snapshots' ones, and kept beside it for the sessions after this one.
+    func noteKept(_ frame: Keyframes.Frame) {
+        guard Self.hasModel else { return }
+        ownPending.append(frame)
+        if ownPending.count > 400 { ownPending.removeFirst(ownPending.count - 400) }
+        startWholes()
+    }
+
+    /// One token at a time (`wholeEvery`), from `dinoStart` on: the stored snapshots' first, the
+    /// newest first, then this session's own.
+    private func startWholes() {
+        guard Self.hasModel, wholesTimer == nil else { return }
+        wholesTimer = Timer.scheduledTimer(withTimeInterval: Self.wholeEvery, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.makeNextWhole() }
+        }
+    }
+
+    private func makeNextWhole() {
         guard Date() >= dinoStart, !wholeInFlight else { return }
-        wholesPending.removeAll { elsewhere.contains($0) || wholes[$0] != nil }
-        guard let i = wholesPending.max(by: { stored[$0].time < stored[$1].time }) else {
-            if describing.isEmpty && describeTimer == nil {
-                wholesTimer?.invalidate()
-                wholesTimer = nil
+        let reading = !stored.isEmpty && !wholesRead
+        // Those of sessions mapped elsewhere on earth wait (they may turn out to be of here).
+        wholesPending.removeAll { wholes[$0] != nil }
+        if !reading, let i = wholesPending.filter({ !elsewhere.contains($0) }).max(by: { stored[$0].time < stored[$1].time }) {
+            wholesPending.removeAll { $0 == i }
+            make(stored[i]) { [weak self] whole in
+                guard let self else { return }
+                self.wholes[i] = whole
+                self.wholesMade += 1
+                if !self.wholesPending.contains(where: { !self.elsewhere.contains($0) }) {
+                    self.onLog?(String(format: "space: %d stored snapshots' whole-view tokens made in %.0f s, kept beside them from now on",
+                                       self.wholesMade, Date().timeIntervalSince(self.wholesBegan)))
+                }
             }
             return
         }
-        wholesPending.removeAll { $0 == i }
+        if !ownPending.isEmpty {
+            make(ownPending.removeFirst()) { _ in }
+            return
+        }
+        guard !reading else { return }
+        wholesTimer?.invalidate()
+        wholesTimer = nil
+    }
+
+    /// Makes a snapshot's whole-view token on the lowest priority queue, and keeps it beside it.
+    private func make(_ frame: Keyframes.Frame, then done: @escaping @MainActor ([Float]) -> Void) {
         wholeInFlight = true
-        let frame = stored[i], generation = self.generation, dino = self.dino
+        let generation = self.generation, dino = self.dino
         wholesQueue.async { [weak self] in
             let whole: [Float]? = {
                 guard let features = dino.model(), let jpeg = frame.jpeg(), let image = UIImage(data: jpeg)?.cgImage else { return nil }
                 return try? features.describe(image).whole
             }()
+            if let whole { VisualMemoryStore.writeWhole(frame.id, whole) }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.wholeInFlight = false
                 guard self.generation == generation, let whole else { return }
-                self.wholes[i] = whole
+                done(whole)
             }
         }
     }

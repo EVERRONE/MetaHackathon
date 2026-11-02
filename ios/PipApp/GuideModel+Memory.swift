@@ -53,6 +53,7 @@ extension GuideModel {
         keyframes.persist = memory.consent == true
         keyframes.currentPiece = mapKeeper.current.id
         keyframes.load()
+        keyframes.onKept = { [weak self] frame in self?.spaceLinker.noteKept(frame) }
         // Earlier sessions are linked to this one by what they saw, in the background.
         spaceLinker.onLog = { [weak self] line in
             self?.log(line)
@@ -154,6 +155,8 @@ extension GuideModel {
             log("space: \(n) snapshots of \(1 + chains.count) earlier session\(chains.isEmpty ? "" : "s") can be pointed at here"
                 + (chains.isEmpty ? "" : " (\(chains.count) through the home graph)") + (back.isEmpty ? "" : "; places back: \(back.joined(separator: ", "))"))
         }
+        // A find that saw its thing in a room not recognised then: pointed at, if this is that room.
+        if awaitingRoom != nil { Task { await followUpFind() } }
     }
 
     /// A fix came in: kept with this piece.
