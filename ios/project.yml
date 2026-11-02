@@ -20,6 +20,9 @@ targets:
       # Meta's EdgeTAM tracker (scripts/fetch-edgetam.sh); Xcode compiles the packages into the app.
       - path: Models/EdgeTAM
         optional: true
+      # Meta's DINOv2 ViT-S/14 (scripts/convert-dinov2.py): links sessions across a change of light.
+      - path: Models/DINOv2
+        optional: true
     dependencies:
       - package: PipCore
         product: PipCore

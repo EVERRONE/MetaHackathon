@@ -164,6 +164,10 @@ public enum SessionLink {
         /// between two parts of one session). Beyond it a view link is a look-alike, never used.
         public var driftDistance: Float = 0.2
         public var driftTurn: Float = 10 * .pi / 180
+        /// The drift grows with the way walked between the evidence: this much more per metre between
+        /// a view link's evidence and the core's (2 Nov: day and low-sun links of one pair of sessions
+        /// differed by 30 cm at the desk, 5 m from the hall views of the core; each held near its own).
+        public var driftPerMetre: Float = 0.06
         public init() {}
     }
 
@@ -256,7 +260,8 @@ public enum SessionLink {
     public static func usable(_ links: [ViewLink], core: [ViewLink], settings: Settings = Settings()) -> [ViewLink] {
         links.filter { l in
             core.contains(l) || core.contains { c in
-                c.transform.turn(to: l.transform) <= settings.driftTurn && c.transform.distance(to: l.transform, at: l.centre) <= settings.driftDistance
+                c.transform.turn(to: l.transform) <= settings.driftTurn
+                    && c.transform.distance(to: l.transform, at: l.centre) <= settings.driftDistance + settings.driftPerMetre * simd_distance(l.centre, c.centre)
             }
         }
     }

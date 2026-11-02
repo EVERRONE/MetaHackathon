@@ -259,7 +259,7 @@ final class Keyframes {
         VisualMemoryStore.removeAll()
     }
 
-    nonisolated private static func depthGrid(_ snap: FrameSnapshot) -> [Float16] {
+    nonisolated static func depthGrid(_ snap: FrameSnapshot) -> [Float16] {
         let w = snap.image.width, h = snap.image.height
         var depth = [Float16](repeating: 0, count: depthW * depthH)
         for y in 0..<depthH {

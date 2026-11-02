@@ -150,6 +150,39 @@ Pip then took the ink bottle for the pen, "moved". Three rules since:
 - **One object, one outline.** A memory search that confirms a sighting where a remembered place of
   that name already lies points at the place.
 
+## Linking across light (2 Nov)
+
+DINOv2 alone said which stored view shows the same place across light, but its fits were a few
+degrees off (1 Nov: -12° to -25°). Laid onto the LiDAR surfaces from there they settle to under a
+centimetre: walls, floors and furniture are where they were whatever the light.
+
+- **What is held close is left out.** On 2 Nov most DINOv2 links were on the laptop, which the user
+  had turned between the sessions: they laid perfectly (0.5 cm) and said 20°, the room 4°. Points
+  nearer than 0.8 m to the camera count on neither side, as for the corners.
+- **The surfaces decide.** A link is kept when at least 30 % of the stored view's surface lies within
+  1.5 cm of the live one's, at 1 cm root mean square across it, and the depth corrected DINOv2's fit
+  by at most 12° and 35 cm. Each match the depth kept counts as three corners in the session link
+  (`DinoLink.Settings.evidenceWeight`): two or more live views must agree (4 cm, 2°) over a metre.
+- **Drift with distance.** A link from another part of the home may differ from the agreeing core by
+  20 cm plus 6 cm per metre between their evidence (`SessionLink.Settings.driftPerMetre`) and still
+  carry what lies near it: the day and low-sun links differed by 30 cm at the desk, 5 m from the hall
+  views of the core, and the pen at the desk is carried by the desk's own links.
+
+Measured with `pipeval dinolinks` (the app's code, the Core ML model on the Mac):
+
+| Sessions | Light | Corners | DINOv2 + depth |
+|---|---|---|---|
+| 2 Nov 15:22 → 15:31 | same | linked live (bathroom) | linked, 8 views over 6 m |
+| 2 Nov 15:22 → 16:40 | day → low sun | 1 view link, not linked | linked, 4 views over 3 m |
+| 2 Nov 15:31 → 16:40 | day → low sun | not linked | linked, 2 views over 4.8 m |
+| 1 Nov morning ↔ night (4 pairs) | morning → lamps | linked | linked, the same turns within 1.5-2.7° |
+| 1 Nov living room close-ups | afternoon → evening | not linked | not linked (all within 0.4 m: left out) |
+
+No session of another room linked. A chain of two DINOv2 links (morning → morning → night) landed
+within 1° and 4.4 cm of the direct one. The live view takes about 3 ms to match and lay on the Mac
+per stored view; DINOv2 itself about 75 ms per view on the Mac (the iPhone's Neural Engine: to be
+measured), on a queue of its own.
+
 ## Steps
 
 1. **Within one session**: what Pip pointed at or saw is found again ("where did I leave…": the
@@ -168,21 +201,23 @@ Pip then took the ink bottle for the pen, "moved". Three rules since:
 6. **Things across sessions**: snapshots of a linked session become searchable and pointable in the
    live room (their poses carried by the links); remembered places of a linked session come back on
    anchors of their own, found again on sight.
-7. **Light**: snapshots of every session are kept, so mornings and evenings both get views to link
-   to, more with every session: the practical path. Local normalisation did not help (see above).
-   Meta's DINOv2 (small, 22 M parameters, its 14-pixel patch features matched both ways and lifted at
-   their depth, the same four-unknown fit; run on the Mac from the published weights): on the two
-   morning sessions it finds the same links as the corners, coarser (1.3-2.6 cm against 0.4-0.8 cm,
-   the turn less sure: -6° to -14° where the corners say -17° to -21°); across daylight and evening
-   lamps it finds what the corners do not (14:06 against 17:01: 12 view links, the best 36 matches
-   at 1.7 cm), but their turns spread from -12° to -25°: never within the 2° the rules ask (10° is
-   50 cm at 3 m). So DINOv2 can say which stored view shows the same place across light; pinning it
-   down needs a finer matcher on top (a dense one, or learned corners), with a Core ML conversion.
-   Not in the app.
+7. **Light** (2 Nov, in the app): described corners link sessions in the same light only; on 2 Nov
+   the same rooms at 15:22 in daylight and at 16:40 in low sun gave one corner view link and the
+   session was never linked. Beside them, every 3 s, `DinoLink`: Meta's DINOv2 (ViT-S/14, Core ML,
+   `ios/scripts/convert-dinov2.py`, in the app bundle) describes the live view, its three most alike
+   stored views (DINOv2's whole-view token) are matched patch by patch, each match lifted at its
+   LiDAR depth, a turn and shift fitted (RANSAC), and that fit laid onto the surfaces (`DepthAlign`:
+   point to plane, the turn about the vertical and the shift), which light does not move. See
+   "Linking across light" above.
 8. **Beyond home**: within one visit (a shop) the session's own snapshots already answer "where did I
    see…" (the last 30 minutes are kept in full, located in the live session). Across visits the same
    linking, per place on earth: the linker only matches sessions mapped at the same place
    (`SpaceLinker.keepOnly`, from the location of each session).
+
+## Status (2 Nov, evening)
+
+Steps 1-8 are in the app: the light-robust linking (step 7) since 2 Nov; to be shown on the device
+across a change of light.
 
 ## Status (1 Nov, evening)
 
