@@ -122,6 +122,16 @@ final class SpaceLinker {
 
     var linked: [UUID: LinkBook.Linked] { book.linked }
 
+    /// For the model: whether Pip knows this place from earlier visits (2 Nov, 20:34: asked "Do you
+    /// know where we are", it went by a room the user had named an hour before).
+    var whereabouts: String? {
+        guard !stored.isEmpty else { return nil }
+        if !book.linked.isEmpty {
+            return "Where we are: Pip recognises this place from earlier visits (measured by the app); its remembered places and what Pip saw there can be pointed at."
+        }
+        return "Where we are: not recognised yet; the app is still matching this view with earlier visits (it helps when the user looks around the room slowly, at walls and furniture). Do not guess the room."
+    }
+
     /// The stored snapshots of earlier sessions to link this one to.
     func begin(with frames: [Keyframes.Frame]) {
         generation += 1

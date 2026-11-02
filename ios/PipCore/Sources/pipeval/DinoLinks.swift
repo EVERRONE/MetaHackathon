@@ -68,9 +68,10 @@ func dinoLinks(_ args: [String]) {
                     var trace = DinoLink.Trace()
                     defer {
                         if args.contains("--trace-pairs") {
-                            print(String(format: "    pair A%03d B%03d sim %.2f: %@; points %d/%d, matches %d, ransac %d, overlap %.0f%%, rms %.1f cm, shift sd %.1f mm",
+                            print(String(format: "    pair A%03d B%03d sim %.2f: %@; points %d/%d, matches %d, ransac %d, overlap %.0f%%, rms %.1f cm, shift sd %.1f mm, kept %d of %d%@",
                                          ia, ib, a[ia].view.features.similarity(to: vb.view.features), trace.outcome, trace.pointsA, trace.pointsB, trace.matches,
-                                         trace.ransac, trace.overlap * 100, trace.rms * 100, trace.shiftUncertainty * 1000))
+                                         trace.ransac, trace.overlap * 100, trace.rms * 100, trace.shiftUncertainty * 1000, trace.kept, trace.close,
+                                         trace.laid.map { "; laid: " + $0.description } ?? ""))
                         }
                     }
                     if let l = DinoLink.link(a[ia].view, vb.view, from: ia, to: ib, settings: linkSettings, trace: &trace) {

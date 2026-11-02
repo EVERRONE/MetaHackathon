@@ -63,6 +63,12 @@ final class GuideModel: ObservableObject {
     var hintSaid: [String: Date] = [:]
     var pendingFacts: [(key: String, value: String, source: String)] = []
 
+    /// Facts about where the user is now ("room": "bathroom"): kept for this session only.
+    static func isWhereabouts(_ key: String) -> Bool {
+        let k = key.lowercased().trimmingCharacters(in: .whitespaces)
+        return ["room", "current room", "location", "current location", "where", "place", "kamer", "ruimte", "locatie", "plek", "waar"].contains(k)
+    }
+
     // MARK: Visual memory and shopping list (see GuideModel+Find.swift)
 
     let keyframes = Keyframes()
@@ -243,7 +249,9 @@ final class GuideModel: ObservableObject {
             Task { @MainActor in self?.saveRoomNow() }
         }
         startBasketWatch()
-        for (key, fact) in memory.facts { facts[key] = Fact(value: fact.value, source: fact.source) }
+        // Where the user was is no fact for a later session (2 Nov, 20:34: "You told me bathroom
+        // earlier, but this view doesn't match that", in the living room, from a "room" said at 18:09).
+        for (key, fact) in memory.facts where !Self.isWhereabouts(key) { facts[key] = Fact(value: fact.value, source: fact.source) }
         // Accurate text recognition unloads after a pause and then takes ~25 s to load: keep it warm.
         Task.detached(priority: .utility) { await Grounder.warmUp() }
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
@@ -561,6 +569,7 @@ final class GuideModel: ObservableObject {
         var specs: [Int: TargetSpec] = [:]
         let pipeline = LookPipeline(client: client, language: language)
         var known = facts.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.value) (\(Self.provenance($0.value.source)))" }
+        if let here = spaceLinker.whereabouts { known.append(here) }
         let places = ar.placeDescriptions()
         if !places.isEmpty { known.append("Remembered places (point with m=number; direction and distance from the user now, measured by the app): " + places.joined(separator: " | ")) }
         if !shopping.isEmpty {

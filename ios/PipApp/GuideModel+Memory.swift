@@ -216,6 +216,7 @@ extension GuideModel {
     }
 
     func rememberLongTerm(_ key: String, _ value: String, source: String) {
+        guard !Self.isWhereabouts(key) else { return }
         switch memory.consent {
         case true?: memory.remember(key, value, source: source)
         case nil:

@@ -251,6 +251,15 @@ recognised there (the stored tokens came too late, see "Made once, kept"); the b
 recognised from the hall 53 s in, and Pip said where the pen was without seeing it, "ahead to the
 left, about six metres away" (it was 5.9 m), and found it on sight 2.4 cm from where it was carried.
 
+With the tokens kept (20:38-20:40): the bathroom recognised 13 and 14 s in; asked "Where is my pen?",
+Pip pointed the way at once ("about seven metres"), and found it on sight 5.0 and 2.3 cm from where
+it was carried. At the round table (20:33) not for two minutes: a round table, six identical chairs,
+a round striped rug and glass walls that mirror at night. The stored views of the place were found
+(whole-view likeness 0.85-0.93), but their parts matched ambiguously (3-21 matches per pair, at most
+3 agreeing in 3D), and a table turned by one chair looks the same: it is not guessed. The session
+was recognised once the kitchen island and cupboards came into view. Pip now tells the model whether
+the place is recognised, and asks the user to look around while it is not.
+
 ## Status (1 Nov, evening)
 
 Steps 1-6 and 8 are in the app; 7 as far as accumulating views (DINOv2 measured, not enough alone). To be shown on the device: a session

@@ -120,6 +120,8 @@ public enum DinoLink {
         public var overlap: Float = 0, rms: Float = 0, correctionTurn: Float = 0, shiftUncertainty: Float = 0
         /// The appearance's matches its own fit keeps, and those the depth's fit keeps.
         public var close = 0, kept = 0
+        /// The depth's fit, once laid.
+        public var laid: UprightTransform?
         public var outcome = ""
         public init() {}
     }
@@ -164,6 +166,7 @@ public enum DinoLink {
         guard let laid = DepthAlign.refine(a.depth, onto: b.depth, from: fit, minDepth: settings.minDepth) else { return nil }
         trace.overlap = laid.overlap
         trace.rms = laid.rms
+        trace.laid = laid.transform
         trace.correctionTurn = laid.transform.turn(to: fit)
         trace.shiftUncertainty = laid.shiftUncertainty
         trace.outcome = "the depth disagreed"

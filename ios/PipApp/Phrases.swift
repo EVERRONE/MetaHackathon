@@ -84,12 +84,14 @@ struct Phrases {
     /// Seen in a room this session has not recognised: where it was, from the snapshot, but no way
     /// there (Pip does not know where that room is from here).
     func foundElsewhere(_ what: String, at date: Date, place: String?) -> String {
+        // Looking round helps Pip recognise where it is (2 Nov, 20:33: at a round table with glass
+        // walls, the room was recognised once the kitchen island and cupboards came into view).
         if let place {
-            return dutch ? "Ik zag \(what) \(ago(date)) \(place). De weg erheen ken ik van hieruit nog niet; als je daar bent, wijs ik het aan."
-                         : "I saw \(what) \(ago(date)) \(place). I don't know the way there from here yet; once you're there, I'll point it out."
+            return dutch ? "Ik zag \(what) \(ago(date)) \(place). Waar dat van hieruit is, weet ik nog niet: kijk even rustig rond, dan wijs ik het aan zodra ik herken waar we zijn."
+                         : "I saw \(what) \(ago(date)) \(place). I don't know where that is from here yet: look around slowly, and I'll point it out as soon as I recognise where we are."
         }
-        return dutch ? "Ik zag \(what) \(ago(date)), in een ruimte die ik nu nog niet herken. Als je daar bent, wijs ik het aan."
-                     : "I saw \(what) \(ago(date)), in a room I haven't recognised yet this time. Once you're there, I'll point it out."
+        return dutch ? "Ik zag \(what) \(ago(date)), in een ruimte die ik nu nog niet herken. Kijk even rustig rond, dan wijs ik het aan zodra ik herken waar we zijn."
+                     : "I saw \(what) \(ago(date)), in a room I haven't recognised yet this time. Look around slowly, and I'll point it out as soon as I recognise where we are."
     }
     /// A find that saw `what` in a room not recognised then: the room is recognised now.
     func recognisedNow(_ what: String, where place: String) -> String {
