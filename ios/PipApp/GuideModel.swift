@@ -104,6 +104,11 @@ final class GuideModel: ObservableObject {
     /// The look in progress, by number: an older look ending never clears a newer one's flag.
     private var activeLook: Int?
     var lookActive: Bool { activeLook != nil }
+    /// The look in progress has said everything and only waits for the marks of cues said before
+    /// they were found (`LookEvent.spoken`): the user may speak meanwhile, as to an idle Pip.
+    private var lookWaitingForMarks = false
+    /// A look that keeps Pip busy: one still answering.
+    var lookBusy: Bool { lookActive && !lookWaitingForMarks }
     /// Mark numbers restart in every look; an offset per look keeps earlier marks apart, so their
     /// cues can stay on screen.
     private var lookCount = 0
@@ -191,7 +196,7 @@ final class GuideModel: ObservableObject {
             if case .landmark(let mark, let name) = c.cue { self?.rememberPlace(name: name, mark: mark) }
         }
         speaker.onIdle = { [weak self] in
-            guard let self, self.phase == .speaking, !self.lookActive else { return }
+            guard let self, self.phase == .speaking, !self.lookBusy else { return }
             self.phase = self.muted ? .muted : .listening
         }
         audio.onRestartFailed = { [weak self] error in
@@ -263,7 +268,7 @@ final class GuideModel: ObservableObject {
 
     /// The big button: stop Pip if it is talking, otherwise mute or unmute the microphone.
     func micTapped() {
-        if speaker.isSpeaking || lookActive {
+        if speaker.isSpeaking || lookBusy {
             interrupt()
             return
         }
@@ -364,7 +369,7 @@ final class GuideModel: ObservableObject {
         }
     }
 
-    private var busy: Bool { speaker.isSpeaking || lookActive }
+    private var busy: Bool { speaker.isSpeaking || lookBusy }
 
     /// When the look model was last asked anything (its prompt cache lasts a few minutes).
     private var lastModelCall = Date.distantPast
@@ -525,7 +530,8 @@ final class GuideModel: ObservableObject {
         lookCount += 1
         let me = lookCount, conversation = self.conversation
         activeLook = me
-        defer { if activeLook == me { activeLook = nil } }
+        lookWaitingForMarks = false
+        defer { if activeLook == me { activeLook = nil; lookWaitingForMarks = false } }
         phase = .looking
         spokenThisTurn = []
         // A question from the user: any open yes/no question, and the plan offer, are stale now.
@@ -580,9 +586,13 @@ final class GuideModel: ObservableObject {
                 case .target(let id, let spec):
                     specs[id] = spec
                     note("target \(id): \(spec.phrase) \(spec.text) @\(Int(spec.x)),\(Int(spec.y))")
-                case .grounded(let id, let inst, let method, let seconds):
+                case .grounded(let id, let inst, let method, let seconds, let description):
                     if let inst {
-                        let anchoring = ar.addMark(inst.renumbered(id + offset), snapshot: snapshot, spec: specs[id])
+                        // What the model said it is goes with the mark (and a place made of it): it
+                        // tells this object from its look-alikes when it is found again.
+                        var spec = specs[id]
+                        spec?.description = description
+                        let anchoring = ar.addMark(inst.renumbered(id + offset), snapshot: snapshot, spec: spec)
                         // Lock the outline to the object itself, so it stays on it when it moves.
                         if anchoring != "assumed depth" {
                             lockToObject(id + offset, key: inst.renumbered(id + offset), on: specs[id]?.on, snapshot: snapshot)
@@ -631,6 +641,13 @@ final class GuideModel: ObservableObject {
                     note("side: \(cue)")
                 case .invalidTag(let e):
                     note("invalid: \(e)")
+                case .spoken:
+                    // Only marks still being found: Pip listens again meanwhile.
+                    note("all said; still finding the marks of cues said before them")
+                    if activeLook == me {
+                        lookWaitingForMarks = true
+                        if !speaker.isSpeaking, phase == .looking || phase == .speaking { phase = muted ? .muted : .listening }
+                    }
                 case .finished(let summary):
                     raw = summary.rawText
                     note(String(format: "first word %.1fs after you stopped (model: first token %.1fs, first sentence %.1fs)%@ · total %.1fs",

@@ -124,6 +124,31 @@ good as the measurements themselves.
   a refused loop (a look-alike place, or a drifted session).
 - `space: N earlier sessions are of this place after all; linked to again`: a later location fix
   re-admitted sessions an older one had ruled out.
+- `space: carried again by the link's evidence nearer to them: the pen by X cm`: a place brought
+  back and not found on sight yet moves when the link gets evidence nearer to it (see below).
+- `mark N: found again on sight (method); its stored place no longer counts`, or `mark N not found
+  again (reentry: no pen where expected …)`: a stored thing found again by its description, or
+  left where the link put it rather than moved onto another object.
+- `the sighting of … is the remembered place …: pointed at that`: a memory search found the thing a
+  place already holds; no second outline.
+
+## Finding a stored thing again (2 Nov)
+
+The device test of 2 Nov linked a session started in the bathroom to the one at the desk 7 m away;
+the remembered pen came back 15 cm off (two walks of 7 m, about 1 %), on the ink bottle beside it.
+Pip then took the ink bottle for the pen, "moved". Three rules since:
+
+- **Carried again while the link grows.** A place brought back is carried anew, by the link's
+  evidence nearest to it, every time the link gets stronger (`ARController.recarry`), until it is
+  found on sight. Before, it kept the carry of the first link, made in the bathroom.
+- **Found again by what it is, never by what lies there.** A stored thing (`ARController.carried`)
+  is looked for in a wider region (half the frame), pointed at again by the model's own words for
+  it (stored with the place: "the grey pen in the middle"), and taken only as an object of its kind
+  or one the model pointed at (`Grounder.refinding`). Replayed on the desk photo with the expected
+  point on the ink bottle: the old rule took the bottle, the new one the grey pen (3 of 3), and
+  without a description it takes nothing rather than the bottle.
+- **One object, one outline.** A memory search that confirms a sighting where a remembered place of
+  that name already lies points at the place.
 
 ## Steps
 

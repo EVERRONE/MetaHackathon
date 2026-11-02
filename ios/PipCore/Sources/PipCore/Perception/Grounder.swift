@@ -16,14 +16,18 @@ public struct TargetSpec: Equatable, Sendable {
     public var on: String?
     /// A small target (a ring: a key, a button, an LED), not a whole object.
     public var small = false
+    /// What the model said the target is ("the grey pen in the middle"), kept with the mark and a
+    /// remembered place: finding it again among look-alikes (three pens side by side) needs it.
+    public var description: String?
 
-    public init(x: Double, y: Double, phrase: String, text: [String] = [], on: String? = nil, small: Bool = false) {
+    public init(x: Double, y: Double, phrase: String, text: [String] = [], on: String? = nil, small: Bool = false, description: String? = nil) {
         self.x = x
         self.y = y
         self.phrase = phrase
         self.text = text
         self.on = on
         self.small = small
+        self.description = description
     }
 
     public func point(in size: CGSize) -> CGPoint {
@@ -36,6 +40,15 @@ public struct GroundingResult: Sendable {
     /// How the instance was chosen, for the trace.
     public var method: String
     public var seconds: Double
+    /// What the model said the target is, as far as its words had come when the grounding ended.
+    public var description: String?
+
+    public init(instance: SegmentInstance?, method: String, seconds: Double, description: String? = nil) {
+        self.instance = instance
+        self.method = method
+        self.seconds = seconds
+        self.description = description
+    }
 }
 
 /// Turns a rough target into an exact SAM outline, checked against the text printed on it.
@@ -49,6 +62,12 @@ public struct Grounder: Sendable {
     /// what the guide said about it, and that alone can be vague ("the key near the top right,
     /// beside delete", 1 Nov, for the power key the user asked about).
     public var asked: String?
+    /// Finding an object again where it is expected (a place remembered in an earlier session, a
+    /// snapshot's sighting), not where the model pointed: the expected point can be a hand's width
+    /// off after a walk through the house (2 Nov: 15 cm, on the ink bottle beside the pen). The
+    /// region is wider, the object is pointed at again by its description, and only an object of
+    /// its kind, or one the model pointed at, is taken: never whatever lies at the expected point.
+    public var refinding = false
     /// Whole-frame SAM results per phrase, shared by all targets of one look.
     let wholeFrame: WholeFrameSegments
 
@@ -65,7 +84,8 @@ public struct Grounder: Sendable {
         let t0 = Date()
         let size = CGSize(width: frame.width, height: frame.height)
         let p = spec.point(in: size)
-        let side = max(size.width, size.height) * 0.32
+        // Finding again: the object can lie further from the expected point than from the model's.
+        let side = max(size.width, size.height) * (refinding ? 0.5 : 0.32)
         let region = CGRect(x: p.x - side / 2, y: p.y - side / 2, width: side, height: side)
             .intersection(CGRect(origin: .zero, size: size)).integral
         let scale = min(2.5, 1024 / max(region.width, region.height))
@@ -101,7 +121,7 @@ public struct Grounder: Sendable {
         // about as long). Bounded, so a slow answer never holds up the pointing.
         let cropSize = CGSize(width: crop.width, height: crop.height)
         // A task of its own, not awaited when it cannot change the pick (an async let would be).
-        let zoomed = Task { await Self.withBudget(Self.zoomBudget) { await self.zoomPoint(spec, describe: describe, jpeg: jpeg, size: cropSize) } }
+        let zoomed = Task { await Self.withBudget(spec.small ? Self.smallZoomBudget : Self.zoomBudget) { await self.zoomPoint(spec, describe: describe, jpeg: jpeg, size: cropSize) } }
         let debug = ProcessInfo.processInfo.environment["PIP_DEBUG_GROUND"] != nil
         // Text recognition runs alongside SAM: the fast pass always (≈0.05 s), the accurate pass
         // within a budget, because after a pause it reloads its models (~25 s).
@@ -173,7 +193,9 @@ public struct Grounder: Sendable {
         //    one just beside it (it lands on the object or at its edge, 1 Nov).
         // Not waited for when it cannot change the pick: the printed text was found, or a whole
         // object is under the model's own point (that point wins, see below).
-        let zoomMatters = method != "text" && (spec.small || method != "point")
+        // Finding again, the object under the expected point may be another of its kind (one of
+        // three pens): the model's pointing, by its description, always matters.
+        let zoomMatters = method != "text" && (spec.small || method != "point" || refinding)
         var zoomAt: CGPoint? = zoomMatters ? ((await zoomed.value) ?? nil) : nil
         if !zoomMatters { zoomed.cancel() }
         // Keys this small in the frame (the whole laptop in view) are still small on the crop: the
@@ -184,7 +206,16 @@ public struct Grounder: Sendable {
         // Their size from the objects of the kind (keys), not the symbols printed on them.
         let kindSizes = concept.filter { $0.prompts.contains(spec.phrase) }.map { sqrt(Double($0.area)) }.sorted()
         let kindSize = kindSizes.count >= 3 ? kindSizes[kindSizes.count / 2] : typical
-        if let zp = zoomAt, kindSize / Double(scale) < Self.smallKeySize {
+        // Thin keys at the second point (a laptop's function row, a fifth of a key's height away
+        // from the bigger keys below): it lands on the key below two times in three (2 Nov: "4" for
+        // F4 under its brightness icon); pointing once more, closer, found F4 three times in four.
+        let thinNearby = zoomAt.map { zp in
+            concept.contains { k in
+                k.prompts.contains(spec.phrase) && Double(min(k.boxRect.width, k.boxRect.height)) / Double(scale) < Self.thinKeySide
+                    && Grounding.distance(zp, k.boxRect) <= 0.6 * Double(max(k.boxRect.width, k.boxRect.height))
+            }
+        } ?? false
+        if let zp = zoomAt, kindSize / Double(scale) < Self.smallKeySize || (spec.small && thinNearby) {
             let centre = CGPoint(x: region.minX + zp.x / scale, y: region.minY + zp.y / scale)
             let side = 0.2 * max(size.width, size.height)
             let tight = CGRect(x: min(max(centre.x - side / 2, 0), size.width - side), y: min(max(centre.y - side / 2, 0), size.height - side), width: side, height: side).integral
@@ -242,7 +273,7 @@ public struct Grounder: Sendable {
                 let sliver = method == "point prompt" && !Self.solid(current) && Self.solid(z)
                 if z.area < current.area || sliver { chosen = z }
                 method += " + zoom"
-            } else if !spec.small, method == "point" {
+            } else if !spec.small, method == "point", !refinding {
                 // A whole object under the model's own point, of the kind it named: that point is
                 // the stronger (1 Nov: the second point took the oven's ▸☰ button for the play
                 // triangle the finger was on). It wins where SAM had to guess (a candle and a
@@ -304,7 +335,8 @@ public struct Grounder: Sendable {
             // The model's point deep inside one of them (a quarter of its size from every edge):
             // that is the one it means, and the speech need not wait for a check. Points near an
             // edge or in a gap are checked.
-            if let current = chosen, method == "point", Self.deepInside(local, current.boxRect) { lookalikes = [] }
+            // Not when finding again: the expected point is no pointing.
+            if !refinding, let current = chosen, method == "point", Self.deepInside(local, current.boxRect) { lookalikes = [] }
             // A symbol key the model's point is plainly on (on it or at its edge, much nearer to it
             // than to any neighbour): the verifier reads small symbols badly (2 Nov: the power key's
             // ⏻ was refused once and taken for delete once, while the point was on the power key).
@@ -319,7 +351,15 @@ public struct Grounder: Sendable {
                 }
             }
             if !lookalikes.isEmpty, let current = chosen {
-                switch await verify(spec, description: description, point: local, candidates: [current] + lookalikes.filter { $0.id != current.id }.prefix(10), in: crop) {
+                let candidates = [current] + lookalikes.filter { $0.id != current.id }.prefix(10)
+                let verdict = await Self.withBudget(Self.verifyBudget) { await self.verify(spec, description: description, point: local, candidates: Array(candidates), in: crop) } ?? .failed
+                switch verdict {
+                case .picked(let picked) where spec.small && !Self.agree(current, picked):
+                    // Another key of the row, which neither its printed text nor the model's second
+                    // pointing showed: the verifier reads tiny labels badly (2 Nov, replayed: F7 and F9
+                    // for "F4", the 4 and F5 for "the fourth key after Escape"). Not pointed at on its word.
+                    method = "rejected: the verifier chose another key"
+                    chosen = nil
                 case .picked(let picked):
                     method = picked.id == current.id ? "verified" : "verified (moved)"
                     chosen = picked
@@ -329,6 +369,10 @@ public struct Grounder: Sendable {
                 case .noneOfThem:
                     // A key or button that does not show the printed text: never point at a guess.
                     method = "rejected by verification"
+                    chosen = nil
+                case .failed where spec.small:
+                    // A key nothing confirmed (no printed text found, no second pointing, no verdict).
+                    method = "rejected: not verified"
                     chosen = nil
                 case .failed:
                     method += " (unverified)"
@@ -345,11 +389,19 @@ public struct Grounder: Sendable {
             chosen = holder
             method += " (the \(spec.phrase) it is on)"
         }
+        // Finding again: an object the model did not point at, and that SAM did not find as the
+        // kind, is only whatever lay at the expected point (2 Nov: the ink bottle beside the pen).
+        if refinding, let pick = chosen, !pick.prompts.contains(spec.phrase),
+           !(method == "text" || method.contains("zoom") || method.contains("verified")) {
+            chosen = nil
+            method = "no \(spec.phrase) where expected (\(method))"
+        }
         var result = chosen?.unmapped(from: region, scale: scale).renumbered(id)
         if method == "text", result != nil { result!.confidence = max(result!.confidence, 0.85) }
         if result != nil { result!.objectId = nil }
         if nearby.isEmpty && !spec.text.isEmpty && !symbol { problems.append("text not found nearby") }
-        return GroundingResult(instance: result, method: method + (problems.isEmpty ? "" : " (\(problems.joined(separator: "; ")))"), seconds: Date().timeIntervalSince(t0))
+        return GroundingResult(instance: result, method: method + (problems.isEmpty ? "" : " (\(problems.joined(separator: "; ")))"),
+                               seconds: Date().timeIntervalSince(t0), description: describe?())
     }
 
     /// The key or button a printed symbol is on: the smallest instance of that kind holding the
@@ -365,13 +417,23 @@ public struct Grounder: Sendable {
 
     /// How long the second pointing may take, from the start of the grounding (SAM takes about 4 s).
     static let zoomBudget: TimeInterval = 5
-    /// How long the closer second pointing may take (1 Nov: one took 15 s).
-    static let closerBudget: TimeInterval = 3
+    /// For a key or button, longer: without the second pointing only the verifier can choose, and
+    /// it reads tiny labels badly (2 Nov, replayed: the second pointing came after 5 s in three of
+    /// seven, and was right in the one where it was logged; the verifier then chose wrong keys).
+    static let smallZoomBudget: TimeInterval = 9
+    /// How long the verifier may take (2 Nov: one took 19 s).
+    static let verifyBudget: TimeInterval = 6
+    /// How long the closer second pointing may take (1 Nov: one took 15 s; 2 Nov: two of four
+    /// took longer than 3 s, and the second point's wrong key stood).
+    static let closerBudget: TimeInterval = 4
     /// Segmenting at the second point is only started this long after the grounding started, at most.
     static let segmentAtPointBy: TimeInterval = 7
     /// Below this (frame pixels) the objects of the kind are too small on the region's crop to
     /// point at one exactly.
     static let smallKeySize: Double = 40
+    /// Keys thinner than this (frame pixels) are pointed at once more, closer, wherever they are:
+    /// a laptop's function row is half as tall as the keys below it.
+    static let thinKeySide: Double = 28
 
     /// The same object: one outline holds the other's centre (a key and the symbol on it).
     static func agree(_ a: SegmentInstance, _ b: SegmentInstance) -> Bool {

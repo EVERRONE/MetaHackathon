@@ -147,25 +147,40 @@ extension GuideModel {
         defer { refreshing = false }
         let refind = candidates.contains { $0.reason == .reentry }
         let grounder = Grounder(client: client, frameJPEG: refind ? (SetOfMarks.jpeg(snapshot.image, quality: 0.8) ?? Data()) : Data())
+        // A mark from storage (`ARController.carried`: a place of an earlier session, a snapshot's
+        // sighting) can be a hand's width off: found again in a wider region, by what the model said
+        // it is, and only as an object of its kind or one the model points at (2 Nov: the ink bottle
+        // beside the pen was taken for the pen, "moved").
+        var refinder = grounder
+        refinder.refinding = true
         let specs = Dictionary(uniqueKeysWithValues: candidates.compactMap { c in
             c.reason == .reentry ? ar.spec(for: c.id, in: snapshot, box: c.box).map { (c.id, $0) } : nil
         })
-        await withTaskGroup(of: (Int, CGRect, ObjectTrack.Reason, SegmentInstance?).self) { group in
+        let fromStorage = ar.carried
+        await withTaskGroup(of: (Int, CGRect, ObjectTrack.Reason, GroundingResult?).self) { group in
             for c in candidates {
                 let spec = specs[c.id]
+                let stored = fromStorage.contains(c.id)
                 group.addTask {
-                    if let spec { return (c.id, c.box, c.reason, await grounder.ground(spec, id: c.id, frame: snapshot.image).instance) }
-                    return (c.id, c.box, c.reason, await grounder.reground(box: c.box, id: c.id, frame: snapshot.image))
+                    if let spec {
+                        let found = stored ? await refinder.ground(spec, id: c.id, frame: snapshot.image, describe: { spec.description })
+                            : await grounder.ground(spec, id: c.id, frame: snapshot.image)
+                        return (c.id, c.box, c.reason, found)
+                    }
+                    let inst = await grounder.reground(box: c.box, id: c.id, frame: snapshot.image)
+                    return (c.id, c.box, c.reason, GroundingResult(instance: inst, method: "again in its box", seconds: 0))
                 }
             }
-            for await (id, box, reason, inst) in group {
+            for await (id, box, reason, found) in group {
                 guard !lookActive, !Task.isCancelled else { continue }
-                guard let inst, Self.sameObject(expected: box, found: inst.boxRect, reason: reason) else {
+                guard let inst = found?.instance, Self.sameObject(expected: box, found: inst.boxRect, reason: reason) else {
                     ar.measureFailed(id)
-                    log("mark \(id % 1000) not found again (\(reason.rawValue))")
+                    let why = found.flatMap { $0.instance == nil ? ": " + $0.method : nil } ?? ""
+                    log("mark \(id % 1000) not found again (\(reason.rawValue)\(why))")
                     continue
                 }
                 guard let update = ar.updateMark(inst, snapshot: snapshot, reason: reason) else { continue }
+                if ar.carried.remove(id) != nil { log("mark \(id % 1000): found again on sight (\(found?.method ?? "")); its stored place no longer counts") }
                 if let offset = update.offset { ar.shiftNeighbours(of: id, by: offset) }
                 trackingLog.record(id: id, reason: reason, update: update)
                 log(String(format: "mark %d %@: corrected %.1f cm (%.0f px), %d view%@%@", id % 1000, reason.rawValue, update.correction * 100,

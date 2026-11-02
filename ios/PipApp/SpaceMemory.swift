@@ -24,6 +24,9 @@ final class SpaceMemory: ObservableObject {
         /// correct its position to the centimetre.
         var phrase: String?
         var text: [String]?
+        /// What the model said it is ("the grey pen in the middle"): finding it again among
+        /// look-alikes (three pens side by side) is done by it.
+        var description: String? = nil
     }
 
     struct Fact: Codable, Equatable {

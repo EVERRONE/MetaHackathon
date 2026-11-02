@@ -140,6 +140,16 @@ extension GuideModel {
             ar.restoreLinked(place, at: carried)
             back.append(place.name)
         }
+        // Places brought back before and not found on sight yet: carried again by the link as it
+        // stands now, by its evidence nearest each place (see `ARController.recarry`).
+        var again: [String] = []
+        for (mark, place) in ar.places where ar.carried.contains(mark) {
+            guard let from = place.piece, from != live, let pose = place.pose.map(ARController.matrix) else { continue }
+            let carried = direct.contains(from) ? linker.carry(anchor: pose, of: from) : chains[from].map { $0.matrix * pose }
+            guard let carried, let moved = ar.recarry(mark, to: carried), moved > 0.01 else { continue }
+            again.append(String(format: "%@ by %.0f cm", place.name, moved * 100))
+        }
+        if !again.isEmpty { log("space: carried again by the link's evidence nearer to them: \(again.joined(separator: ", "))") }
         if change != .strengthened || !back.isEmpty {
             log("space: \(n) snapshots of \(1 + chains.count) earlier session\(chains.isEmpty ? "" : "s") can be pointed at here"
                 + (chains.isEmpty ? "" : " (\(chains.count) through the home graph)") + (back.isEmpty ? "" : "; places back: \(back.joined(separator: ", "))"))

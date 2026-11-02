@@ -26,6 +26,12 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     /// What Pip knows about each pointed-at object over time (see `ObjectTrack`).
     var tracks: [Int: ObjectTrack] = [:]
 
+    /// Marks placed from storage only (a place of an earlier session, a sighting in a snapshot),
+    /// until found again on sight: after a walk through the house their link or snapshot can be a
+    /// hand's width off (2 Nov: 15 cm), so they are found again by their description, never by
+    /// whatever lies where they are drawn.
+    var carried = Set<Int>()
+
     /// Set when tracking comes back after being lost: every object is checked again.
     var trackingRecovered = false
 
@@ -281,6 +287,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
             planarHidden.remove(id)
             planarMotion[id] = nil
             measured[id] = nil
+            carried.remove(id)
         }
         if !planar.isEmpty { planar.stop(removed) }
         // Riding along with a mark that is gone: back on room anchors.

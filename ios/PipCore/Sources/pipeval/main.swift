@@ -56,6 +56,8 @@ if args.first == "ground", args.count >= 5 {
     let t0 = Date()
     var grounder = Grounder(client: client, frameJPEG: SetOfMarks.jpeg(frame)!)
     grounder.asked = env["PIP_ASKED"]
+    // PIP_REFIND=1: finding a remembered object again at an expected point (see Grounder.refinding).
+    grounder.refinding = env["PIP_REFIND"] != nil
     let r = await grounder.ground(spec, id: 1, frame: frame, describe: { description })
     print(String(format: "%.2fs", Date().timeIntervalSince(t0)), r.method, r.instance.map { "box \($0.box) conf \($0.confidence)" } ?? "nil")
     exit(0)
@@ -370,9 +372,12 @@ do {
         switch event {
         case .target(let id, let spec):
             print("\(stamp())  🎯 target \(id): \(spec.phrase) \(spec.text) @\(Int(spec.x)),\(Int(spec.y))")
-        case .grounded(let id, let inst, let method, let seconds):
+        case .spoken:
+            print("\(stamp())  … all said; waiting for the marks still being found")
+        case .grounded(let id, let inst, let method, let seconds, let description):
             if let inst { instances.append(inst) }
-            print("\(stamp())  📍 target \(id) → " + (inst.map { "box \($0.box) conf \(String(format: "%.2f", $0.confidence))" } ?? "not found") + " via \(method) in \(String(format: "%.2f", seconds))s")
+            print("\(stamp())  📍 target \(id) → " + (inst.map { "box \($0.box) conf \(String(format: "%.2f", $0.confidence))" } ?? "not found") + " via \(method) in \(String(format: "%.2f", seconds))s"
+                  + (description.map { " · \"\($0)\"" } ?? ""))
         case .segmented(let s, let marked):
             instances = s.instances
             print("\(stamp())  segmented: \(s.instances.count) marks · \(s.calls.map { "\($0.prompt)=\($0.found) in \($0.ms) ms" }.joined(separator: ", "))")

@@ -19,14 +19,18 @@ public struct LookSummary: Sendable {
 public enum LookEvent: Sendable {
     /// Spark named something to point at; grounding has started.
     case target(id: Int, spec: TargetSpec)
-    /// The exact outline for a target (full-frame pixels, `id` = the mark), or nil if not found.
-    case grounded(id: Int, instance: SegmentInstance?, method: String, seconds: Double)
+    /// The exact outline for a target (full-frame pixels, `id` = the mark), or nil if not found;
+    /// with what the model said the target is ("the grey pen in the middle").
+    case grounded(id: Int, instance: SegmentInstance?, method: String, seconds: Double, description: String?)
     /// Marks mode only: every instance, numbered, and the image Spark sees them on.
     case segmented(SegmentResponse, markedJPEG: Data)
     /// A sentence ready to speak, with only the cues that passed validation.
     case sentence(SpokenSentence, traces: [CueTrace])
     case sideChannel(Cue)
     case invalidTag(CueError)
+    /// Everything is said; the look only waits on for the marks of cues said before they were
+    /// found (the user may speak meanwhile: Pip is not busy).
+    case spoken
     case finished(LookSummary)
 }
 
@@ -60,14 +64,19 @@ public struct LookRequest: Sendable {
 ///
 /// Spark speaks right away and points by position, object kind and printed text. Each target is
 /// grounded in parallel (SAM in the region + on-device text recognition). A sentence is released
-/// only once its targets are grounded, so a cue is never shown late or on a guess; Spark's first
-/// sentence carries no cue, which covers the grounding time.
+/// once its targets are grounded, or after `groundingTimeout`; a cue whose target is still being
+/// found then shows when it is found, never on a guess. Spark's first sentence carries no cue,
+/// which covers the grounding time.
 public struct LookPipeline: Sendable {
     public var client: PipClient
     public var validator: CueValidator
     public var language: String
     /// How long a finished sentence may wait for its targets before it is spoken without them.
     public var groundingTimeout: TimeInterval = 8.0
+    /// How long after a sentence is spoken without its target the look still waits for it: its cue
+    /// shows once the target is found (2 Nov: F4 took longer than 8 s on a busy phone, and its ring
+    /// was dropped; on the Mac the same grounding took 2.4 to 4 s).
+    public var lateTargetWait: TimeInterval = 10.0
     /// Muse Wonder: on real keyboards Spark answered from PC habit at every reasoning level; Wonder
     /// read the device correctly at the lowest level, about one second slower (spike-results, day 1).
     public var model = "muse-wonder-1.0"
@@ -189,8 +198,9 @@ public struct LookPipeline: Sendable {
         var cutOff: String?
         /// The model finished its answer (a connection that drops after that lost nothing).
         var answerFinished = false
-        /// Marks of warnings said before they were found, and since when: the look waits for them.
-        var awaitedDanger: [Int: Date] = [:]
+        /// Marks of cues said before they were found, and since when: the look waits for them.
+        var awaited: [Int: Date] = [:]
+        var spokenSent = false
 
         func handle(_ events: [CueStreamEvent]) {
             for e in events {
@@ -224,12 +234,13 @@ public struct LookPipeline: Sendable {
                 var traces: [CueTrace] = []
                 var kept: [TimedCue] = []
                 for timed in s.cues {
-                    // A warning said before its mark is found keeps the mark: the overlay shows the
-                    // warning at once and outlines its object once the mark is grounded.
-                    if timed.cue.isDanger, let m = timed.cue.marks.first, grounding.contains(m), !resolved.contains(m) {
+                    // A cue said before its mark is found keeps the mark: a warning at once, any other
+                    // cue once the wait is over. The overlay shows it as soon as the mark is grounded.
+                    let unfound = timed.cue.marks.filter { grounding.contains($0) && !resolved.contains($0) }
+                    if !unfound.isEmpty, timed.cue.marks.allSatisfy({ grounding.contains($0) || marks[$0] != nil }) {
                         traces.append(CueTrace(raw: timed.raw, decision: .accept(timed.cue)))
                         kept.append(timed)
-                        awaitedDanger[m] = awaitedDanger[m] ?? Date()
+                        for m in unfound { awaited[m] = awaited[m] ?? Date() }
                         continue
                     }
                     let decision = validator.validate(timed.cue, marks: marks, hasEvidence: { _ in false })
@@ -270,13 +281,23 @@ public struct LookPipeline: Sendable {
             case .grounded(let id, let result):
                 resolved.insert(id)
                 if let inst = result.instance { marks[id] = MarkInfo(id: id, confidence: inst.confidence) }
-                emit(.grounded(id: id, instance: result.instance, method: result.method, seconds: result.seconds))
+                emit(.grounded(id: id, instance: result.instance, method: result.method, seconds: result.seconds, description: result.description))
             case .tick:
                 break
             }
             flush()
-            // Done once everything is said, and the warnings said early have their marks (or the wait is over).
-            if chatDone && pending.isEmpty && awaitedDanger.allSatisfy({ resolved.contains($0.key) || since($0.value) > groundingTimeout }) { break }
+            if chatDone && pending.isEmpty && !spokenSent && awaited.contains(where: { !resolved.contains($0.key) }) {
+                spokenSent = true
+                emit(.spoken)
+            }
+            // Done once everything is said, and the cues said before their marks were found have
+            // them (or the wait is over: said in the trace, the grounding is cancelled).
+            if chatDone && pending.isEmpty && awaited.allSatisfy({ resolved.contains($0.key) || since($0.value) > lateTargetWait }) {
+                for (m, since0) in awaited where !resolved.contains(m) {
+                    emit(.grounded(id: m, instance: nil, method: String(format: "still not found %.0f s after its sentence", since(since0)), seconds: since(t0), description: nil))
+                }
+                break
+            }
         }
         if let cutOff { throw LookError.chat(cutOff) }
 

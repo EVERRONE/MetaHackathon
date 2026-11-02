@@ -36,6 +36,17 @@ extension GuideModel {
             let outcome = await search(what, phrase: phrase, in: batch)
             if Task.isCancelled { return }
             if case .found(let world, let frame, let spec) = outcome {
+                // A place remembered under this name and brought back here lies there already: it is
+                // the same object, and its mark is pointed at (it knows what the object looked like
+                // to the model; a second outline from a snapshot of the same session only showed the
+                // same link error twice, 2 Nov).
+                if let mark = rememberedMark(named: what, near: world) {
+                    ar.show(.outline(mark: mark))
+                    log("the sighting of \(what) is the remembered place \(ar.places[mark]?.name ?? ""): pointed at that")
+                    let place = ar.describe(mark: mark, dutch: language == "Dutch") ?? ""
+                    say(phrases.found(what, at: frame.time, where: place.components(separatedBy: ";").first ?? place))
+                    return
+                }
                 foundCount += 1
                 let id = ARController.foundMarkBase + foundCount % 90_000
                 // Earlier cues give way first: the found object is this answer's.
@@ -114,9 +125,24 @@ extension GuideModel {
             }
             log("sighting confirmed (\(grounded.method))")
             let world = inst.regularized().outlinePoints.map { ring in ring.map { frame.worldPoint(atPixel: $0, depth: depth) } }
-            return .found(world: world, frame: frame, spec: TargetSpec(x: 500, y: 500, phrase: spec.phrase, text: spec.text))
+            // Found again on sight by the user's words for it (see `ARController.carried`).
+            return .found(world: world, frame: frame, spec: TargetSpec(x: 500, y: 500, phrase: spec.phrase, text: spec.text, description: what))
         }
         return .none
+    }
+
+    /// The mark of a remembered place that `what` names and that lies within half a metre of an
+    /// outline found in the visual memory: the same object.
+    func rememberedMark(named what: String, near world: [[simd_float3]]) -> Int? {
+        let points = world.flatMap { $0 }
+        guard !points.isEmpty else { return nil }
+        let centre = points.reduce(simd_float3.zero, +) / Float(points.count)
+        return ar.places.filter { mark, place in
+            PlaceName.score(what, names: [place.name, place.phrase ?? ""]) > 0
+                && (ar.marks[mark].map { simd_distance($0.centroid, centre) < 0.5 } ?? false)
+        }.min { a, b in
+            simd_distance(ar.marks[a.key]!.centroid, centre) < simd_distance(ar.marks[b.key]!.centroid, centre)
+        }?.key
     }
 
     // MARK: Places of other maps of this room

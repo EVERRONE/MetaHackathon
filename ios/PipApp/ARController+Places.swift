@@ -23,7 +23,7 @@ extension ARController {
         let local = world.map { ring in ring.map { p -> SIMD3<Float> in let q = inverse * simd_float4(p, 1); return SIMD3(q.x, q.y, q.z) } }
         let spec = tracks[mark]?.spec
         let place = SpaceMemory.Place(id: UUID(), name: name, anchorID: anchor.identifier, outline: local, created: Date(), pose: Self.values(t),
-                                      phrase: spec?.phrase, text: spec?.text)
+                                      phrase: spec?.phrase, text: spec?.text, description: spec?.description)
         install(place, anchor: anchor, measured: true)
         return place
     }
@@ -57,8 +57,30 @@ extension ARController {
         anchors[id] = (anchor, t)
         places[id] = place
         if !measured, let phrase = place.phrase {
-            tracks[id] = ObjectTrack(place: TargetSpec(x: 500, y: 500, phrase: phrase, text: place.text ?? []), now: CACurrentMediaTime())
+            tracks[id] = ObjectTrack(place: TargetSpec(x: 500, y: 500, phrase: phrase, text: place.text ?? [], description: place.description), now: CACurrentMediaTime())
         }
+        if !measured { carried.insert(id) }
+    }
+
+    /// A place of an earlier session not found on sight yet, carried here again by the link as it
+    /// stands now, by its evidence nearest the place (2 Nov: linked in the bathroom, the pen was
+    /// 15 cm off at the desk 7 m away; the desk's own views came in later and were not used for it).
+    /// Not stored: it is still only as good as the link. Returns how far it moved, in metres.
+    func recarry(_ id: Int, to transform: simd_float4x4) -> Float? {
+        guard carried.contains(id), let place = places[id], let old = marks[id] else { return nil }
+        let world = place.outline.map { ring in ring.map { (transform * simd_float4($0, 1)).xyz } }
+        var fresh = AnchoredMark(id: id, world: world)
+        let moved = simd_distance(fresh.centroid, old.centroid)
+        guard moved > 0.01 else { return moved }
+        if let a = anchors[id] { arView.session.remove(anchor: a.anchor) }
+        let anchor = ARAnchor(name: "pip-place", transform: transform)
+        arView.session.add(anchor: anchor)
+        anchors[id] = (anchor, transform)
+        targetCorrections[id] = nil
+        // Glides over from where it was drawn.
+        fresh.glide = old.centroid - fresh.centroid
+        marks[id] = fresh
+        return moved
     }
 
     func forgetPlace(_ placeID: UUID) {
@@ -115,7 +137,10 @@ extension ARController {
         place(m)
         // Found in a snapshot (possibly of an earlier session): found again on sight and corrected,
         // like a remembered place.
-        if let spec { tracks[id] = ObjectTrack(place: spec, now: CACurrentMediaTime()) }
+        if let spec {
+            tracks[id] = ObjectTrack(place: spec, now: CACurrentMediaTime())
+            carried.insert(id)
+        }
     }
 
     /// Saves the room map with the places' anchors only (outline anchors are for this session).

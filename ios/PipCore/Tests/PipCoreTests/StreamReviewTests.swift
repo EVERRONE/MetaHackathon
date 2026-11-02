@@ -119,6 +119,27 @@ import Testing
         if case .danger(let mark, _)? = warned { #expect(mark != nil) } else { Issue.record("no warning: \(String(describing: warned))") }
     }
 
+    @Test func aRingWhoseTargetIsSlowKeepsItsMarkInsteadOfBeingDropped() async throws {
+        // 2 Nov: F4 took longer than the wait on a busy phone, and its ring was rejected as an
+        // unknown mark. Here the wait (0.1 s) is shorter than the grounding (0.8 s): the sentence
+        // goes, its ring keeps its mark, and the look waits on for the grounding.
+        StreamStub.body = Self.chunk("Press [[ring at=500,500 obj=\"key\" text=\"F4\"]] this key. ")
+        StreamStub.breakOff = false
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StreamStub.self]
+        let client = PipClient(baseURL: URL(string: "https://pip.test")!, token: "t", session: URLSession(configuration: config))
+        var pipeline = LookPipeline(client: client)
+        pipeline.groundingTimeout = 0.1
+        var order: [String] = []
+        var ring: Cue?
+        for try await event in pipeline.run(LookRequest(frame: Self.frame(), utterance: "how do I close it?")) {
+            if case .sentence(let s, _) = event { order.append("sentence"); ring = s.cues.first?.cue }
+            if case .grounded = event { order.append("grounded") }
+        }
+        #expect(order == ["sentence", "grounded"], "\(order)")
+        if case .ring(let mark, _)? = ring { #expect(mark == 1) } else { Issue.record("no ring: \(String(describing: ring))") }
+    }
+
     @Test func anErrorSentMidStreamCutsTheAnswerOff() async {
         let body = Self.chunk("Press it once. And then the") + "data: {\"error\":{\"message\":\"overloaded\"}}\n\n"
         let (said, failed) = await Self.look(body, breakOff: false)
