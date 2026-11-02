@@ -35,6 +35,23 @@ public struct WebLookup: Sendable {
         public var isPDF: Bool { url.lowercased().contains(".pdf") }
     }
 
+    /// Which products the answer is known to hold for. A manual of another model of the same brand
+    /// can name other buttons, programmes or parts (1 Nov: the P button of an Ariston panel was
+    /// explained from the AW129NA's manual, an LG filter put "bottom left" from a general page
+    /// while this machine has it bottom right).
+    public enum Scope: String, Codable, Equatable, Sendable, CaseIterable {
+        /// The sources name this exact model or type number.
+        case exactModel = "exact_model"
+        /// A range or series this model belongs to.
+        case range
+        /// The brand's products of this kind in general (an error-code list for all its washers).
+        case brand
+        /// Not product-specific: true for any device of this kind.
+        case general
+        /// Only other models were found: no answer for this one.
+        case otherModel = "other_model"
+    }
+
     public struct Answer: Equatable, Sendable {
         public var found: Bool
         /// Short sentences in the conversation language, as the source gives the facts.
@@ -42,13 +59,18 @@ public struct WebLookup: Sendable {
         public var sources: [Source]
         /// Pages the search tool really opened or cited: a source among them is known to exist.
         public var cited: [String]
+        public var scope: Scope
+        /// The product the sources describe, as they name it ("Ariston AW129NA", "LG washers").
+        public var about: String
         public var seconds: Double
 
-        public init(found: Bool, answer: String, sources: [Source], cited: [String], seconds: Double = 0) {
+        public init(found: Bool, answer: String, sources: [Source], cited: [String], scope: Scope = .exactModel, about: String = "", seconds: Double = 0) {
             self.found = found
             self.answer = answer
             self.sources = sources
             self.cited = cited
+            self.scope = scope
+            self.about = about
             self.seconds = seconds
         }
 
@@ -107,7 +129,9 @@ public struct WebLookup: Sendable {
         if !facts.isEmpty { lines.append("What Pip knows: " + facts.joined(separator: "; ")) }
         lines += [
             "Search the web. Use the manufacturer's own pages first (manual, support, FAQ), then other reliable sources. Do not rely on forums or unofficial manual-collection sites unless nothing else exists, and say so.",
-            "Answer in \(language), in at most three short sentences a person can say aloud: the exact values, names, symbols and steps as the source gives them, for this product if it is named.",
+            "Models of one brand differ: buttons, programmes, lights, error codes and where parts sit. Prefer a source for this exact model or type number; if there is none, one for its range, or a page of the manufacturer that covers all its products of this kind. A manual of a different model does not answer for this one.",
+            "In scope, say which products your answer is known to hold for: exact_model (the source names this model or type number), range (a series this model belongs to), brand (the manufacturer's page for all its products of this kind), general (true for any such device), other_model (you only found other models: then found is false). In about, name the product the source describes, as it names it.",
+            "Answer in \(language), in at most three short sentences a person can say aloud: the exact values, names, symbols and steps as the source gives them. Do not add details from your own knowledge. When the scope is not exact_model, leave out details that may differ between models (which side a part is on, programme numbers), unless the source says they hold for all.",
             "If you find nothing reliable, or the sources disagree, set found to false and say briefly what is unclear.",
             "List the pages you used in sources: title, url, publisher, and official = true when the product's manufacturer published it.",
         ]
@@ -116,10 +140,14 @@ public struct WebLookup: Sendable {
 
     /// The answer is the last message that holds the JSON (the ones before narrate the search).
     static func read(_ output: PipClient.ResponsesOutput) throws -> Answer {
-        struct Raw: Decodable { var found: Bool; var answer: String; var sources: [Source] }
+        struct Raw: Decodable { var found: Bool; var answer: String; var sources: [Source]; var scope: String?; var about: String? }
         guard let raw = ProcedureCompiler.answer(Raw.self, in: output.texts) else { throw LookupError.unreadable(String(output.texts.last?.prefix(200) ?? "")) }
         let answer = raw.answer.trimmingCharacters(in: .whitespacesAndNewlines)
-        return Answer(found: raw.found && !answer.isEmpty, answer: answer, sources: raw.sources, cited: output.citations)
+        // A scope it did not give is not taken as this exact model.
+        let scope = raw.scope.flatMap(Scope.init(rawValue:)) ?? .brand
+        // An answer from another model's manual is no answer for this one.
+        return Answer(found: raw.found && !answer.isEmpty && scope != .otherModel, answer: answer, sources: raw.sources, cited: output.citations,
+                      scope: scope, about: raw.about?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
     }
 
     public enum LookupError: Error { case unreadable(String) }
@@ -137,9 +165,11 @@ public struct WebLookup: Sendable {
             "properties": .object([
                 "found": .object(["type": .string("boolean")]),
                 "answer": str(),
+                "scope": .object(["type": .string("string"), "enum": .array(Scope.allCases.map { .string($0.rawValue) })]),
+                "about": str(),
                 "sources": .object(["type": .string("array"), "items": source]),
             ]),
-            "required": .array(["found", "answer", "sources"].map { .string($0) }),
+            "required": .array(["found", "answer", "scope", "about", "sources"].map { .string($0) }),
             "additionalProperties": .bool(false),
         ])
     }()

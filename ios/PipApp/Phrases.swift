@@ -52,8 +52,34 @@ struct Phrases {
     var resumed: String { dutch ? "We gaan verder." : "Let's continue." }
     var stopped: String { dutch ? "De taak is gestopt." : "The task is stopped." }
     // Looking things up online (GuideModel+Lookup).
-    var lookingUp: String { dutch ? "Ik zoek het op…" : "Looking it up…" }
     var stillLookingUp: String { dutch ? "Ik zoek nog even verder." : "Still looking." }
+    // The search card on screen.
+    var searchingStatus: String { dutch ? "Online zoeken…" : "Searching online…" }
+    var searchingTitle: String { dutch ? "Online zoeken" : "Searching online" }
+    var searchingWhere: String { dutch ? "Eerst in handleidingen en supportpagina's van de fabrikant" : "Manufacturer manuals and support pages first" }
+    func foundAt(_ publisher: String) -> String { dutch ? "Gevonden bij \(publisher)" : "Found at \(publisher)" }
+    var notFromMaker: String { dutch ? "Niet van de fabrikant: controleer het even" : "Not from the manufacturer: please double-check" }
+    var nothingReliable: String { dutch ? "Niets betrouwbaars gevonden" : "Nothing reliable found" }
+    var onlyOtherModels: String { dutch ? "Alleen andere modellen gevonden" : "Only other models found" }
+    var searchFailed: String { dutch ? "Zoeken lukte niet" : "The search failed" }
+    /// For which products a found answer holds, on the card.
+    func holds(_ scope: WebLookup.Scope, about: String) -> String {
+        switch scope {
+        case .exactModel: return dutch ? "voor dit exacte model" : "for this exact model"
+        case .range: return about.isEmpty ? (dutch ? "voor deze reeks" : "for this range") : (dutch ? "voor de reeks \(about)" : "for the \(about) range")
+        case .brand: return about.isEmpty ? (dutch ? "algemeen, niet voor dit model" : "general, not for this model") : (dutch ? "algemeen voor \(about)" : "general for \(about)")
+        case .general: return dutch ? "voor elk toestel van deze soort" : "for any device of this kind"
+        case .otherModel: return dutch ? "voor een ander model" : "for another model"
+        }
+    }
+
+    /// Said by Pip itself when the model asks for a search: the model's own words are not said.
+    var willLookUp: String { dutch ? "Dat zoek ik even voor je op." : "Let me look that up for you." }
+    /// After an answer from a page for a whole range or brand: "Dat geldt voor LG-wasmachines in het algemeen, …".
+    func notThisModel(_ about: String) -> String {
+        if dutch { return about.isEmpty ? "Dat geldt in het algemeen, niet specifiek voor dit model." : "Dat geldt voor \(about) in het algemeen, niet specifiek voor dit model." }
+        return about.isEmpty ? "That holds in general, not specifically for this model." : "That holds for \(about) in general, not specifically for this model."
+    }
     var lookupNothing: String { dutch ? "Ik vond daar online niets betrouwbaars over." : "I couldn't find anything reliable about that online." }
     /// The start of an answer from the manufacturer: "Volgens de handleiding van Philips:".
     func accordingTo(_ publisher: String, manual: Bool) -> String {

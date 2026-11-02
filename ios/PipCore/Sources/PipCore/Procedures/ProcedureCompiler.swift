@@ -66,8 +66,10 @@ public struct ProcedureCompiler: Sendable {
         let prompt = """
         Find the official assembly instructions, installation guide or user manual for: \(product).
         Use only the manufacturer's own website (or the company that now makes the brand's products), never mirror or manual-collection sites.
+        Models of one brand differ (buttons, programmes, where parts sit): take the document for this exact model or type number; if there is none, one that names it among the models it covers, or one for its range. A document for other models only is not the right one: then found is false.
         I need the direct link to the PDF file. If there is no PDF, give the official support page for the product instead.
-        Reply with JSON only: {"found": true|false, "title": "...", "publisher": "...", "pdf_url": "https://... or empty", "page_url": "https://... or empty"}
+        In covers, say which products the document is for: exact_model (it names this model or type number), range (a series this model belongs to), other_model (only other models).
+        Reply with JSON only: {"found": true|false, "title": "...", "publisher": "...", "covers": "exact_model|range|other_model", "models": "the models the document names", "pdf_url": "https://... or empty", "page_url": "https://... or empty"}
         """
         let body: JSONValue = .object([
             "model": .string(finderModel),
@@ -76,9 +78,12 @@ public struct ProcedureCompiler: Sendable {
             "reasoning": .object(["effort": .string("low")]),
         ])
         let texts = try await client.responses(body).texts
-        struct Found: Decodable { var found: Bool?; var title: String?; var publisher: String?; var pdf_url: String?; var page_url: String? }
+        struct Found: Decodable { var found: Bool?; var title: String?; var publisher: String?; var covers: String?; var models: String?; var pdf_url: String?; var page_url: String? }
         guard let found = Self.answer(Found.self, in: texts) else { return (nil, "no answer to read") }
         guard found.found == true else { return (nil, "the search found no official document") }
+        // Another model's manual can put parts elsewhere and name other programmes: a plan from
+        // it would guide the user wrongly with the authority of an official source.
+        if found.covers == "other_model" { return (nil, "only documents for other models (\(found.models ?? "?"))") }
         var notes: [String] = []
         // Models can produce a link that looks right but does not exist, or that redirects to a
         // web page or a mirror site: only a real PDF, or else a real page, on an official site counts.
@@ -95,7 +100,7 @@ public struct ProcedureCompiler: Sendable {
                 continue
             }
             let manual = ManualReference(title: found.title ?? product, publisher: found.publisher ?? host, url: check.finalUrl ?? url, page: wantPDF ? nil : true)
-            return (manual, (wantPDF ? "PDF " : "support page ") + manual.url)
+            return (manual, (wantPDF ? "PDF " : "support page ") + manual.url + " (\(found.covers ?? "covers ?"): \(found.models ?? "?"))")
         }
         return (nil, notes.isEmpty ? "no link given" : notes.joined(separator: "; "))
     }
@@ -144,7 +149,7 @@ public struct ProcedureCompiler: Sendable {
         case .manual(let m): sourceLine = "The attached PDF is the official document from \(m.publisher): \(m.title). Base every step on it and give its page number as source_ref."
         case .images: sourceLine = "The attached photos are the user's instructions. Base every step on them and give the photo number as source_ref (\"photo 1\")."
         case .text: sourceLine = "The SOURCE TEXT is the user's instructions. Base every step on it; source_ref quotes a few words of it."
-        case .none: sourceLine = "There is no verified source. Search the web for the manufacturer's instructions for this task and product (or a reliable guide), and base the steps on what you find, with the page in source_ref and every page you used in sources. If nothing useful turns up, draft conservatively from general knowledge with source_ref and sources empty. It will be marked as not from a verified source."
+        case .none: sourceLine = "There is no verified source. Search the web for the manufacturer's instructions for this task and product (or a reliable guide), and base the steps on what you find, with the page in source_ref and every page you used in sources. Prefer a source for this exact model; a source for its range, its brand or another model only for steps that do not differ between models, and where it and the camera view differ (which side a part is on), go by the camera view. If nothing useful turns up, draft conservatively from general knowledge with source_ref and sources empty. It will be marked as not from a verified source."
         }
         return """
         You write a guided procedure for Pip, an assistant that guides someone through a hands-on task with their phone camera, one step at a time, and checks each step on camera.

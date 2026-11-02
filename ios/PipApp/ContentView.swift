@@ -19,7 +19,8 @@ struct ContentView: View {
 
             VStack(spacing: 12) {
                 HStack {
-                    Text(model.watching && model.phase == .listening ? (model.language == "Dutch" ? "Ik kijk mee…" : "Watching your work…") : model.phase.label)
+                    Text(model.searching ? model.phrases.searchingStatus
+                         : model.watching && model.phase == .listening ? (model.language == "Dutch" ? "Ik kijk mee…" : "Watching your work…") : model.phase.label)
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .background(.black.opacity(0.55), in: Capsule())
@@ -47,6 +48,7 @@ struct ContentView: View {
                         .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
                         .padding(.horizontal)
                 }
+                if let card = model.searchCard { SearchCardView(card: card, phrases: model.phrases) }
                 if let task = model.taskView { taskCard(task) }
                 if !model.shopping.isEmpty { shoppingCard }
                 if showDebug { debugPanel }
@@ -85,7 +87,7 @@ struct ContentView: View {
 
     /// Mute and unmute while listening; stop Pip while it looks or talks.
     private var micButton: some View {
-        let busy = model.phase == .speaking || model.phase == .looking
+        let busy = model.phase == .speaking || model.phase == .looking || model.searching
         let icon = busy ? "stop.fill" : (model.muted ? "mic.slash.fill" : "mic.fill")
         let fill: Color = busy ? .white : (model.muted ? Color(white: 0.25) : .white)
         let ring: Color = model.phase == .hearing ? .green : .white.opacity(0.4)
@@ -206,6 +208,74 @@ struct ARContainer: UIViewRepresentable {
 }
 
 /// What the running tests measure (EdgeTAM's speed, the home map's state), one line each.
+/// The online search: under way (with how long it has taken, searches take 8–26 s), then where the
+/// answer comes from and for which products it holds, so the user can judge it.
+struct SearchCardView: View {
+    let card: GuideModel.SearchCard
+    let phrases: Phrases
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            icon.frame(width: 24, height: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.subheadline.weight(.semibold))
+                ForEach(details, id: \.self) { Text($0).font(.caption).foregroundStyle(.white.opacity(0.85)).lineLimit(2) }
+            }
+            Spacer(minLength: 0)
+            if card.state == .searching {
+                TimelineView(.periodic(from: card.started, by: 1)) { context in
+                    Text("\(max(0, Int(context.date.timeIntervalSince(card.started)))) s")
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                }
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(tint.opacity(0.7), lineWidth: 1.5))
+        .padding(.horizontal)
+        .accessibilityElement(children: .combine)
+        .animation(.easeInOut(duration: 0.2), value: card)
+    }
+
+    private var tint: Color {
+        switch card.state {
+        case .searching: return .cyan
+        case .found(_, _, _, let official): return official ? .green : .yellow
+        case .nothing, .failed: return .orange
+        }
+    }
+
+    @ViewBuilder private var icon: some View {
+        switch card.state {
+        case .searching: ProgressView().tint(.cyan)
+        case .found(_, _, _, let official):
+            Image(systemName: official ? "checkmark.seal.fill" : "exclamationmark.triangle.fill").foregroundStyle(tint)
+        case .nothing: Image(systemName: "questionmark.circle.fill").foregroundStyle(tint)
+        case .failed: Image(systemName: "wifi.exclamationmark").foregroundStyle(tint)
+        }
+    }
+
+    private var title: String {
+        switch card.state {
+        case .searching: return phrases.searchingTitle
+        case .found(let publisher, _, _, _): return phrases.foundAt(publisher)
+        case .nothing(let otherModels): return otherModels ? phrases.onlyOtherModels : phrases.nothingReliable
+        case .failed: return phrases.searchFailed
+        }
+    }
+
+    private var details: [String] {
+        switch card.state {
+        case .searching: return ["“\(card.asked)”", phrases.searchingWhere]
+        case .found(_, let host, let holds, let official): return [[host, holds].filter { !$0.isEmpty }.joined(separator: " · ")] + (official ? [] : [phrases.notFromMaker])
+        case .nothing, .failed: return ["“\(card.asked)”"]
+        }
+    }
+}
+
 struct StatusHUD: View {
     @ObservedObject var ar: ARController
 

@@ -6,6 +6,7 @@ import PipCore
 // pipeval: runs Pip's perception on photos through the Worker, on the Mac.
 //
 //   PIP_URL=… PIP_APP_TOKEN=… pipeval look <image> "<what the user says>" [--prompts a,b] [--lang Dutch] [--goal "…"] [--out dir]
+//     [--facts "a || b"] [--history "user || pip || …"] [--directive "…"] [--raw 1]
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
@@ -240,11 +241,12 @@ if args.first == "plan", args.count >= 2 {
     var source = ProcedureCompiler.SourceInput.none
     if let product = opts["product"] {
         do {
-            if let m = try await compiler.findManual(for: product) {
-                print(String(format: "%.1fs  manual: %@ — %@ (%@)", Date().timeIntervalSince(t0), m.publisher, m.title, m.url))
+            let found = try await compiler.findSource(for: product)
+            if let m = found.manual {
+                print(String(format: "%.1fs  manual: %@ — %@ · %@", Date().timeIntervalSince(t0), m.publisher, m.title, found.note))
                 source = .manual(m)
             } else {
-                print(String(format: "%.1fs  no official manual found", Date().timeIntervalSince(t0)))
+                print(String(format: "%.1fs  no official manual found: %@", Date().timeIntervalSince(t0), found.note))
             }
         } catch { print("finder failed: \(error)") }
     }
@@ -301,7 +303,7 @@ if args.first == "lookup", args.count >= 2 {
     let question = rest[0]
     do {
         let a = try await WebLookup(client: client, language: language).answer(question, asked: rest.count > 1 ? rest[1] : question, facts: [])
-        print(String(format: "%.1fs", a.seconds), a.found ? "FOUND" : "nothing reliable", a.official ? "(official)" : "")
+        print(String(format: "%.1fs", a.seconds), a.found ? "FOUND" : "nothing reliable", a.official ? "(official)" : "", "· holds for: \(a.scope.rawValue) (\(a.about))")
         print("answer:", a.answer)
         print("source:", a.best.map { "\($0.publisher) · \($0.url)" } ?? "none that the search opened")
         print("pages opened or cited:", a.cited.count, "· sources given:", a.sources.map(\.url))
@@ -381,7 +383,8 @@ let request = LookRequest(
     goal: options["goal"],
     facts: options["facts"].map { $0.components(separatedBy: " || ") } ?? [],
     history: history,
-    utterance: utterance
+    utterance: utterance,
+    directive: options["directive"]
 )
 // The previews show the camera's view (often someone's home): never next to where pipeval runs,
 // which may be a repository, unless asked for with out=.
@@ -436,6 +439,7 @@ do {
             let fmt = { (x: Double?) in x.map { String(format: "%.2fs", $0) } ?? "–" }
             print("\(stamp())  done · first token \(fmt(s.firstTokenSeconds)) · first sentence \(fmt(s.firstSentenceSeconds)) · total \(fmt(s.totalSeconds))")
             if let u = s.usage { print("        tokens: prompt \(u.promptTokens) (cached \(u.promptTokensDetails?.cachedTokens ?? 0)), completion \(u.completionTokens)") }
+            if options["raw"] != nil { print("raw:\n\(s.rawText)") }
         }
     }
 } catch {

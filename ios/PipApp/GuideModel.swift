@@ -154,6 +154,9 @@ final class GuideModel: ObservableObject {
     @Published var taskView: TaskView?
     /// What Pip is doing while it prepares a task ("Reading the manual…").
     @Published var preparing: String?
+    /// The online search on screen: under way, then what it found and for which products it holds.
+    @Published var searchCard: SearchCard?
+    var searching: Bool { searchCard?.state == .searching }
     var runtime: ProcedureRuntime?
     var sessionLog = SessionLog()
     var offering = false
@@ -285,7 +288,7 @@ final class GuideModel: ObservableObject {
 
     /// The big button: stop Pip if it is talking, otherwise mute or unmute the microphone.
     func micTapped() {
-        if speaker.isSpeaking || lookBusy {
+        if speaker.isSpeaking || lookBusy || searching {
             interrupt()
             return
         }
@@ -551,10 +554,12 @@ final class GuideModel: ObservableObject {
         defer { if activeLook == me { activeLook = nil; lookWaitingForMarks = false } }
         phase = .looking
         spokenThisTurn = []
-        // A question from the user: any open yes/no question, and the plan offer, are stale now.
+        // A question from the user: any open yes/no question, the plan offer and the last search's
+        // card are stale now.
         if directive == nil {
             questionFresh = false
             offerFresh = false
+            searchCard = nil
             lastQuestion = (utterance, Date(), me)
         }
         let offset = ARController.markOffset(look: lookCount)
@@ -567,7 +572,13 @@ final class GuideModel: ObservableObject {
         if let directive { recorder?.log("directive: \(directive)") }
         var pendingFind: (what: String, phrase: String)?
         var pendingTask: (goal: String, product: String?)?
-        var pendingLookup: String?
+        // A search starts as soon as the model asks for it; what the model says after that is
+        // its own idea of the answer and is never said (2 Nov: "the P button is for the prewash, I
+        // think", then a search). `saidBeforeSearch`: what was said already, corrected after.
+        var search: Search?
+        var saidBeforeSearch: [String] = []
+        var searchHandedOver = false
+        defer { if !searchHandedOver { search?.cancel() } }
         // What the model asked to point at, kept with each mark so Pip can find it again later.
         var specs: [Int: TargetSpec] = [:]
         let pipeline = LookPipeline(client: client, language: language)
@@ -632,6 +643,8 @@ final class GuideModel: ObservableObject {
                 case .segmented:
                     // Marks mode (`LookRequest.prompts`) is for pipeval; the app never asks for it.
                     break
+                case .sentence(let s, _) where search != nil:
+                    note("not said, searching: \(s.text)")
                 case .sentence(var s, let traces):
                     firstWord = firstWord ?? Date().timeIntervalSince(started)
                     phase = .speaking
@@ -659,7 +672,17 @@ final class GuideModel: ObservableObject {
                     if runtime?.isActive != true, preparingGoal == nil, pageReader == nil { pendingTask = (goal, product) }
                 case .sideChannel(.lookup(let query)):
                     note("lookup: \(query)\(lookups ? "" : " (not again for this question)")")
-                    if lookups { pendingLookup = query }
+                    if lookups, search == nil {
+                        saidBeforeSearch = spokenThisTurn
+                        search = startSearch(query, question: utterance)
+                        if spokenThisTurn.isEmpty {
+                            firstWord = firstWord ?? Date().timeIntervalSince(started)
+                            phase = .speaking
+                            speaker.enqueue(SpokenSentence(text: phrases.willLookUp))
+                            spokenThisTurn.append(phrases.willLookUp)
+                            note("say: \(phrases.willLookUp)")
+                        }
+                    }
                 case .sideChannel(.remember(let key, let value, let source)):
                     facts[key] = Fact(value: value, source: source)
                     rememberLongTerm(key, value, source: source)
@@ -715,7 +738,10 @@ final class GuideModel: ObservableObject {
         // A plan is prepared in the background; the conversation goes on meanwhile.
         if let pending = pendingTask { startPreparing(goal: pending.goal, product: pending.product) }
         if let find = pendingFind { await findInMemory(find.what, phrase: find.phrase) }
-        if let query = pendingLookup { await lookUp(query, question: utterance) }
+        if let search {
+            searchHandedOver = true
+            await lookUp(search, question: utterance, saidBefore: saidBeforeSearch)
+        }
     }
 
     /// How a fact came to be known, as the model reads it under "What you know".
@@ -752,6 +778,7 @@ final class GuideModel: ObservableObject {
         shopping = []
         history = []
         facts = [:]
+        searchCard = nil
         primarySpeaker = nil
         endTask(silently: true)
         caption = ""

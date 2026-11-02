@@ -77,6 +77,41 @@ import Testing
         #expect(throws: WebLookup.LookupError.self) { try WebLookup.read(garbage) }
     }
 
+    /// The tag comes first, so the app knows before any word that this turn is a search, and says
+    /// none of the model's own idea of the answer.
+    @Test func aLeadingTagArrivesBeforeAnySentence() {
+        var parser = CueStreamParser()
+        let events = parser.feed("[[lookup q=\"Korvo CM-210 orange light\"]]\nI'll look it up. It is probably descaling.\n[[state seen=\"light\" conf=0.4 step=unknown]]\n") + parser.finish()
+        let firstLookup = events.firstIndex { if case .sideChannel(.lookup, _) = $0 { return true } else { return false } }
+        let firstSentence = events.firstIndex { if case .sentence = $0 { return true } else { return false } }
+        #expect(firstLookup != nil && firstSentence != nil && firstLookup! < firstSentence!)
+    }
+
+    @Test func theAnswerSaysForWhichProductsItHolds() throws {
+        func read(_ json: String) throws -> WebLookup.Answer {
+            try WebLookup.read(PipClient.ResponsesOutput(texts: [json], citations: [], searches: 1))
+        }
+        let brand = try read(#"{"found": true, "answer": "OE: het water wordt niet afgepompt.", "scope": "brand", "about": "LG washing machines", "sources": []}"#)
+        #expect(brand.found)
+        #expect(brand.scope == .brand)
+        #expect(brand.about == "LG washing machines")
+        // Another model's manual (1 Nov: the AW129NA's for an unknown Ariston) is no answer for this one.
+        let other = try read(#"{"found": true, "answer": "De P-knop is voorwas, behalve bij programma 4 en 7.", "scope": "other_model", "about": "Ariston AW129NA", "sources": []}"#)
+        #expect(!other.found)
+        #expect(other.scope == .otherModel)
+        // A scope that is missing or unknown is never taken as this exact model.
+        let none = try read(#"{"found": true, "answer": "x", "sources": []}"#)
+        #expect(none.scope == .brand)
+        let odd = try read(#"{"found": true, "answer": "x", "scope": "this one", "sources": []}"#)
+        #expect(odd.scope == .brand)
+    }
+
+    @Test func theSchemaAsksForTheScope() throws {
+        guard case .object(let schema) = WebLookup.schema, case .array(let required)? = schema["required"] else { Issue.record("no schema"); return }
+        #expect(required.contains(.string("scope")))
+        #expect(required.contains(.string("about")))
+    }
+
     @Test func theTaskReportListsWhatWasLookedUp() throws {
         let procedure = try ProcedureSourceTests.raw(sources: []).compiled(goal: "g", source: .none, seconds: 1).procedure
         var log = SessionLog()
