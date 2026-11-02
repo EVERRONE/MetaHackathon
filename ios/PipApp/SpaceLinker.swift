@@ -86,8 +86,10 @@ final class SpaceLinker {
     /// DINOv2 starts this long after a session: EdgeTAM loads first, and the speech gets going (2 Nov,
     /// 17:59: all stored snapshots described with DINOv2 at once, EdgeTAM failed to load three times
     /// and the speech service fell behind the audio). With the stored tokens kept, a start makes none
-    /// (only once after this was built), and EdgeTAM is loaded 2 s in.
-    static let dinoDelay: TimeInterval = 5
+    /// (only once after this was built), and EdgeTAM is loaded 1 s in (2 Nov, 19:03-19:09: 0.9-1.1 s).
+    /// Replayed on the bathroom start of 18:36, from 3 s in a session was linked at 8.7 s (from 5 s
+    /// in, at 14.2 s).
+    static let dinoDelay: TimeInterval = 3
     private var dinoStart = Date.distantFuture
     /// One stored snapshot's whole-view token this often, at most.
     static let wholeEvery: TimeInterval = 0.25

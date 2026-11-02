@@ -99,7 +99,7 @@ extension GuideModel {
             score(place) > 0 && ((pending.piece != nil && place.piece == pending.piece) || ar.carried.contains(mark))
         }
         var mark = candidates.max { score($0.value) < score($1.value) }?.key
-        var name = mark.flatMap { ar.places[$0] }.map { (language == "Dutch" ? "je " : "your ") + $0.name } ?? pending.what
+        var name = mark.flatMap { ar.places[$0] }.map { yours($0.name) } ?? pending.what
         followingUp = true
         defer { followingUp = false }
         if mark == nil {
@@ -130,6 +130,45 @@ extension GuideModel {
         let place = ar.describe(mark: mark, dutch: language == "Dutch") ?? ""
         log("find: \(pending.what): its room is recognised now; pointed at (\(place))")
         say(phrases.recognisedNow(name, where: place.components(separatedBy: ";").first ?? place))
+    }
+
+    /// Places that came back with a link, named by the user's question of just before: pointed at, as
+    /// the answer it wanted (2 Nov, 19:09: "Where is the book" 22 s in, answered with the books in
+    /// view; the one the user had asked Pip to remember came back with the link 2 s later, and was
+    /// pointed at only when the user said so). Not when it is pointed at already, and not once the
+    /// user asked something else.
+    func followUpQuestion(placesBack back: [SpaceMemory.Place]) async {
+        guard awaitingRoom == nil, !followingUp, let q = lastQuestion, Date().timeIntervalSince(q.at) < 60 else { return }
+        func score(_ p: SpaceMemory.Place) -> Int { PlaceName.score(q.text, names: [p.name, p.phrase ?? ""]) }
+        guard let place = back.filter({ score($0) > 0 }).max(by: { score($0) < score($1) }),
+              let mark = ar.places.first(where: { $0.value.id == place.id })?.key else { return }
+        lastQuestion = nil
+        followingUp = true
+        defer { followingUp = false }
+        while speaker.isSpeaking || lookActive || phase == .hearing {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            if Task.isCancelled { return }
+        }
+        guard lookCount == q.look else { return }
+        guard !ar.board.annotations.contains(where: { $0.cue.marks.contains(mark) }) else {
+            log("question \"\(q.text)\": \(place.name) came back with the room; pointed at already")
+            return
+        }
+        ar.show(.outline(mark: mark))
+        let at = ar.describe(mark: mark, dutch: language == "Dutch") ?? ""
+        log("question \"\(q.text)\": \(place.name) came back with the room; pointed at (\(at))")
+        say(phrases.recognisedNow(yours(place.name), where: at.components(separatedBy: ";").first ?? at))
+    }
+
+    /// "your notebook" for a place named "the notebook", in the conversation's language.
+    func yours(_ name: String) -> String {
+        let dutch = language == "Dutch"
+        var bare = name
+        for article in ["the ", "The ", "de ", "De ", "het ", "Het ", "mijn ", "Mijn ", "my ", "My "] where bare.hasPrefix(article) {
+            bare = String(bare.dropFirst(article.count))
+            break
+        }
+        return (dutch ? "je " : "your ") + bare
     }
 
     enum Recall {

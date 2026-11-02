@@ -85,6 +85,8 @@ final class GuideModel: ObservableObject {
     /// out"): pointed at once that room is recognised (`followUpFind`).
     var awaitingRoom: (what: String, phrase: String, frame: UUID, piece: UUID?, asked: Date)?
     var followingUp = false
+    /// The user's last question, when, and the look that answered it (`followUpQuestion`).
+    var lastQuestion: (text: String, at: Date, look: Int)?
     /// When the shopping list last changed; basket checks stop after a long quiet spell.
     var listChangedAt = Date.distantPast
     struct ShoppingItem: Identifiable, Equatable {
@@ -115,7 +117,7 @@ final class GuideModel: ObservableObject {
     var lookBusy: Bool { lookActive && !lookWaitingForMarks }
     /// Mark numbers restart in every look; an offset per look keeps earlier marks apart, so their
     /// cues can stay on screen.
-    private var lookCount = 0
+    private(set) var lookCount = 0
 
     /// What Pip knows for this session, with where each fact came from.
     struct Fact: Equatable {
@@ -542,6 +544,7 @@ final class GuideModel: ObservableObject {
         if directive == nil {
             questionFresh = false
             offerFresh = false
+            lastQuestion = (utterance, Date(), me)
         }
         let offset = ARController.markOffset(look: lookCount)
         ar.beginLook(markOffset: offset)
@@ -598,7 +601,7 @@ final class GuideModel: ObservableObject {
                         spec?.description = description
                         let anchoring = ar.addMark(inst.renumbered(id + offset), snapshot: snapshot, spec: spec)
                         // Lock the outline to the object itself, so it stays on it when it moves.
-                        if anchoring != "assumed depth" {
+                        if anchoring != "assumed depth", !anchoring.hasPrefix("not placed") {
                             lockToObject(id + offset, key: inst.renumbered(id + offset), on: specs[id]?.on, snapshot: snapshot)
                         }
                         recorder?.grounded(inst)

@@ -259,6 +259,32 @@ public struct Grounder: Sendable {
                     if debug { print(String(format: "[ground %d] segmented at the second point: %@", id, "\(mask.box)")) }
                 }
             }
+            // A small target inside a first pick too big for it (2 Nov: the Jura E8's on/off button;
+            // the model's point lay on the edge of the dark panel beside it, SAM's mask for that point
+            // was the panel, 25 cm long, and the ring went round the panel; the second pointing,
+            // closer, was on the button, twice): SAM segments at the second point, and a mask there
+            // that holds it and is clearly smaller is the target (the smaller, the more exact, as
+            // below). With no first pick, only a mask of a small thing's size. Replayed: the button
+            // in 5 of 6 (the panel in 2 of 2 before).
+            // A late ring is drawn when it is found (`LookPipeline.lateTargetWait`): a small target may
+            // take this step later than a whole object, which the sentence waits for.
+            let leftForSmall = Self.segmentSmallAtPointBy - Date().timeIntervalSince(t0)
+            // Only for a pick outsized for a small thing: within a key, SAM's mask at the second point
+            // can be its printed letter, and the key is the target.
+            let outsized = chosen.map { Double($0.area) > Self.smallTargetShare * cropArea && (Grounding.contains($0, zp) || Grounding.distance(zp, $0.boxRect) <= ringRadius) }
+            if zoomPick == nil, spec.small, leftForSmall > 1, outsized ?? true {
+                let at = SegmentObjectPrompt(id: 1, points: [.init(x: min(max(Int(zp.x), 0), crop.width - 1), y: min(max(Int(zp.y), 0), crop.height - 1))])
+                let request = SegmentRequest(jpeg: jpeg, objects: [at], width: crop.width, height: crop.height, minConfidence: 0.25)
+                let largest = chosen.map { 0.5 * Double($0.area) } ?? Self.smallTargetShare * cropArea
+                if let seg = (await Self.withBudget(min(Self.closerBudget, leftForSmall)) { try? await self.client.segment(request) }) ?? nil,
+                   let mask = seg.instances.first(where: { $0.objectId == 1 }), Double(mask.area) < largest, Double(mask.area) > cropArea * 0.0002,
+                   Grounding.contains(mask, zp) {
+                    zoomPick = mask.renumbered(50_000)
+                    if debug { print(String(format: "[ground %d] segmented at the second point, a small target: %@ (area %d)", id, "\(mask.box)", mask.area)) }
+                } else if debug {
+                    print(String(format: "[ground %d] segmented at the second point, a small target: nothing smaller there", id))
+                }
+            }
         }
         if debug { print(String(format: "[ground %d] zoom done %.2f: %@", id, Date().timeIntervalSince(t0), zoomPick.map { "\($0.box)" } ?? "nothing")) }
         // The two pointings agree (the same object, or one inside the other: a key and its symbol,
@@ -435,6 +461,12 @@ public struct Grounder: Sendable {
     static let closerBudget: TimeInterval = 4
     /// Segmenting at the second point is only started this long after the grounding started, at most.
     static let segmentAtPointBy: TimeInterval = 7
+    /// For a small target, later: its ring may show after its sentence (2 Nov, replayed: the closer
+    /// second pointing at the Jura E8's on/off button came 5.5-6.7 s in, twice too late for 7 s).
+    static let segmentSmallAtPointBy: TimeInterval = 12
+    /// A small target (a key, a button) found at the second point alone covers at most this share of
+    /// the crop (the holder of a symbol is bounded alike, a twelfth: a whole panel is more).
+    static let smallTargetShare: Double = 0.08
     /// Below this (frame pixels) the objects of the kind are too small on the region's crop to
     /// point at one exactly.
     static let smallKeySize: Double = 40

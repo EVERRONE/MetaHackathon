@@ -134,12 +134,14 @@ extension GuideModel {
         // this session's map from then on); each is stored again only when found on sight.
         let here = Set(ar.places.values.map(\.id))
         var back: [String] = []
+        var backPlaces: [SpaceMemory.Place] = []
         for place in memory.places where !here.contains(place.id) {
             guard let from = place.piece, let pose = place.pose.map(ARController.matrix) else { continue }
             let carried = direct.contains(from) ? linker.carry(anchor: pose, of: from) : chains[from].map { $0.matrix * pose }
             guard let carried else { continue }
             ar.restoreLinked(place, at: carried)
             back.append(place.name)
+            backPlaces.append(place)
         }
         // Places brought back before and not found on sight yet: carried again by the link as it
         // stands now, by its evidence nearest each place (see `ARController.recarry`).
@@ -157,6 +159,8 @@ extension GuideModel {
         }
         // A find that saw its thing in a room not recognised then: pointed at, if this is that room.
         if awaitingRoom != nil { Task { await followUpFind() } }
+        // A question asked just before, about a place that came back now.
+        else if !backPlaces.isEmpty { Task { await followUpQuestion(placesBack: backPlaces) } }
     }
 
     /// A fix came in: kept with this piece.

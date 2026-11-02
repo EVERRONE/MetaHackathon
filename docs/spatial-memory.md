@@ -198,12 +198,17 @@ Engine compiles it), later 0.4 s.
   linked 53 s in, from the hall. Now each token is kept beside its snapshot
   (`Documents/memory/frames/<id>.dinov2s-434x574.whole`, 768 bytes), made once (the session's own
   snapshots in the background, for the sessions after it) and read at the start. Until a session is
-  linked every live view is laid (they come every 1.5 s), from 5 s in. Replayed on that session
-  (`pipeval dinolive`, its snapshots as live views, half as many as the app's): as built, linked 72 s
-  in; now 26 s in, in the bathroom, at -57.8° like the desk's later links.
+  linked every live view is laid (they come every 1.5 s), from 3 s in. Replayed on that session
+  (`pipeval dinolive`, its snapshots as live views): as built, linked 72 s in, from the hall; now,
+  every snapshot laid, 8.7 s in, in the bathroom (to the 18:06 session, which ended there, at -40.5°;
+  its link from the bedroom says -41.7°), and the 18:09 session at 18.6 s, at -57.4° like the desk's.
 - **A promise kept.** "Once you're there, I'll point it out": a find that saw its thing in a room not
   recognised yet is pointed at as soon as that room is (the remembered place of that name the link
   brought back, else the sighting found again in its snapshot), unless it is pointed at already.
+  Likewise a question asked just before the room was recognised (2 Nov, 19:09: "Where is the book",
+  22 s in, answered with the books in view; the remembered book came back 2 s later): a place that
+  comes back with the link and that the question names is pointed at, unless the user asked
+  something else meanwhile.
 
 ## Steps
 

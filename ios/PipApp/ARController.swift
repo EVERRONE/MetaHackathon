@@ -195,6 +195,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
     func addMark(_ inst: SegmentInstance, snapshot: FrameSnapshot, spec: TargetSpec? = nil) -> String {
         // Clean, regular shapes: a raw mask outline looks hand-drawn once stroked on screen.
         guard let m = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return "no outline" }
+        if let small = Self.outsized(m, spec: spec) { return small }
         place(m)
         measured[m.id] = m
         if let obs = m.observation {
@@ -206,6 +207,18 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         return m.method
     }
 
+    /// A small target (a ring: a key, a button, an LED) never spans more than this (a space bar is
+    /// 11 cm): a ring round a whole panel points at the wrong thing. 2 Nov: for the Jura E8's on/off
+    /// button, SAM's mask for the model's point was the dark panel beside it (25 cm), the ring went
+    /// round the panel, and it was followed off as the panel's visible part changed.
+    static let smallTargetMaxExtent: Float = 0.15
+
+    /// Why `m` is no outline for the small target `spec` names, or nil when it can be.
+    static func outsized(_ m: AnchoredMark, spec: TargetSpec?) -> String? {
+        guard spec?.small == true, m.method != "assumed depth", m.extent > smallTargetMaxExtent else { return nil }
+        return String(format: "not placed: %.0f cm across, too big for a small %@", m.extent * 100, spec?.phrase ?? "target")
+    }
+
     /// A fresh measurement of an object Pip is pointing at. It is fused with the earlier ones
     /// (every view makes the position firmer), unless it shows the object has moved or Pip lost
     /// its place (after coming back): then it starts afresh from this view. The outline glides to
@@ -215,6 +228,10 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         // EdgeTAM or the planar follower took the outline over while this was measured: theirs is newer.
         guard !steered.contains(inst.id), riders[inst.id] == nil, !planarFollowed.contains(inst.id) else { return nil }
         guard let old = marks[inst.id], let fresh = AnchoredMark(inst.regularized(), snapshot: snapshot) else { return nil }
+        if let small = Self.outsized(fresh, spec: tracks[inst.id]?.spec) {
+            onLockLog?("mark \(inst.id % 1000): measured again, \(small); not taken")
+            return nil
+        }
         // Measured on another pointed-at object: its look-alike neighbour, not this one (1 Nov: two
         // golden statues 10 cm apart; the smaller one's outline jumped to the larger and back at
         // every return into view, 9.9, 11.8 and 9.5 cm).

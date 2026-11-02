@@ -30,6 +30,13 @@ struct AnchoredMark {
 
     var polygons: [[simd_float3]] { rawPolygons.map { $0.map(apply) } }
     var centroid: simd_float3 { apply(rawCentroid) }
+    /// How far the outline reaches across (metres): the diagonal of its box in the room.
+    var extent: Float {
+        let points = rawPolygons.flatMap { $0 }
+        guard let first = points.first else { return 0 }
+        let (lo, hi) = points.reduce((first, first)) { (simd_min($0.0, $1), simd_max($0.1, $1)) }
+        return simd_distance(lo, hi)
+    }
     /// Where the mark was placed, for its ARKit anchor.
     var placement: simd_float3 { rawCentroid }
 

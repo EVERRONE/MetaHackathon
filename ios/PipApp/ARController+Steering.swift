@@ -145,6 +145,10 @@ extension ARController {
     /// again; if not, it stays where the object was (out of view, or covered for a moment).
     func steerLost(_ id: Int, moving: Bool) {
         guard steered.contains(id), moving, !planarFollowed.contains(id) else { return }
+        // Where it lay is out of view (the camera turned away): EdgeTAM cannot see it there, and its
+        // masks elsewhere say nothing about where it is (2 Nov, 19:05: the orchid's masks 5.7-6.5 m
+        // away as the user turned to the coffee machine; its outline was dropped, "moved away unseen").
+        guard let m = marks[id], let p = arView.project(m.centroid), arView.bounds.contains(p) else { return }
         if steerHidden.insert(id).inserted { steerHiddenSince[id] = CACurrentMediaTime() }
     }
 
