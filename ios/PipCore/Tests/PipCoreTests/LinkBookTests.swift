@@ -118,3 +118,68 @@ import simd
         #expect(seen == Set(ready))
     }
 }
+
+@Suite struct KeptDescriptionTests {
+    /// Described corners kept beside a snapshot come back as they were (SpaceLinker reads them at
+    /// the start instead of describing every stored snapshot again).
+    @Test func describedCornersComeBackFromStorage() throws {
+        let features = [FeatureMatcher.Feature(point: SIMD2(1.5, 2.5), bits: (1, 2, 3, 4)),
+                        FeatureMatcher.Feature(point: SIMD2(300, 400.25), bits: (5, 6, 7, .max))]
+        let view = ViewPoints(features: features, world: [SIMD3(1, -2, 3.5), nil], camera: SIMD3(0.5, 1.5, -0.25))
+        let back = try #require(ViewPoints(encoded: view.encoded))
+        #expect(back.features.count == 2)
+        #expect(back.features[1].point == SIMD2(300, 400.25))
+        #expect(back.features[1].bits.3 == .max && back.features[0].bits.0 == 1)
+        #expect(back.world[0] == SIMD3(1, -2, 3.5) && back.world[1] == nil)
+        #expect(back.camera == SIMD3(0.5, 1.5, -0.25))
+        // A cut-off file is not read.
+        #expect(ViewPoints(encoded: view.encoded.dropLast(3)) == nil)
+    }
+}
+
+@Suite struct PooledLinkTests {
+    static let a = UUID(), b = UUID()
+    /// Session A's room → session B's room, as the home graph has it.
+    static let joint = UprightTransform(yaw: 0.3, t: SIMD3(2, 0, -1))
+    /// Session A's room → the live session's.
+    static let truth = UprightTransform(yaw: 0.5, t: SIMD3(1, -0.2, 0.4))
+
+    static func book() -> LinkBook {
+        var home = HomeGraph()
+        _ = home.add(HomeGraph.Edge(from: a, to: b, transform: joint, matches: 200, views: 4, centre: .zero))
+        var book = LinkBook()
+        book.home = home
+        return book
+    }
+
+    /// A view link of session B with live view `to`, its evidence at `inA` (a point of A's room).
+    static func linkOfB(_ aToLive: UprightTransform, to: Int, inA: SIMD3<Float>) -> ViewLink {
+        LinkBookTests.link(joint.inverse.then(aToLive), from: 2, to: to, centre: joint.apply(inA))
+    }
+
+    /// One live view for each of two sessions joined in the home: neither links alone, together they
+    /// do (2 Nov: the bathroom seen in five sessions).
+    @Test func sessionsJoinedInTheHomeLinkByTheirEvidenceTogether() {
+        var book = Self.book()
+        #expect(book.add([(Self.a, LinkBookTests.link(Self.truth, from: 1, to: 10, centre: SIMD3(0, 0, -2)))]).isEmpty)
+        let changes = book.add([(Self.b, Self.linkOfB(Self.truth, to: 11, inA: SIMD3(1.5, 0, -2)))])
+        #expect(changes.values.contains(.linked))
+        #expect(book.linked.values.contains { $0.sessions == 2 })
+    }
+
+    /// Their links disagree beyond the chains' error (a look-alike, a turn of 10°): not linked.
+    @Test func sessionsThatDisagreeAreNotLinkedTogether() {
+        var book = Self.book()
+        _ = book.add([(Self.a, LinkBookTests.link(Self.truth, from: 1, to: 10, centre: SIMD3(0, 0, -2)))])
+        let off = UprightTransform(yaw: Self.truth.yaw + 10 * .pi / 180, t: Self.truth.t)
+        #expect(book.add([(Self.b, Self.linkOfB(off, to: 11, inA: SIMD3(1.5, 0, -2)))]).isEmpty)
+        #expect(book.linked.isEmpty)
+    }
+
+    /// Without the home graph, the same two view links link nothing (one live view each).
+    @Test func withoutTheHomeEachSessionNeedsItsOwnViews() {
+        var book = LinkBook()
+        _ = book.add([(Self.a, LinkBookTests.link(Self.truth, from: 1, to: 10, centre: SIMD3(0, 0, -2)))])
+        #expect(book.add([(Self.b, Self.linkOfB(Self.truth, to: 11, inA: SIMD3(1.5, 0, -2)))]).isEmpty)
+    }
+}

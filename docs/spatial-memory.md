@@ -210,6 +210,42 @@ Engine compiles it), later 0.4 s.
   comes back with the link and that the question names is pointed at, unless the user asked
   something else meanwhile.
 
+## Knowing sooner where we are (2 Nov, night)
+
+In the tests of 20:38-20:40 the bathroom was recognised 13-14 s in. Replayed live view by live view
+(`pipeval dinolive`), the time went to three things:
+
+- **Too few views laid.** DINOv2 laid a live view only when the corners took one, every 1.5 s, and
+  prepared two stored views each. Now it has a pace of its own: until a session is linked (in the
+  first 90 s), one live view after the other (0.2-0.5 s each), against the six stored views most
+  alike, three of them prepared anew at most; every 3 s after. DINOv2 starts 1.5 s in (ARKit's map,
+  about 2.5 s in, decides the first view). Views of one half second count once among the
+  independent views a link needs.
+- **Evidence spread over sessions.** A room seen in several sessions gave view links to all of
+  them early (the bathroom: five sessions, by 7.6 s), but each session waited for two live views of
+  its own. These sessions are joined in the home graph: each one's view links, carried into one of
+  them by it, now count together (`LinkBook.home`); two live views, 80 agreeing matches over a metre
+  as before, agreeing within the chains' error (3°, 15 cm; carried, the bathroom's links agreed within
+  2.1°). The session with most of the evidence is linked, the others come through the home graph.
+- **The corners described anew at every start** (82 ms a snapshot, 30-50 s for a home's 400): now
+  kept beside each snapshot (`<id>.c500v1.corners`, with its fingerprint) and read at the start, so
+  the corners link in the same light from the first view.
+
+Replayed on the sessions of 2 Nov (their snapshots as live views, sparser than the app's):
+
+| Session | As built | Now |
+|---|---|---|
+| Bathroom 18:36 | 25.6 s | 7.9 s |
+| Bathroom 20:38 | 15.2 s | 5.8 s |
+| Bathroom 20:39 | 12.6 s | 6.1 s |
+| Bedroom 18:34 (its first 40 s on the pens, close by) | 42.3 s | 42.3 s |
+| Living room 19:08 | not linked | 49.3 s |
+
+What the camera sees decides the rest: close-ups say nothing about the room. When the place looks
+known (the whole-view likeness to stored views 0.85 or more) but is not linked after 8 s, Pip asks the
+user once to look round (at the round table: likeness 0.85-0.93 for two minutes, linked once the
+kitchen island came into view).
+
 ## Finding that very object again (2 Nov, evening)
 
 A remembered place kept the model's words for what it pointed at, and those often said where it

@@ -35,6 +35,8 @@ public struct LinkBook: Sendable {
         public var core: [ViewLink]
         /// Those that may carry points: the core, and view links within the sessions' drift of it.
         public var usable: [ViewLink]
+        /// Sessions whose evidence was weighed together to make it (`LinkBook.home`), 1 for its own alone.
+        public var sessions = 1
         public var views: Int { Set(core.map(\.to)).count }
         public var matches: Int { core.reduce(0) { $0 + $1.inliers } }
         public var extent: Float { SessionLink.extent(core) }
@@ -61,6 +63,17 @@ public struct LinkBook: Sendable {
 
     /// Evidence kept per session: the strongest view links (agreement is checked pairwise).
     public static let maxEvidence = 240
+
+    /// The earlier sessions joined in the home, by their links among themselves (not the live
+    /// session's): a room seen in several of them is linked by their evidence together. 2 Nov, the
+    /// bathroom seen in five sessions: view links to all five came within 7.6 s, but each session
+    /// alone had one live view until 12.6 s; carried into one session by the home graph, their turns
+    /// agreed within 2.1°.
+    public var home: HomeGraph?
+    /// How far view links carried between sessions by the home graph may differ and still agree: the
+    /// chains' error, beside the views' own (`SessionLink.Settings.agreeTurn`, `agreeDistance`).
+    public static let pooledTurn: Float = 3 * .pi / 180
+    public static let pooledDistance: Float = 0.15
 
     public init(settings: SessionLink.Settings = SessionLink.Settings()) {
         self.settings = settings
@@ -94,6 +107,52 @@ public struct LinkBook: Sendable {
             }
             linked[session] = now
             linkedAfterBreak[session] = breaks
+        }
+        if let home {
+            for (session, change) in pooled(touched: touched, home: home) where changes[session] == nil { changes[session] = change }
+        }
+        return changes
+    }
+
+    /// The evidence of sessions joined in the home graph, together, for a room none of them is linked
+    /// by yet: each session's view links carried into the one with most of them; two live views at
+    /// least, enough agreeing evidence over a metre (as for one session), agreeing within the chains'
+    /// error. The session with most of the agreeing evidence is linked, by its own view links among
+    /// it; the others come through the home graph.
+    private mutating func pooled(touched: Set<UUID>, home: HomeGraph) -> [UUID: Change] {
+        var changes: [UUID: Change] = [:]
+        var done = Set<UUID>()
+        for session in touched where linked[session] == nil && !done.contains(session) {
+            let component = home.component(of: session)
+            done.formUnion(component)
+            guard component.count > 1, !component.contains(where: { linked[$0] != nil }) else { continue }
+            let members = component.filter { !(evidence[$0] ?? []).isEmpty }
+            guard members.count > 1, let reference = members.max(by: { (evidence[$0]?.count ?? 0) < (evidence[$1]?.count ?? 0) }) else { continue }
+            var carried: [ViewLink] = [], own: [ViewLink] = [], owner: [UUID] = []
+            for s in members {
+                guard let g = home.transform(from: reference, to: s) else { continue }
+                for l in evidence[s] ?? [] {
+                    var m = l
+                    m.transform = g.then(l.transform)
+                    m.centre = g.inverse.apply(l.centre)
+                    carried.append(m)
+                    own.append(l)
+                    owner.append(s)
+                }
+            }
+            var loose = settings
+            loose.agreeTurn = Self.pooledTurn
+            loose.agreeDistance = Self.pooledDistance
+            guard let group = SessionLink.consensus(carried, settings: loose) else { continue }
+            var bySession: [UUID: [ViewLink]] = [:]
+            for i in carried.indices where group.contains(carried[i]) { bySession[owner[i], default: []].append(own[i]) }
+            guard bySession.count > 1,
+                  let best = bySession.max(by: { $0.value.reduce(0) { $0 + $1.inliers } < $1.value.reduce(0) { $0 + $1.inliers } }) else { continue }
+            var now = Linked(core: best.value, usable: SessionLink.usable(evidence[best.key] ?? [], core: best.value, settings: settings))
+            now.sessions = bySession.count
+            linked[best.key] = now
+            linkedAfterBreak[best.key] = breaks
+            changes[best.key] = .linked
         }
         return changes
     }
@@ -146,6 +205,20 @@ public struct ViewPrint: @unchecked Sendable {
         let request = VNGenerateImageFeaturePrintRequest()
         guard (try? VNImageRequestHandler(cgImage: image).perform([request])) != nil,
               let o = request.results?.first as? VNFeaturePrintObservation else { return nil }
+        observation = o
+    }
+
+    public init(observation: VNFeaturePrintObservation) {
+        self.observation = observation
+    }
+
+    /// Kept beside a stored snapshot, so it is made once.
+    public var archived: Data? {
+        try? NSKeyedArchiver.archivedData(withRootObject: observation, requiringSecureCoding: true)
+    }
+
+    public init?(archived: Data) {
+        guard let o = try? NSKeyedUnarchiver.unarchivedObject(ofClass: VNFeaturePrintObservation.self, from: archived) else { return nil }
         observation = o
     }
 

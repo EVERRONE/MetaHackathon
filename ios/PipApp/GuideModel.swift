@@ -91,6 +91,9 @@ final class GuideModel: ObservableObject {
     /// out"): pointed at once that room is recognised (`followUpFind`).
     var awaitingRoom: (what: String, phrase: String, frame: UUID, piece: UUID?, asked: Date)?
     var followingUp = false
+    /// When Pip last asked the user to look round (`askToLookAround`, and a find in a room not
+    /// recognised yet).
+    var lookAroundSaid = Date.distantPast
     /// The user's last question, when, and the look that answered it (`followUpQuestion`).
     var lastQuestion: (text: String, at: Date, look: Int)?
     /// When the shopping list last changed; basket checks stop after a long quiet spell.

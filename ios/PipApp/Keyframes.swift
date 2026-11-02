@@ -321,9 +321,10 @@ enum VisualMemoryStore {
             // used: they go, once they are an hour old. Whole-view tokens of another model go at once.
             let known = Set(stored.map(\.id.uuidString))
             let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-            for file in files where ["jpg", "depth", "whole"].contains(file.pathExtension) {
+            for file in files where ["jpg", "depth", "whole", "corners"].contains(file.pathExtension) {
                 let id = String(file.lastPathComponent.prefix { $0 != "." })
-                if file.pathExtension == "whole", known.contains(id), file.lastPathComponent != wholeName(id) {
+                if file.pathExtension == "whole" || file.pathExtension == "corners", known.contains(id),
+                   file.lastPathComponent != wholeName(id), file.lastPathComponent != cornersName(id) {
                     try? FileManager.default.removeItem(at: file)
                     continue
                 }
@@ -367,6 +368,7 @@ enum VisualMemoryStore {
                 try? FileManager.default.removeItem(at: d.appendingPathComponent("\(id.uuidString).jpg"))
                 try? FileManager.default.removeItem(at: d.appendingPathComponent("\(id.uuidString).depth"))
                 try? FileManager.default.removeItem(at: d.appendingPathComponent(wholeName(id.uuidString)))
+                try? FileManager.default.removeItem(at: d.appendingPathComponent(cornersName(id.uuidString)))
             }
         }
     }
@@ -380,6 +382,32 @@ enum VisualMemoryStore {
     static func whole(_ id: UUID) -> [Float]? {
         guard let data = try? Data(contentsOf: dir.appendingPathComponent(wholeName(id.uuidString))), data.count == ViewFeatures.dim * 2 else { return nil }
         return data.withUnsafeBytes { Array($0.bindMemory(to: Float16.self)) }.map(Float.init)
+    }
+
+    /// A snapshot's described corners (lifted in its own session's room) and its fingerprint, kept
+    /// beside it: described again at every start, 82 ms a snapshot, a home's 400 took 30-50 s, and
+    /// the corners could link only the ones done (2 Nov).
+    static func cornersName(_ id: String) -> String { "\(id).\(ViewPoints.cacheTag).corners" }
+
+    static func corners(_ id: UUID) -> (points: ViewPoints, print: ViewPrint?)? {
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent(cornersName(id.uuidString))), data.count > 4 else { return nil }
+        let length = Int(data.prefix(4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
+        guard data.count >= 4 + length, let points = ViewPoints(encoded: data.subdata(in: 4..<(4 + length))) else { return nil }
+        let rest = data.subdata(in: (4 + length)..<data.count)
+        return (points, rest.isEmpty ? nil : ViewPrint(archived: rest))
+    }
+
+    static func writeCorners(_ id: UUID, _ points: ViewPoints, _ print: ViewPrint?) {
+        let encoded = points.encoded
+        var data = Data()
+        withUnsafeBytes(of: UInt32(encoded.count)) { data.append(contentsOf: $0) }
+        data.append(encoded)
+        if let archived = print?.archived { data.append(archived) }
+        io.async {
+            let d = dir
+            guard FileManager.default.fileExists(atPath: d.appendingPathComponent("\(id.uuidString).jpg").path) else { return }
+            try? data.write(to: d.appendingPathComponent(cornersName(id.uuidString)), options: [.atomic, .completeFileProtection])
+        }
     }
 
     /// Written only beside a snapshot that is still kept (one removed meanwhile gets none).

@@ -19,6 +19,15 @@ final class SpaceLinker {
     var onLog: ((String) -> Void)?
     /// A line for the screen: what linking is doing.
     var onStatus: ((String) -> Void)?
+    /// The place looks known (DINOv2's whole-view likeness to stored views), but no session is linked
+    /// after `lookAroundAfter`: the user can help by looking round (said once a session). 2 Nov, at
+    /// the round table: likeness 0.85-0.93 for two minutes, linked once the island came into view.
+    var onLookAround: (() -> Void)?
+    static let lookAroundAfter: TimeInterval = 8
+    static let lookAroundLikeness: Float = 0.85
+    private var firstDino: Date?
+    private var likeness: [Float] = []
+    private var lookAroundAsked = false
 
     private(set) var book = LinkBook()
     private var schedule = LinkSchedule()
@@ -42,6 +51,8 @@ final class SpaceLinker {
     /// so a stored view's number never meets another set of stored views.
     private var generation = 0
     private var describeTimer: Timer?
+    /// Whether the kept corner descriptions were read: none is described before (it may be on disk).
+    private var cornersRead = true
 
     // What it measured, for the log.
     private var describeMs: [Double] = []
@@ -89,7 +100,7 @@ final class SpaceLinker {
     /// (only once after this was built), and EdgeTAM is loaded 1 s in (2 Nov, 19:03-19:09: 0.9-1.1 s).
     /// Replayed on the bathroom start of 18:36, from 3 s in a session was linked at 8.7 s (from 5 s
     /// in, at 14.2 s).
-    static let dinoDelay: TimeInterval = 3
+    static let dinoDelay: TimeInterval = 1.5
     private var dinoStart = Date.distantFuture
     /// One stored snapshot's whole-view token this often, at most.
     static let wholeEvery: TimeInterval = 0.25
@@ -100,15 +111,21 @@ final class SpaceLinker {
     private var dinoLinksSince = 0
     private var dinoMs: [Double] = []
     static let dinoInterval: TimeInterval = 3
-    /// Until a session is linked, every live view (they come every 1.5 s; at 2 s it was every other
-    /// one), against more stored views.
-    static let dinoIntervalSearching: TimeInterval = 1.4
+    /// Until a session is linked (in the first `searchFor` of a session), one live view after the
+    /// other, at a pace of its own (each takes 0.2-0.5 s), not with the corners' views every 1.5 s:
+    /// how soon Pip knows where it is depends on how many views it lays (2 Nov, replayed: every
+    /// snapshot laid linked the bathroom of 18:36 in 8.7 s, every 1.5 s in 25.6 s).
+    static let dinoIntervalSearching: TimeInterval = 0.3
+    static let searchFor: TimeInterval = 90
     /// Stored views a live view is laid against: the most alike by DINOv2's whole-view token; more
     /// while no session is linked yet. Of those, at most this many not prepared yet (each a DINOv2
     /// pass of its own): the rest wait for a later live view.
     nonisolated static let dinoPerView = 3
-    nonisolated static let dinoPerViewSearching = 4
+    nonisolated static let dinoPerViewSearching = 6
     nonisolated static let dinoNewPerView = 2
+    nonisolated static let dinoNewPerViewSearching = 3
+    /// When this session began (its searching pace is bounded).
+    private var begun = Date()
 
     static let interval: TimeInterval = 1.5
     /// Stored views matched with each live view (about 1-2 ms each), the hot ones first.
@@ -132,12 +149,18 @@ final class SpaceLinker {
         return "Where we are: not recognised yet; the app is still matching this view with earlier visits (it helps when the user looks around the room slowly, at walls and furniture). Do not guess the room."
     }
 
-    /// The stored snapshots of earlier sessions to link this one to.
-    func begin(with frames: [Keyframes.Frame]) {
+    /// The stored snapshots of earlier sessions to link this one to, and how those sessions are joined
+    /// in the home (their evidence is weighed together, `LinkBook.home`).
+    func begin(with frames: [Keyframes.Frame], home: HomeGraph? = nil) {
         generation += 1
+        begun = Date()
+        firstDino = nil
+        likeness = []
+        lookAroundAsked = false
         stored = frames.sorted { ($0.piece?.uuidString ?? "", $0.time) < ($1.piece?.uuidString ?? "", $1.time) }
         number = Dictionary(uniqueKeysWithValues: stored.enumerated().map { ($1.id, $0) })
         book = LinkBook()
+        book.home = home
         schedule = LinkSchedule()
         described = [:]
         prints = [:]
@@ -159,8 +182,34 @@ final class SpaceLinker {
         onLog?("space: \(stored.count) snapshots of \(sessions) earlier sessions to link this one to")
         describeTimer?.invalidate()
         describeTimer = nil
-        startDescribing()
+        readKeptCorners()
         readKeptWholes()
+    }
+
+    /// The described corners kept beside the stored snapshots, all at once (a home's 400 in well under
+    /// a second); the others are described as before, a few every half second, and kept.
+    private func readKeptCorners() {
+        guard !stored.isEmpty else { return }
+        let ids = stored.map(\.id), generation = self.generation
+        cornersRead = false
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let t0 = Date()
+            var kept: [Int: (points: ViewPoints, print: ViewPrint?)] = [:]
+            for (i, id) in ids.enumerated() {
+                if let c = VisualMemoryStore.corners(id) { kept[i] = c }
+            }
+            let ms = Date().timeIntervalSince(t0) * 1000
+            DispatchQueue.main.async {
+                guard let self, self.generation == generation else { return }
+                for (i, c) in kept {
+                    self.described[i] = c.points
+                    if let p = c.print { self.prints[i] = p }
+                }
+                self.cornersRead = true
+                self.onLog?(String(format: "space: %d of %d stored snapshots' described corners kept beside them (read in %.0f ms)", kept.count, ids.count, ms))
+                self.startDescribing()
+            }
+        }
     }
 
     /// Describes the stored snapshots not described yet, a few every half second.
@@ -195,6 +244,7 @@ final class SpaceLinker {
     }
 
     private func describeSome() {
+        guard cornersRead else { return }
         let todo = Array(stored.indices.lazy.filter {
             self.described[$0] == nil && !self.describing.contains($0) && !self.undescribable.contains($0) && !self.elsewhere.contains($0)
         }.prefix(Self.describePerRound))
@@ -215,6 +265,7 @@ final class SpaceLinker {
             queue.async { [weak self] in
                 let t0 = Date()
                 let described = Self.describe(frame)
+                if let described { VisualMemoryStore.writeCorners(frame.id, described.points, described.print) }
                 let ms = Date().timeIntervalSince(t0) * 1000
                 DispatchQueue.main.async {
                     guard let self, self.generation == generation else { return }
@@ -246,12 +297,17 @@ final class SpaceLinker {
     /// the background; the stored views that look most like it, the hot ones and the next in turn
     /// are chosen here (LinkSchedule, as `pipeval livelink` does), and matched in the background.
     func consider(_ frame: ARFrame, gate: CaptureGate) {
-        guard !working, !described.isEmpty, frame.timestamp - lastView >= Self.interval else { return }
-        guard case .normal = frame.camera.trackingState, gate.accepts(frame) else { return }
-        lastView = frame.timestamp
+        let t = frame.timestamp
+        let dinoDue = dinoDue(at: t)
+        let cornersDue = !working && !described.isEmpty && t - lastView >= Self.interval
+        guard dinoDue || cornersDue, case .normal = frame.camera.trackingState, gate.accepts(frame) else { return }
+        // DINOv2 at its own pace; the corners every 1.5 s.
+        if dinoDue { considerAcrossLight(frame) }
+        guard cornersDue else { return }
+        lastView = t
         working = true
         liveViews += 1
-        let view = liveViews, breaks = self.breaks, generation = self.generation
+        let view = Self.viewNumber(t), breaks = self.breaks, generation = self.generation
         let prints = self.prints.filter { !elsewhere.contains($0.key) }
         queue.async { [weak self] in
             let t0 = Date()
@@ -264,9 +320,20 @@ final class SpaceLinker {
                 guard let self else { return }
                 guard self.breaks == breaks, self.generation == generation else { self.working = false; return }
                 self.match(live, view: view, lookAlike: lookAlike, breaks: breaks, started: t0)
-                self.considerAcrossLight(snap, view: view, time: frame.timestamp)
             }
         }
+    }
+
+    /// A live view's number: the half second it was taken in, for the corners and DINOv2 alike, so
+    /// views of one moment count once among the independent views a link needs.
+    nonisolated static func viewNumber(_ time: TimeInterval) -> Int { Int((time * 2).rounded(.down)) }
+
+    /// Until a session is linked, in its first `searchFor`: searching (the fast pace).
+    private var searching: Bool { book.linked.isEmpty && Date().timeIntervalSince(begun) < Self.searchFor }
+
+    private func dinoDue(at time: TimeInterval) -> Bool {
+        Self.hasModel && !dinoWorking && Date() >= dinoStart && !wholes.isEmpty
+            && time - lastDino >= (searching ? Self.dinoIntervalSearching : Self.dinoInterval)
     }
 
     /// The whole-view tokens kept beside the stored snapshots; the others are made from `dinoStart`
@@ -329,7 +396,12 @@ final class SpaceLinker {
             return
         }
         if !ownPending.isEmpty {
-            make(ownPending.removeFirst()) { _ in }
+            // This session's own snapshot: its token, and its described corners, for the sessions after it.
+            let frame = ownPending.removeFirst()
+            make(frame) { _ in }
+            queue.async {
+                if let d = Self.describe(frame) { VisualMemoryStore.writeCorners(frame.id, d.points, d.print) }
+            }
             return
         }
         guard !reading else { return }
@@ -356,27 +428,30 @@ final class SpaceLinker {
         }
     }
 
-    /// Every few seconds the live view is laid against the stored views it looks most like
-    /// (DinoLink), on the DINOv2 queue; what links goes into the same book as the corners' links.
-    private func considerAcrossLight(_ snap: FrameSnapshot, view: Int, time: TimeInterval) {
-        // Until a session is linked, every live view and more stored views each: the first minute
-        // decides whether Pip knows where it is (2 Nov, evening: in the bathroom 2 view links in a
-        // minute at one live view in 3 s against 3 stored, not enough; linked in the room later).
-        let searching = book.linked.isEmpty
-        guard Self.hasModel, !dinoWorking, Date() >= dinoStart,
-              time - lastDino >= (searching ? Self.dinoIntervalSearching : Self.dinoInterval) else { return }
+    /// A live view laid against the stored views it looks most like (DinoLink), on the DINOv2 queue:
+    /// one after the other while searching, every few seconds after; what links goes into the same
+    /// book as the corners' links.
+    private func considerAcrossLight(_ frame: ARFrame) {
         let candidates = wholes.filter { !elsewhere.contains($0.key) }
         guard !candidates.isEmpty else { return }
-        lastDino = time
+        lastDino = frame.timestamp
         dinoWorking = true
+        let view = Self.viewNumber(frame.timestamp)
         let perView = searching ? Self.dinoPerViewSearching : Self.dinoPerView
+        let newPerView = searching ? Self.dinoNewPerViewSearching : Self.dinoNewPerView
         let breaks = self.breaks, generation = self.generation, stored = self.stored, dinoViews = self.dinoViews, dino = self.dino
+        // ARKit's frame is let go as soon as it is copied: it drops frames when many are held.
+        let held = HeldFrame(frame)
         dinoQueue.async { [weak self] in
             let t0 = Date()
             var links: [(Int, ViewLink)] = []
-            if let features = dino.model(), let live = Self.dinoView(snap, features: features) {
+            var best: Float?
+            let snap = held.frame.flatMap { FrameSnapshot(frame: $0, maxSide: 768) }
+            held.frame = nil
+            if let features = dino.model(), let snap, let live = Self.dinoView(snap, features: features) {
                 let ranked = candidates.map { ($0.key, Self.dot($0.value, live.features.whole)) }.sorted { $0.1 > $1.1 }.prefix(perView)
-                var newLeft = Self.dinoNewPerView
+                best = ranked.first?.1
+                var newLeft = newPerView
                 for (i, _) in ranked where stored.indices.contains(i) {
                     if !dinoViews.has(i) {
                         guard newLeft > 0 else { continue }
@@ -391,12 +466,27 @@ final class SpaceLinker {
                 guard let self else { return }
                 self.dinoWorking = false
                 self.dinoMs.append(ms)
+                if let best, self.generation == generation { self.noteLikeness(best) }
                 guard self.breaks == breaks, self.generation == generation, !links.isEmpty else { return }
                 self.dinoLinksSince += links.count
                 let found = links.compactMap { i, l in self.stored[i].piece.map { (session: $0, link: l) } }
                 for (session, change) in self.book.add(found) { self.report(session, change) }
             }
         }
+    }
+
+    /// How alike the live views are to the stored ones: a place that looks known and is not linked
+    /// yet asks the user to look round, once.
+    private func noteLikeness(_ best: Float) {
+        if firstDino == nil { firstDino = Date() }
+        likeness.append(best)
+        if likeness.count > 6 { likeness.removeFirst(likeness.count - 6) }
+        guard !lookAroundAsked, book.linked.isEmpty, let first = firstDino, Date().timeIntervalSince(first) >= Self.lookAroundAfter,
+              (likeness.max() ?? 0) >= Self.lookAroundLikeness else { return }
+        lookAroundAsked = true
+        onLog?(String(format: "space: this place looks known (likeness %.2f) but is not linked after %.0f s: the user is asked to look round",
+                      likeness.max() ?? 0, Date().timeIntervalSince(first)))
+        onLookAround?()
     }
 
     /// The live view for DinoLink: its DINOv2 tokens and its depth, as the stored snapshots keep it.
@@ -471,9 +561,10 @@ final class SpaceLinker {
     private func report(_ session: UUID, _ change: LinkBook.Change) {
         guard let l = book.linked[session] else { return }
         if change != .strengthened, let core = l.core.max(by: { $0.inliers < $1.inliers }) {
-            onLog?(String(format: "space: %@ the session of %@: %d live views agree (%d matches, over %.1f m of the room; %d view links usable): %@",
+            onLog?(String(format: "space: %@ the session of %@: %d live views agree (%d matches, over %.1f m of the room; %d view links usable%@): %@",
                           change == .linked ? "linked to" : "linked again after a tracking break to", when(session), l.views, l.matches, l.extent,
-                          l.usable.count, core.transform.description))
+                          l.usable.count, l.sessions > 1 ? String(format: "; with the evidence of %d more sessions of the home", l.sessions - 1) : "",
+                          core.transform.description))
         }
         onStatus?(status())
         onChange?(session, change)
@@ -533,13 +624,19 @@ final class SpaceLinker {
     }
 }
 
+/// An ARKit frame handed to a queue, let go there once copied.
+final class HeldFrame: @unchecked Sendable {
+    var frame: ARFrame?
+    init(_ frame: ARFrame) { self.frame = frame }
+}
+
 /// Stored views prepared for DinoLink (their DINOv2 tokens, 2 MB each, and their depth), the last
 /// few used: a live view is laid against the three stored views it looks most like, and those of
 /// one place come back view after view. Used on SpaceLinker's DINOv2 queue only.
 final class DinoViews: @unchecked Sendable {
     private var views: [Int: DinoLink.View] = [:]
     private var order: [Int] = []
-    static let keep = 16
+    static let keep = 24
 
     func view(_ i: Int, frame: Keyframes.Frame, features: ViewFeatures) -> DinoLink.View? {
         if let v = views[i] {

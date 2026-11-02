@@ -177,6 +177,16 @@ func dinoLive(_ args: [String]) {
     let firstOf = Dictionary(stored.indices.reversed().map { (piece(stored[$0]), $0) }, uniquingKeysWith: { _, first in first })
     let name = { (i: Int) -> String in String(piece(stored[i]).prefix(4)) + String(format: ":%03d", i - (firstOf[piece(stored[i])] ?? 0)) }
     var book = LinkBook()
+    // --pool: the evidence of the earlier sessions joined in the home graph together (LinkBook.home),
+    // by the home graph of memory/home-graph.json, without the live session's links or later ones.
+    if args.contains("--pool") {
+        let file = dir.deletingLastPathComponent().appendingPathComponent("home-graph.json")
+        guard let data = FileManager.default.contents(atPath: file.path), var graph = try? JSONDecoder().decode(HomeGraph.self, from: data) else { fail("cannot read \(file.path)") }
+        let earlier = Set(stored.compactMap { UUID(uuidString: piece($0)) })
+        for e in graph.edges where !earlier.contains(e.from) || !earlier.contains(e.to) { graph.removeLink(between: e.from, and: e.to) }
+        book.home = graph
+        print("home graph: \(graph.edges.count) links among the earlier sessions")
+    }
     var prepared: [Int] = []
     var lastDino = -Double.infinity
     print(String(format: "%d stored views, %d live views; whole-view tokens %@", stored.count, live.count,
@@ -215,8 +225,9 @@ func dinoLive(_ args: [String]) {
         for (session, change) in book.add(found) where change != .strengthened {
             let l = book.linked[session]!
             let core = l.core.max { $0.inliers < $1.inliers }!
-            print(String(format: "%@ %@ at %.1f s (live view %d): %d views agree, %d matches over %.1f m; %@", change == .linked ? "LINKED" : "relinked",
-                         String(session.uuidString.prefix(4)), t, n, l.views, l.matches, l.extent, core.transform.description))
+            print(String(format: "%@ %@ at %.1f s (live view %d): %d views agree, %d matches over %.1f m%@; %@", change == .linked ? "LINKED" : "relinked",
+                         String(session.uuidString.prefix(4)), t, n, l.views, l.matches, l.extent, l.sessions > 1 ? " (with \(l.sessions - 1) more sessions of the home)" : "",
+                         core.transform.description))
         }
     }
     if book.linked.isEmpty { print("not linked") }

@@ -93,6 +93,11 @@ struct Phrases {
         return dutch ? "Ik zag \(what) \(ago(date)), in een ruimte die ik nu nog niet herken. Kijk even rustig rond, dan wijs ik het aan zodra ik herken waar we zijn."
                      : "I saw \(what) \(ago(date)), in a room I haven't recognised yet this time. Look around slowly, and I'll point it out as soon as I recognise where we are."
     }
+    /// The place looks known, but Pip has not worked out where in it the user is.
+    var lookAround: String {
+        dutch ? "Ik denk dat ik deze plek ken. Kijk even rustig rond, dan weet ik precies waar we zijn."
+              : "I think I know this place. Look around slowly, and I'll work out exactly where we are."
+    }
     /// A find that saw `what` in a room not recognised then: the room is recognised now.
     func recognisedNow(_ what: String, where place: String) -> String {
         dutch ? "Ik weet nu waar we zijn: \(what) ligt op \(place). Volg de pijl."

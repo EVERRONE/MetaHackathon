@@ -61,10 +61,11 @@ extension GuideModel {
             Relocalisation.log(line)
         }
         spaceLinker.onChange = { [weak self] piece, change in self?.spaceLinked(piece, change) }
+        spaceLinker.onLookAround = { [weak self] in self?.askToLookAround() }
         spaceLinker.onStatus = { [weak self] line in self?.ar.setStatusLine("space", line) }
         let current = mapKeeper.current.id
         homeGraph = HomeGraphStore.load()
-        spaceLinker.begin(with: keyframes.frames.filter { $0.piece != nil && $0.piece != current })
+        spaceLinker.begin(with: keyframes.frames.filter { $0.piece != nil && $0.piece != current }, home: homeGraph)
         if let here {
             let locations = Dictionary(uniqueKeysWithValues: pieces.map { ($0.id, $0.location) })
             spaceLinker.keepOnly { piece in (locations[piece] ?? nil).map { here.couldBeSamePlace(as: $0) } ?? true }
@@ -162,6 +163,19 @@ extension GuideModel {
         if awaitingRoom != nil { Task { await followUpFind() } }
         // A question asked just before, about a place that came back now.
         else if !backPlaces.isEmpty { Task { await followUpQuestion(placesBack: backPlaces) } }
+    }
+
+    /// Said when Pip is free (not over the user, nor over itself), unless it asked lately in other words
+    /// (a find in a room not recognised yet asks the same).
+    func askToLookAround() {
+        guard Date().timeIntervalSince(lookAroundSaid) > 60 else { return }
+        Task {
+            for _ in 0..<50 where speaker.isSpeaking || lookActive || phase == .hearing { try? await Task.sleep(nanoseconds: 200_000_000) }
+            guard !speaker.isSpeaking, !lookActive, phase != .hearing, spaceLinker.linked.isEmpty else { return }
+            lookAroundSaid = Date()
+            log("space: asked the user to look round")
+            say(phrases.lookAround)
+        }
     }
 
     /// A fix came in: kept with this piece.

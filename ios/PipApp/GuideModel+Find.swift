@@ -82,6 +82,7 @@ extension GuideModel {
             if Task.isCancelled { return }
             if let place { facts["last seen: \(what)"] = Fact(value: "\(place) (\(phrases.ago(elsewhere.time)), in a room not recognised in this session)", source: "seen") }
             say(phrases.foundElsewhere(what, at: elsewhere.time, place: place))
+            lookAroundSaid = Date()
             log("find: \(what) seen \(phrases.ago(elsewhere.time)) in a room not recognised yet; pointed at once it is")
             awaitingRoom = (what, phrase, elsewhere.id, elsewhere.piece, Date())
         } else {

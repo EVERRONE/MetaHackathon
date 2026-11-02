@@ -106,6 +106,48 @@ public struct ViewPoints: Sendable {
         self.init(features: f, world: f.map { lift($0.point) }, camera: camera)
     }
 
+    /// Names how they were described: kept ones of another description are never read.
+    public static let cacheTag = "c500v1"
+
+    /// Kept beside a stored snapshot, so they are described once: at every start they took 82 ms a
+    /// snapshot, 30-50 s for a home's 400, during which the corners could link only what was done.
+    public var encoded: Data {
+        var d = Data(capacity: 16 + features.count * 53)
+        func put<T>(_ v: T) { withUnsafeBytes(of: v) { d.append(contentsOf: $0) } }
+        put(UInt32(features.count))
+        put(UInt8(camera == nil ? 0 : 1))
+        put(camera ?? .zero)
+        for (f, w) in zip(features, world) {
+            put(f.point)
+            put(f.bits.0); put(f.bits.1); put(f.bits.2); put(f.bits.3)
+            put(UInt8(w == nil ? 0 : 1))
+            put(w ?? .zero)
+        }
+        return d
+    }
+
+    public init?(encoded d: Data) {
+        var at = 0
+        func get<T>(_: T.Type) -> T? {
+            let size = MemoryLayout<T>.size
+            guard at + size <= d.count else { return nil }
+            defer { at += size }
+            return d.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: at, as: T.self) }
+        }
+        guard let count = get(UInt32.self), count < 100_000, let hasCamera = get(UInt8.self), let cam = get(SIMD3<Float>.self) else { return nil }
+        var features: [FeatureMatcher.Feature] = [], world: [SIMD3<Float>?] = []
+        features.reserveCapacity(Int(count))
+        world.reserveCapacity(Int(count))
+        for _ in 0..<count {
+            guard let p = get(SIMD2<Float>.self), let b0 = get(UInt64.self), let b1 = get(UInt64.self), let b2 = get(UInt64.self), let b3 = get(UInt64.self),
+                  let has = get(UInt8.self), let w = get(SIMD3<Float>.self) else { return nil }
+            features.append(FeatureMatcher.Feature(point: p, bits: (b0, b1, b2, b3)))
+            world.append(has == 1 ? w : nil)
+        }
+        guard at == d.count else { return nil }
+        self.init(features: features, world: world, camera: hasCamera == 1 ? cam : nil)
+    }
+
     /// The point of feature `i` if it is far enough from the camera to belong to the room.
     func roomPoint(_ i: Int, from minDepth: Float) -> SIMD3<Float>? {
         guard let p = world[i] else { return nil }
