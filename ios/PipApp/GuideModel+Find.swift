@@ -27,7 +27,11 @@ extension GuideModel {
         func score(_ p: SpaceMemory.Place) -> Int { PlaceName.score(what, names: [p.name, p.phrase ?? ""]) }
         let remembered = memory.places.filter { score($0) > 0 }.max { score($0) < score($1) }
         let reference = remembered.flatMap { memory.reference(for: $0.id) }
-        let looks = remembered?.appearance
+        // Its looks, or what Pip knows of it ("user's book": "The Let Them Theory by Mel Robbins, green
+        // cover"): a search by name alone took a black book for it (3 Nov).
+        let known = facts.filter { !$0.key.hasPrefix("last seen") && PlaceName.score(what, names: [$0.key]) > 0 }.map(\.value.value)
+        let described = ([remembered?.appearance].compactMap { $0 } + known).joined(separator: "; ")
+        let looks = described.isEmpty ? nil : described
         if let remembered { log("find: \(what) is the remembered \(remembered.name)" + (reference == nil ? "" : ", by its reference photo") + (looks.map { " (\($0))" } ?? "")) }
         let now = Date()
         let recent = all.filter { now.timeIntervalSince($0.time) <= Keyframes.recentFor }
@@ -44,7 +48,7 @@ extension GuideModel {
             if n == 1 { say(phrases.searchingFurther) }
             let outcome = await search(what, phrase: phrase, in: batch, reference: reference, looks: looks)
             if Task.isCancelled { return }
-            if case .found(let world, let frame, let spec) = outcome {
+            if case .found(let world, let frame, let spec, let same) = outcome {
                 // A place remembered under this name and brought back here lies there already: it is
                 // the same object, and its mark is pointed at (it knows what the object looked like
                 // to the model; a second outline from a snapshot of the same session only showed the
@@ -63,8 +67,12 @@ extension GuideModel {
                 ar.addFound(world: world, id: id, spec: spec)
                 ar.show(.outline(mark: id))
                 // A place remembered in another map of this room: found here, it is anchored in
-                // this room's map from now on, so it is pointed at at once next time.
-                if let orphan = orphanPlace(matching: what) { adopt(orphan, mark: id) }
+                // this room's map from now on, so it is pointed at at once next time. Only when the
+                // sighting was that very thing (compared with its reference photo): a look-alike
+                // never moves a remembered place (3 Nov: the green book's place went to a black one).
+                if let orphan = orphanPlace(matching: what) {
+                    if same { adopt(orphan, mark: id) } else { log("place \(orphan.name): not moved to this sighting (not compared with its photo)") }
+                }
                 let place = ar.describe(mark: id, dutch: language == "Dutch") ?? ""
                 say(phrases.found(what, at: frame.time, where: place.components(separatedBy: ";").first ?? place))
                 return
@@ -113,7 +121,7 @@ extension GuideModel {
         if mark == nil {
             guard let frame = keyframes.frames.first(where: { $0.id == pending.frame }), frame.located else { return }
             awaitingRoom = nil
-            guard case .found(let world, _, let spec) = await search(pending.what, phrase: pending.phrase, in: [frame]) else {
+            guard case .found(let world, _, let spec, _) = await search(pending.what, phrase: pending.phrase, in: [frame]) else {
                 log("find: \(pending.what): its room is recognised, but it was not found again in the snapshot")
                 return
             }
@@ -180,7 +188,8 @@ extension GuideModel {
     }
 
     enum Recall {
-        case found(world: [[simd_float3]], frame: Keyframes.Frame, spec: TargetSpec)
+        /// `same`: compared with the remembered thing's reference photo, and that very thing.
+        case found(world: [[simd_float3]], frame: Keyframes.Frame, spec: TargetSpec, same: Bool)
         /// Seen, but in a room this session has not recognised (its place is unknown here).
         case elsewhere(Keyframes.Frame)
         case none
@@ -226,13 +235,26 @@ extension GuideModel {
                 log("sighting not confirmed (\(grounded.method))")
                 continue
             }
-            log("sighting confirmed (\(grounded.method))")
+            // A remembered thing with a reference photo: that very thing, or not it.
+            var same = false
+            if let reference {
+                var compared = TargetSpec(x: pin.x, y: pin.y, phrase: spec.phrase, description: looks)
+                compared.reference = reference
+                let verdict = await Grounder(client: client, frameJPEG: jpeg).isRemembered(inst, in: image, spec: compared)
+                if Task.isCancelled { return .none }
+                guard verdict == true else {
+                    log("sighting is not the remembered \(what) (compared with its photo: \(verdict == false ? "another one" : "no answer"))")
+                    continue
+                }
+                same = true
+            }
+            log("sighting confirmed (\(grounded.method))" + (same ? ", as remembered" : ""))
             let world = inst.regularized().outlinePoints.map { ring in ring.map { frame.worldPoint(atPixel: $0, depth: depth) } }
             // Found again on sight as that very object: by the remembered thing's reference photo and
             // looks, or by what it looked like in this snapshot (see `ARController.carried`).
             var found = TargetSpec(x: 500, y: 500, phrase: spec.phrase, text: spec.text, description: looks ?? what)
             found.reference = reference ?? Grounder.reference(of: inst, in: image)
-            return .found(world: world, frame: frame, spec: found)
+            return .found(world: world, frame: frame, spec: found, same: same)
         }
         return .none
     }

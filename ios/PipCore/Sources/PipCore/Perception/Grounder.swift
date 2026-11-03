@@ -474,6 +474,20 @@ public struct Grounder: Sendable {
                                seconds: Date().timeIntervalSince(t0), description: describe?())
     }
 
+    /// Whether `instance` in `image` is that very object of `spec.reference` (a thing the user asked
+    /// Pip to remember), as the model compares them; nil when it could not say. A sighting in the
+    /// visual memory is only that thing when this says so (3 Nov: "the user's book" was found as a
+    /// black book on the bed, and the remembered place of the green one was moved onto it).
+    public func isRemembered(_ instance: SegmentInstance, in image: CGImage, spec: TargetSpec) async -> Bool? {
+        guard spec.reference != nil else { return nil }
+        let verdict = await Self.withBudget(Self.verifyBudget) { await self.verify(spec, description: spec.description, candidates: [instance], in: image) } ?? .failed
+        switch verdict {
+        case .picked: return true
+        case .noneOfThem: return false
+        case .failed: return nil
+        }
+    }
+
     /// What a pointed-at object looks like: a crop round it, with room for what lies beside it (three
     /// pens side by side: which one it is), its outline drawn in yellow. Kept with its mark and a
     /// remembered place, to find that very object again (`TargetSpec.reference`).
