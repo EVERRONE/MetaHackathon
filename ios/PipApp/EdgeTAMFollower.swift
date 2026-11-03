@@ -176,17 +176,34 @@ final class EdgeTAMFollower {
         status("")
     }
 
+    /// Nothing new to see, no work (3 Nov: the phone ran hot): the object far out of view, a mask a
+    /// second (it is still found if it turns up elsewhere); the camera and the object still, a mask
+    /// every 0.25 s, the fast tracker following in between, and any move brings every frame back.
+    static let outOfViewInterval: TimeInterval = 1
+    static let stillInterval: TimeInterval = 0.25
+    private var lastSent: TimeInterval = 0
+    private var lastSentPose: simd_float4x4?
+
     /// Every camera frame: ARKit's rate is counted, and the next frame goes to EdgeTAM as soon as
-    /// the last one is done.
-    func frame(_ frame: ARFrame, viewSize: CGSize, markExists: Bool) {
+    /// the last one is done (less often when there is nothing new to see). `markCentre`: where the
+    /// object's outline is in the room.
+    func frame(_ frame: ARFrame, viewSize: CGSize, markExists: Bool, markCentre: simd_float3? = nil) {
         let t = frame.timestamp
         arTimes.append(t)
         arTimes.removeAll { t - $0 > 1 }
         guard let id = markID else { return }
         guard markExists else { stop(reason: "outline gone"); return }
         guard CACurrentMediaTime() - startedAt < Self.followFor else { stop(reason: "time"); return }
-        if seeded { fast.frame(frame) }
+        let since = t - lastSent
+        if let c = markCentre, viewSize.width > 0, !Self.nearView(c, camera: frame.camera, viewSize: viewSize) {
+            guard since >= Self.outOfViewInterval else { return }
+        } else {
+            if seeded { fast.frame(frame) }
+            if since < Self.stillInterval, cameraStill(frame), objectStill(at: t) { return }
+        }
         guard seeded, !busy, viewSize.width > 0 else { return }
+        lastSent = t
+        lastSentPose = frame.camera.transform
         busy = true
         let me = run
         let keep = kept < Self.maxKept && t - lastKept >= Self.keepEvery
@@ -258,6 +275,30 @@ final class EdgeTAMFollower {
             latestUnseen = true
             onLost?(id, moving)
         }
+    }
+
+    /// Within half a screen of the view, in front of the camera.
+    static func nearView(_ c: simd_float3, camera: ARCamera, viewSize: CGSize) -> Bool {
+        let local = simd_mul(simd_inverse(camera.transform), simd_float4(c, 1))
+        guard local.z < 0 else { return false }
+        let p = camera.projectPoint(c, orientation: .portrait, viewportSize: viewSize)
+        return p.x > -0.5 * viewSize.width && p.x < 1.5 * viewSize.width && p.y > -0.5 * viewSize.height && p.y < 1.5 * viewSize.height
+    }
+
+    /// The camera within a centimetre and 1.5° of where the last mask was asked for.
+    private func cameraStill(_ frame: ARFrame) -> Bool {
+        guard let last = lastSentPose else { return false }
+        let now = frame.camera.transform
+        let moved = simd_distance(simd_make_float3(now.columns.3), simd_make_float3(last.columns.3))
+        let turn = acos(max(-1, min(1, simd_dot(simd_normalize(simd_make_float3(now.columns.2)), simd_normalize(simd_make_float3(last.columns.2))))))
+        return moved < 0.01 && turn < 1.5 * .pi / 180
+    }
+
+    /// The object lies still: by EdgeTAM's masks, and the fast tracker has not seen it move since.
+    private func objectStill(at t: TimeInterval) -> Bool {
+        guard simd_length(smoothedVelocity) < Self.stillSpeed, !latestUnseen else { return false }
+        guard let since = lastTaken?.t, let s = fast.shift(since: since, to: t) else { return true }
+        return simd_length(s.shift) < 0.01
     }
 
     // MARK: Between masks

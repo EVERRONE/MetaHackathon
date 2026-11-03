@@ -297,14 +297,20 @@ final class SpaceLinker {
     /// the background; the stored views that look most like it, the hot ones and the next in turn
     /// are chosen here (LinkSchedule, as `pipeval livelink` does), and matched in the background.
     func consider(_ frame: ARFrame, gate: CaptureGate) {
+        // Said every minute also while no view is taken (standing still once linked).
+        summariseIfDue()
         let t = frame.timestamp
-        let dinoDue = dinoDue(at: t)
-        let cornersDue = !working && !described.isEmpty && t - lastView >= Self.interval
+        let dinoDue = dinoDue(at: t) && newViewpoint(frame, since: lastDinoPose)
+        let cornersDue = !working && !described.isEmpty && t - lastView >= Self.interval && newViewpoint(frame, since: lastCornerPose)
         guard dinoDue || cornersDue, case .normal = frame.camera.trackingState, gate.accepts(frame) else { return }
         // DINOv2 at its own pace; the corners every 1.5 s.
-        if dinoDue { considerAcrossLight(frame) }
+        if dinoDue {
+            lastDinoPose = frame.camera.transform
+            considerAcrossLight(frame)
+        }
         guard cornersDue else { return }
         lastView = t
+        lastCornerPose = frame.camera.transform
         working = true
         liveViews += 1
         let view = Self.viewNumber(t), breaks = self.breaks, generation = self.generation
@@ -340,6 +346,19 @@ final class SpaceLinker {
         Self.hasModel && !dinoWorking && Date() >= dinoStart && !wholes.isEmpty
             && time - lastDino >= (searching ? Self.dinoIntervalSearching : Self.dinoInterval)
     }
+
+    /// Once a session is linked, a view adds evidence only from a new viewpoint (25 cm or 15° from the
+    /// last one): from the same place nothing new is seen, and the work only heats the phone (3 Nov,
+    /// standing at a task). Walking round, the pace is the same.
+    private func newViewpoint(_ frame: ARFrame, since last: simd_float4x4?) -> Bool {
+        guard !book.linked.isEmpty, let last else { return true }
+        let now = frame.camera.transform
+        let moved = simd_distance(simd_make_float3(now.columns.3), simd_make_float3(last.columns.3))
+        let turn = acos(max(-1, min(1, simd_dot(simd_normalize(simd_make_float3(now.columns.2)), simd_normalize(simd_make_float3(last.columns.2))))))
+        return moved >= 0.25 || turn >= 15 * .pi / 180
+    }
+    private var lastCornerPose: simd_float4x4?
+    private var lastDinoPose: simd_float4x4?
 
     /// The whole-view tokens kept beside the stored snapshots; the others are made from `dinoStart`
     /// on, and kept beside them too.
@@ -584,8 +603,8 @@ final class SpaceLinker {
         let dino = !Self.hasModel ? "no DINOv2 model"
             : String(format: "%d across light (DINOv2: %d live views, %.0f ms each, median; %d stored views described)", dinoLinksSince, dinoTimes.count,
                      dinoTimes.isEmpty ? 0 : dinoTimes[dinoTimes.count / 2], wholes.count)
-        onLog?(String(format: "space: %d live views in the last minute, %d view links, %@; %.0f ms per live view (median); linked: %@",
-                      viewsSince, viewLinksSince, dino, ms.isEmpty ? 0 : ms[ms.count / 2], linkedNow))
+        onLog?(String(format: "space: %d live views in the last minute, %d view links, %@; %.0f ms per live view (median); linked: %@; heat %@",
+                      viewsSince, viewLinksSince, dino, ms.isEmpty ? 0 : ms[ms.count / 2], linkedNow, EdgeTAMFollower.heat()))
         viewsSince = 0
         viewLinksSince = 0
         dinoLinksSince = 0
@@ -603,6 +622,9 @@ final class SpaceLinker {
 
     /// The live session's tracking broke or jumped: its coordinates may have moved (LinkBook).
     func trackingBroke() {
+        // Views from the same place count again: they are in the coordinates after the break.
+        lastCornerPose = nil
+        lastDinoPose = nil
         breaks += 1
         lastBreak = Date()
         book.trackingBroke()

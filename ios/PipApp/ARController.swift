@@ -486,7 +486,8 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         }
         followObjects(frame)
         planar.frame(frame)
-        edgeTAM.frame(frame, viewSize: arView.bounds.size, markExists: edgeTAM.markID.map { marks[$0] != nil } ?? false)
+        edgeTAM.frame(frame, viewSize: arView.bounds.size, markExists: edgeTAM.markID.map { marks[$0] != nil } ?? false,
+                      markCentre: edgeTAM.markID.flatMap { marks[$0]?.centroid })
         if case .normal = frame.camera.trackingState, (frame.lightEstimate?.ambientIntensity ?? 1000) >= 80 {} else {
             lastTrackingTrouble = CACurrentMediaTime()
         }
