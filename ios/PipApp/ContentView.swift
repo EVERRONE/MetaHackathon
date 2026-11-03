@@ -91,6 +91,7 @@ struct ContentView: View {
         }
         .onChange(of: showTechnical) { _, on in if !on { showDebug = false } }
         .onAppear {
+            Self.refreshLaunchScreen()
             model.start()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { withAnimation(.easeIn(duration: 0.45)) { splash = false } }
         }
@@ -167,6 +168,17 @@ struct ContentView: View {
     }
 
     /// When this build was made (the app binary's date), to check that an update arrived.
+    /// iOS keeps the launch screen it drew for an earlier build (Library/SplashBoard): after the icon
+    /// changed, the old glowing launch picture still showed before the new one (3 Nov). Once per
+    /// build it is removed, and iOS draws the new one at the next start.
+    static func refreshLaunchScreen() {
+        let key = "pip.launchScreenBuild"
+        guard UserDefaults.standard.string(forKey: key) != buildStamp else { return }
+        let snapshots = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/SplashBoard")
+        try? FileManager.default.removeItem(at: snapshots)
+        UserDefaults.standard.set(buildStamp, forKey: key)
+    }
+
     static let buildStamp: String = {
         let date = Bundle.main.executableURL.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.modificationDate] as? Date } ?? Date()
         let f = DateFormatter()
