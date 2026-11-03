@@ -223,6 +223,9 @@ final class GuideModel: ObservableObject {
         }
         takes.audio = audio
         takes.onLog = { [weak self] line in self?.log(line) }
+        audio.onLog = { [weak self] line in
+            Task { @MainActor in self?.log(line) }
+        }
         audio.onRestartFailed = { [weak self] error in
             Task { @MainActor in self?.phase = .failed("Audio unavailable: \(error)") }
         }

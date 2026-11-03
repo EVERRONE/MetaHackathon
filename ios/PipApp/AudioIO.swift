@@ -11,6 +11,8 @@ final class AudioIO {
     let engine = AVAudioEngine()
     let player = AVAudioPlayerNode()
     var onRestartFailed: ((Error) -> Void)?
+    /// A line for the session log when the engine had to restart (main thread).
+    var onLog: ((String) -> Void)?
 
     /// Where the 16 kHz microphone audio goes. Read on the audio thread, so behind a lock.
     var sink: RealtimeTranscriber? {
@@ -53,11 +55,11 @@ final class AudioIO {
 
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
-            self?.restart()
+            self?.restart("the audio route or format changed")
         })
         observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
-            if raw == AVAudioSession.InterruptionType.ended.rawValue { self?.restart() }
+            if raw == AVAudioSession.InterruptionType.ended.rawValue { self?.restart("an interruption ended") }
         })
     }
 
@@ -92,13 +94,18 @@ final class AudioIO {
         }
     }
 
-    private func restart() {
+    /// After a restart the player plays on: a sentence the change cut into goes on, and its last
+    /// piece's callback still comes, so the speaker is not left waiting for it.
+    private func restart(_ why: String) {
         guard running else { return }
         engine.stop()
         do {
             try AVAudioSession.sharedInstance().setActive(true)
             try startEngine()
+            if engine.isRunning { player.play() }
+            onLog?("audio: restarted, \(why)")
         } catch {
+            onLog?("audio: restart failed, \(why): \(error.localizedDescription)")
             onRestartFailed?(error)
         }
     }
