@@ -108,6 +108,8 @@ final class GuideModel: ObservableObject {
     @Published var shopping: [ShoppingItem] = []
     var basketChecking = false
     private let audio = AudioIO()
+    /// Takes for the demo video: Pip's screen, its voice and the user's (see TakeRecorder).
+    let takes = TakeRecorder()
     let speaker: Speaker
     let client: PipClient
     private var transcriber: RealtimeTranscriber?
@@ -208,15 +210,19 @@ final class GuideModel: ObservableObject {
         speaker.onLog = { [weak self] line in self?.log(line) }
         speaker.onSentenceStart = { [weak self] s in
             self?.caption = s.text
+            self?.takes.note("pip", s.text)
         }
         speaker.onCue = { [weak self] c in
             self?.ar.show(c.cue)
+            self?.takes.note("cue", "\(c.cue)")
             if case .landmark(let mark, let name) = c.cue { self?.rememberPlace(name: name, mark: mark) }
         }
         speaker.onIdle = { [weak self] in
             guard let self, self.phase == .speaking, !self.lookBusy else { return }
             self.phase = self.muted ? .muted : .listening
         }
+        takes.audio = audio
+        takes.onLog = { [weak self] line in self?.log(line) }
         audio.onRestartFailed = { [weak self] error in
             Task { @MainActor in self?.phase = .failed("Audio unavailable: \(error)") }
         }
@@ -409,6 +415,7 @@ final class GuideModel: ObservableObject {
             reconnectDelay = 0.5
             if phase == .connecting { phase = muted ? .muted : .listening }
         case .speechStart:
+            takes.note("you.start", "")
             guard !muted else { return }
             // The user is about to ask: the prompt is warmed while they speak, if it went cold.
             warmPrompt()
@@ -440,9 +447,13 @@ final class GuideModel: ObservableObject {
             }
             if !busy { heard = text }
         case .speechEnd:
+            takes.note("you.end", "")
             // The service heard the user stop: Pip starts on the words at once (see `startEarly`).
             if !busy, !heard.isEmpty { startEarly(heard) }
         case .final(_, let text, let speaker):
+            // For the take's subtitles: Pip's own voice heard back is no line of the user's.
+            let pipJustSpoke = self.speaker.isSpeaking || Date().timeIntervalSince(self.speaker.lastSpokeAt) < 2
+            takes.note(isEcho(text) || (pipJustSpoke && saidByPip(text)) ? "echo" : "you", text)
             let spokeOver = bargeInPending, beganQuiet = turnBeganQuiet
             bargeInPending = false
             turnBeganQuiet = false
@@ -804,6 +815,7 @@ final class GuideModel: ObservableObject {
         // decisions also in map.log), so a test can be read back afterwards.
         Diagnostics.log(line, to: "session.log")
         if line.hasPrefix("map:") { Diagnostics.log(line, to: "map.log") }
+        takes.note("log", line)
     }
 }
 

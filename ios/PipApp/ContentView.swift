@@ -18,6 +18,9 @@ struct ContentView: View {
     /// the user sees Pip's words, cards and outlines.
     @AppStorage(ContentView.technicalKey) private var showTechnical = false
     static let technicalKey = "pip.showTechnical"
+    /// Takes for the demo video (see TakeRecorder): switched on in the settings.
+    @AppStorage(TakeRecorder.key) private var recordTakes = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         ZStack {
@@ -90,18 +93,32 @@ struct ContentView: View {
             if splash { Splash().transition(.opacity.combined(with: .scale(scale: 1.12))).zIndex(1) }
         }
         .onChange(of: showTechnical) { _, on in if !on { showDebug = false } }
+        .onChange(of: showMemory) { _, _ in updateTakes() }
+        .onChange(of: recordTakes) { _, _ in updateTakes() }
+        .onChange(of: scenePhase) { _, _ in updateTakes() }
         .onAppear {
             Self.refreshLaunchScreen()
             model.start()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { withAnimation(.easeIn(duration: 0.45)) { splash = false } }
+            updateTakes()
+            // With takes on, the launch picture waits for the take's first frame (at most 6 s),
+            // so the take opens on it.
+            model.takes.afterFirstFrame(within: recordTakes ? 6 : 0) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { withAnimation(.easeIn(duration: 0.45)) { splash = false } }
+            }
         }
-        .sheet(isPresented: $showMemory) { MemorySheet(model: model, memory: model.memory, ar: model.ar) }
+        .sheet(isPresented: $showMemory) { MemorySheet(model: model, memory: model.memory, ar: model.ar, takes: model.takes) }
         .sheet(isPresented: $showSteps) {
             if let task = model.taskView { StepsSheet(task: task) }
         }
         .onChange(of: model.taskView?.finished ?? false) { _, finished in
             if finished { showSteps = true }
         }
+    }
+
+    /// A take runs while the switch is on, the settings are closed and Pip is in front (an alert or
+    /// the Control Centre do not end it; leaving Pip does).
+    private func updateTakes() {
+        model.takes.want(recordTakes && !showMemory && scenePhase != .background)
     }
 
     /// Mute and unmute while listening; stop Pip while it looks or talks.
@@ -378,6 +395,9 @@ struct MemorySheet: View {
     @ObservedObject var model: GuideModel
     @ObservedObject var memory: SpaceMemory
     @ObservedObject var ar: ARController
+    @ObservedObject var takes: TakeRecorder
+    @AppStorage(TakeRecorder.key) private var recordTakes = false
+    @State private var confirmDelete = false
     @AppStorage(EdgeTAMFollower.enabledKey) private var edgeTAMTest = true
     @AppStorage(EdgeTAMFollower.maskKey) private var edgeTAMMask = false
     @AppStorage(Diagnostics.key) private var testRecord = true
@@ -412,6 +432,25 @@ struct MemorySheet: View {
                     Button("Forget everything", role: .destructive) { model.forgetEverything() }
                 }
                 Section {
+                    Toggle("Record takes for the video", isOn: $recordTakes)
+                    if !takes.status.isEmpty {
+                        Text(takes.status).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if takes.count > 0 {
+                        Button(takes.count == 1 ? "Delete the take (\(size(takes.bytes)))" : "Delete the \(takes.count) takes (\(size(takes.bytes)))", role: .destructive) {
+                            confirmDelete = true
+                        }
+                        .disabled(takes.recording)
+                    }
+                } header: {
+                    Text("Demo video")
+                } footer: {
+                    Text("Pip records its own screen with its voice and yours, without the red dot: from closing this sheet until you open it again or leave Pip. The takes stay on this iPhone until they are deleted here.")
+                }
+                .confirmationDialog("Delete every take on this iPhone?", isPresented: $confirmDelete, titleVisibility: .visible) {
+                    Button("Delete", role: .destructive) { takes.deleteAll() }
+                }
+                Section {
                     Toggle("Show technical details", isOn: $showTechnical)
                 } footer: {
                     Text("The eye button with the build and the log, the developer's lines and the test settings.")
@@ -435,5 +474,10 @@ struct MemorySheet: View {
             .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDetents([.medium, .large])
+        .onAppear { takes.refresh() }
+    }
+
+    private func size(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 }

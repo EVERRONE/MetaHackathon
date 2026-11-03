@@ -6,7 +6,8 @@ from take to take. Waiting is cut and marked on screen ("⏩ 18 s"), never hidde
 
 ## The story, beat by beat
 
-A = the iPhone's own screen recording (Pip's view: camera, outlines, captions, cards).
+A = Pip's own take: its screen (camera, outlines, captions, cards) with its voice and yours, recorded
+by Pip itself (see "Recording").
 B = a second camera filming the person, the phone in hand and the machine.
 
 | Time | Beat | Picture | Sound | On screen |
@@ -44,7 +45,7 @@ switches are labelled.
 
 **The phone**
 - Charged, Do Not Disturb, brightness up, auto-lock off, sound up, silent mode off.
-- Screen recording with the microphone on (Control Centre, long press on record, Microphone).
+- Pip's settings (the brain), Demo video: "Record takes for the video" on (see "Recording").
 
 **The set**
 - Garage lights on plus one warm lamp for the opening; no light behind the machine.
@@ -52,7 +53,8 @@ switches are labelled.
 - Nothing personal in view (post, screens, other people). The keys in your pocket.
 
 **The second camera**
-- A second phone on a tripod: 4K, 30 fps.
+- A second phone on a tripod: 4K, 30 fps, HDR video off (Settings, Camera, Record Video), so its
+  colours match the take's.
 - Exposure and focus locked (long press), landscape.
 - For beats 0:55-1:40 a helper films over your shoulder.
 
@@ -60,7 +62,8 @@ switches are labelled.
 
 1. **B-roll, 10 minutes:** the wide shots, the hand at the dial, the cabinet, the drum.
 2. **The wash, 2-3 complete takes, A and B at once.**
-   - Start each take with one clap in view of both, to line them up later.
+   - Start B first, then close Pip's settings: the take starts. Open them again to end it.
+   - One clap in view of B at the start: the check on the lining up (it is done by the sound).
    - Do the whole interaction in one go, as it comes.
    - Keep the best take whole and cut only the waiting.
 3. **The keys, right after a good take, in the same session.**
@@ -71,16 +74,38 @@ switches are labelled.
    - Phone 20 cm from the mouth.
    - Three takes, slow, warm, as if to one person.
 
+## Recording
+
+iOS's own screen recording does not do: Pip's voice processing (which keeps Pip from hearing
+itself) keeps a call's audio out of it, so it has no sound, and it shows the red dot. Pip records
+its takes itself:
+
+- **What:** Pip's screen through ReplayKit inside the app (no red dot, no status bar; HEVC, 30 fps),
+  Pip's voice as it is played (digital, without the room), and the microphone after voice
+  processing (your voice without Pip's), all on one clock, with what was said and shown when.
+- **When:** while "Record takes for the video" is on, from closing the settings until opening them
+  again or leaving Pip. With the switch on at launch, the take opens on Pip's launch screen.
+- **iOS asks** to allow screen recording in Pip ("Record Screen") the first time, and again after
+  eight minutes without.
+- **On the Mac** (the takes show the home: they stay out of the repository):
+  - `python3 ios/scripts/takes.py pull` copies them to ~/Movies/Pip takes.
+  - `python3 ios/scripts/takes.py build <take>` makes `<take>.mp4` (the screen at 30 fps with both
+    voices, levelled), each voice alone (`-pip.wav`, `-you.wav`), subtitles for each
+    (`-pip.srt`, `-you.srt`) and a timeline of what was said and shown when (`-timeline.txt`).
+  - `python3 ios/scripts/takes.py sync <take> <B clip> --write` finds where B lies on the take by
+    its sound and makes `<clip>-synced.mp4`, which starts with the take: both go at 0:00.
+
 ## Editing
 
 - **Format:** 16:9, 1920×1080 (or 4K).
   - B full frame, with A as a phone-shaped window on the right.
   - At the three key moments, A full screen and zoomed in: the ring, the green check, the keys.
-- **Captions:** lower third for each Meta model at its moment; clean subtitles for your words and
-  Pip's; ⏩ marks for every jump.
+- **Captions:** lower third for each Meta model at its moment (the timeline gives the moments);
+  clean subtitles for your words and Pip's (the take's .srt files); ⏩ marks for every jump.
 - **Music:** soft piano under the opening and the end only (YouTube Audio Library or another source
   free of rights). Under speech: off or very low.
-- **Sound:** speech clean and level (about -14 LUFS for YouTube); the machine low.
+- **Sound:** the take's voices under A and B (clean and level); B's own sound only for the room
+  (the machine, low). The whole about -14 LUFS for YouTube.
 - **Length:** 2:50-2:58, never over 3:00.
 - **Export:** H.264, 1080p, high bitrate.
 - **Upload:** YouTube unlisted.

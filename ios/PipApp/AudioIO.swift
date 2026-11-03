@@ -24,9 +24,21 @@ final class AudioIO {
         set { lock.withLock { _muted = newValue } }
     }
 
+    /// The take being recorded for the demo video (TakeRecorder): the microphone after voice
+    /// processing goes there too, and Pip's voice from a tap on the mixer, only while a take
+    /// runs. Set on the main thread.
+    var tape: TakeRecorder? {
+        get { lock.withLock { _tape } }
+        set {
+            lock.withLock { _tape = newValue }
+            tapMixer()
+        }
+    }
+
     private let lock = NSLock()
     private var _sink: RealtimeTranscriber?
     private var _muted = false
+    private var _tape: TakeRecorder?
     private let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)!
     private var running = false
     private var observers: [NSObjectProtocol] = []
@@ -55,13 +67,29 @@ final class AudioIO {
         input.removeTap(onBus: 0)
         let inFormat = input.outputFormat(forBus: 0)
         guard inFormat.sampleRate > 0, let converter = AVAudioConverter(from: inFormat, to: target) else { throw AudioError.format }
-        input.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { [weak self] buffer, _ in
-            guard let self, let data = self.convert(buffer, with: converter) else { return }
-            let (sink, muted) = self.lock.withLock { (self._sink, self._muted) }
+        input.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { [weak self] buffer, when in
+            guard let self else { return }
+            let (sink, muted, tape) = self.lock.withLock { (self._sink, self._muted, self._tape) }
+            // A take hears the user also while Pip does not listen.
+            tape?.audio(buffer, at: when, stream: "mic")
+            guard let data = self.convert(buffer, with: converter) else { return }
             sink?.send(pcm: muted ? Data(count: data.count) : data)
         }
         engine.prepare()
         try engine.start()
+        tapMixer()
+    }
+
+    /// Pip's voice as it is played (the player is all the mixer has), for a take; no tap without one.
+    private func tapMixer() {
+        guard engine.isRunning || running else { return }
+        let mixer = engine.mainMixerNode
+        mixer.removeTap(onBus: 0)
+        guard lock.withLock({ _tape != nil }) else { return }
+        mixer.installTap(onBus: 0, bufferSize: 2048, format: nil) { [weak self] buffer, when in
+            guard let self, let tape = self.lock.withLock({ self._tape }) else { return }
+            tape.audio(buffer, at: when, stream: "pip")
+        }
     }
 
     private func restart() {
