@@ -14,6 +14,10 @@ struct ContentView: View {
     @State private var showMemory = false
     /// The launch picture, held while the camera starts.
     @State private var splash = true
+    /// Technical details on screen (the eye button: build, log, the developer's lines). Off by default:
+    /// the user sees Pip's words, cards and outlines.
+    @AppStorage(ContentView.technicalKey) private var showTechnical = false
+    static let technicalKey = "pip.showTechnical"
 
     var body: some View {
         ZStack {
@@ -35,8 +39,10 @@ struct ContentView: View {
                     Button { showMemory = true } label: { Image(systemName: "brain.head.profile") }
                         .buttonStyle(.bordered).tint(.white)
                         .accessibilityLabel("Memory")
-                    Button { showDebug.toggle() } label: { Image(systemName: "eye") }
-                        .buttonStyle(.bordered).tint(.white)
+                    if showTechnical {
+                        Button { showDebug.toggle() } label: { Image(systemName: "eye") }
+                            .buttonStyle(.bordered).tint(.white)
+                    }
                     Button { model.resetConversation() } label: { Image(systemName: "arrow.counterclockwise") }
                         .buttonStyle(.bordered).tint(.white)
                 }
@@ -55,7 +61,7 @@ struct ContentView: View {
                 if !model.shopping.isEmpty { shoppingCard }
                 // The developer's lines (linking, EdgeTAM, clips) only with the eye: the screen the user
                 // sees, and the demo films, shows Pip's words, cards and outlines.
-                if showDebug {
+                if showTechnical && showDebug {
                     debugPanel
                     StatusHUD(ar: model.ar)
                 }
@@ -83,6 +89,7 @@ struct ContentView: View {
 
             if splash { Splash().transition(.opacity.combined(with: .scale(scale: 1.12))).zIndex(1) }
         }
+        .onChange(of: showTechnical) { _, on in if !on { showDebug = false } }
         .onAppear {
             model.start()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { withAnimation(.easeIn(duration: 0.45)) { splash = false } }
@@ -362,6 +369,7 @@ struct MemorySheet: View {
     @AppStorage(EdgeTAMFollower.enabledKey) private var edgeTAMTest = true
     @AppStorage(EdgeTAMFollower.maskKey) private var edgeTAMMask = false
     @AppStorage(Diagnostics.key) private var testRecord = true
+    @AppStorage(ContentView.technicalKey) private var showTechnical = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -392,6 +400,12 @@ struct MemorySheet: View {
                     Button("Forget everything", role: .destructive) { model.forgetEverything() }
                 }
                 Section {
+                    Toggle("Show technical details", isOn: $showTechnical)
+                } footer: {
+                    Text("The eye button with the build and the log, the developer's lines and the test settings.")
+                }
+                if showTechnical {
+                Section {
                     Toggle("Follow objects with EdgeTAM", isOn: $edgeTAMTest)
                     Toggle("Show EdgeTAM's mask (cyan)", isOn: $edgeTAMMask)
                     Toggle("Keep a test record", isOn: Binding(get: { testRecord }, set: { testRecord = $0; Diagnostics.setEnabled($0) }))
@@ -402,6 +416,7 @@ struct MemorySheet: View {
                     Text("Tests")
                 } footer: {
                     Text("The room is mapped on its own while you use Pip, and recognised at the next start. The test record (every look, EdgeTAM's frames, what you saw, the logs) stays on this iPhone, out of backups; switching it off deletes it.")
+                }
                 }
             }
             .navigationTitle("What Pip remembers")
