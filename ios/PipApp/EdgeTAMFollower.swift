@@ -612,7 +612,11 @@ private final class EdgeTAMWorker: @unchecked Sendable {
                 let recentlyLost = lastAbsent.map { r.time - $0 < Self.lostFor } ?? false
                 var verdict: TrackGate.Verdict?
                 if f.present, let w = world {
-                    verdict = gate.judge(time: r.time, position: w, area: Float(f.area), recentlyLost: recentlyLost)
+                    // Where the object lay still, seen from the camera now: under this mask, it is
+                    // the same object there, whatever its depth says (a glossy display reads
+                    // centimetres deeper from further away).
+                    let covered = gate.anchor.flatMap { Self.upright($0, camera: r.camera) }.map { f.covers(u: Double($0.x), v: Double($0.y)) }
+                    verdict = gate.judge(time: r.time, position: w, area: Float(f.area), recentlyLost: recentlyLost, covered: covered)
                     if case .reject = verdict {
                         tracker.forgetLatest()
                         depthFilter = depthBefore
@@ -673,6 +677,18 @@ private final class EdgeTAMWorker: @unchecked Sendable {
             let w = t * simd_float4(x, y, -d, 1)
             return simd_float3(w.x, w.y, w.z)
         }
+    }
+
+    /// Where a point of the room lies in the upright image, normalised like EdgeTAM's masks: the
+    /// inverse of `lift`. nil behind the camera.
+    static func upright(_ p: simd_float3, camera: ARCamera) -> CGPoint? {
+        let size = camera.imageResolution, k = camera.intrinsics
+        let c = simd_mul(simd_inverse(camera.transform), simd_float4(p, 1))
+        let d = -c.z
+        guard d > 0.01 else { return nil }
+        let px = c.x / d * k[0][0] + k[2][0], py = -c.y / d * k[1][1] + k[2][1]
+        // Sensor (px, py) is upright (1 − py / height, px / width).
+        return CGPoint(x: Double(1 - py / Float(size.height)), y: Double(px / Float(size.width)))
     }
 
     /// The upright frame (720×960 JPEG), the full-resolution mask around the object (PNG, pixels of

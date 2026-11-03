@@ -41,6 +41,11 @@ public struct TrackGate: Sendable {
     private var oddAreas: [Float] = []
     /// A mask more than this many times larger (or smaller) than the recent ones is another thing.
     public var areaJump: Float = 2.5
+    /// A mask that covers, in the image, the place where the object lay still is on the object
+    /// there, though its depth may say otherwise by this much: LiDAR reads a glossy display
+    /// centimetres deeper from further away (3 Nov: a washing machine's display, 3-4 cm deeper at
+    /// 0.86 m than at 0.6 m; it had not moved, and was refused and then taken as moved).
+    public var coveredSlack: Float = 0.10
 
     public init() {}
 
@@ -59,7 +64,10 @@ public struct TrackGate: Sendable {
     /// `recentlyLost`: EdgeTAM did not see the object a moment ago (a fast turn): then a new place needs twice the
     /// confirmation, and a path away from where it lay does not count (on 1 Nov the wrong mask
     /// slid steadily along the neighbouring keys).
-    public mutating func judge(time t: Double, position p: SIMD3<Float>, area: Float? = nil, recentlyLost: Bool = false) -> Verdict {
+    /// `covered`: whether this mask covers, in the image, the place where the object lay still
+    /// (`anchor`, seen from the camera now); nil when that is not known.
+    public mutating func judge(time t: Double, position p: SIMD3<Float>, area: Float? = nil, recentlyLost: Bool = false,
+                               covered: Bool? = nil) -> Verdict {
         // A sudden change of size is a different thing (the whole remote for one of its buttons),
         // unless masks keep agreeing on the new size (the user came closer).
         if let area, area > 0, areas.count >= 3 {
@@ -75,7 +83,7 @@ public struct TrackGate: Sendable {
                 oddAreas = []
             }
         }
-        let verdict = position(t, p, recentlyLost: recentlyLost)
+        let verdict = position(t, p, recentlyLost: recentlyLost, covered: covered == true)
         if verdict.taken, let area, area > 0 {
             areas.append(area)
             if areas.count > 9 { areas.removeFirst(areas.count - 9) }
@@ -83,10 +91,11 @@ public struct TrackGate: Sendable {
         return verdict
     }
 
-    private mutating func position(_ t: Double, _ p: SIMD3<Float>, recentlyLost: Bool) -> Verdict {
+    private mutating func position(_ t: Double, _ p: SIMD3<Float>, recentlyLost: Bool, covered: Bool) -> Verdict {
         if let a = anchor {
             let d = simd_distance(p, a)
-            if d <= jump {
+            // Near where it lay, or on it in the image with a depth a little off: the same object.
+            if d <= jump || (covered && d <= coveredSlack) {
                 pending = []
                 record(t, p)
                 return .accept

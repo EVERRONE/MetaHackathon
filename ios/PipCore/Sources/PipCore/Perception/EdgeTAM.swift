@@ -118,6 +118,16 @@ public final class EdgeTAM: @unchecked Sendable {
             guard x >= 0, y >= 0, x < EdgeTAM.lowSide, y < EdgeTAM.lowSide else { return false }
             return lowRes[y * EdgeTAM.lowSide + x] != 0
         }
+
+        /// Whether the object covers a normalised point or lies within `cells` of the decoder's
+        /// pixels of it (each 1/256 of the image).
+        public func covers(u: Double, v: Double, within cells: Int = 1) -> Bool {
+            let step = 1 / Double(EdgeTAM.lowSide)
+            for dy in -cells...cells {
+                for dx in -cells...cells where contains(u: u + Double(dx) * step, v: v + Double(dy) * step) { return true }
+            }
+            return false
+        }
     }
 
     public enum Failure: Error { case notSeeded, missingOutput(String) }
