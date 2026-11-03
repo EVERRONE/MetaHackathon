@@ -328,8 +328,13 @@ final class SpaceLinker {
     /// views of one moment count once among the independent views a link needs.
     nonisolated static func viewNumber(_ time: TimeInterval) -> Int { Int((time * 2).rounded(.down)) }
 
-    /// Until a session is linked, in its first `searchFor`: searching (the fast pace).
-    private var searching: Bool { book.linked.isEmpty && Date().timeIntervalSince(begun) < Self.searchFor }
+    /// Until a session is linked, in its first `searchFor`, and while the phone is not hot: searching
+    /// (the fast pace). 3 Nov, 20:36: at "serious" heat iOS slows the chips, a DINOv2 view took 847 ms
+    /// instead of 293, and the fast pace only heats it further.
+    private var searching: Bool {
+        book.linked.isEmpty && Date().timeIntervalSince(begun) < Self.searchFor
+            && ProcessInfo.processInfo.thermalState.rawValue < ProcessInfo.ThermalState.serious.rawValue
+    }
 
     private func dinoDue(at time: TimeInterval) -> Bool {
         Self.hasModel && !dinoWorking && Date() >= dinoStart && !wholes.isEmpty
