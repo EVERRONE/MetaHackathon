@@ -31,7 +31,8 @@ targets:
       properties:
         CFBundleDisplayName: Pip
         CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "1"
+        # Raised with a new launch screen: iOS keeps the one it drew for a build number.
+        CFBundleVersion: "2"
         # Pip's mark and name on the night-blue field (scripts/make-brand.swift).
         UILaunchScreen:
           UIColorName: LaunchBackground

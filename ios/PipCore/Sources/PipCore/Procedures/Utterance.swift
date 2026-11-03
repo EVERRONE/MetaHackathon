@@ -32,6 +32,27 @@ public enum Utterance {
 
     /// "Dutch" or "English" when the words clearly say so; nil for short or mixed utterances
     /// ("Mac," or a product name), so one word never switches the conversation.
+    /// How much `heard` reads like some stretch of `said`, letter by letter (1: exactly a stretch of
+    /// it). Pip's own voice comes back through the microphone with the speech service's mistakes:
+    /// "I point the" for its "I point that way" (3 Nov), one word off, so a comparison by whole words
+    /// took it for the user and Pip answered itself.
+    public static func likeness(_ heard: String, within said: String) -> Double {
+        let a = Array(words(heard).joined(separator: " ")), b = Array(words(said).joined(separator: " "))
+        guard !a.isEmpty, !b.isEmpty else { return 0 }
+        // The fewest edits from `a` to any stretch of `b` (free start and end in `b`).
+        var previous = Array(0...a.count), column = [Int](repeating: 0, count: a.count + 1)
+        var best = a.count
+        for j in 1...b.count {
+            column[0] = 0
+            for i in 1...a.count {
+                column[i] = min(previous[i] + 1, column[i - 1] + 1, previous[i - 1] + (a[i - 1] == b[j - 1] ? 0 : 1))
+            }
+            best = min(best, column[a.count])
+            swap(&previous, &column)
+        }
+        return 1 - Double(best) / Double(a.count)
+    }
+
     public static func language(of text: String) -> String? {
         let w = words(text)
         let d = w.filter { dutchWords.contains($0) }.count

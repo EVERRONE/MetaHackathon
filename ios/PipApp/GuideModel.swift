@@ -525,19 +525,30 @@ final class GuideModel: ObservableObject {
     private func wordCount(_ text: String) -> Int { words(text).count }
 
     /// Pip's own voice picked up despite echo cancellation: while Pip speaks (or just after), the
-    /// words are mostly what it is saying. Outside that window the user may repeat Pip's words.
+    /// words are mostly what it is saying, or read like a stretch of it with the speech service's
+    /// mistakes (`soundsLikePip`). Outside that window the user may repeat Pip's words.
     private func isEcho(_ text: String) -> Bool {
         guard speaker.isSpeaking || Date().timeIntervalSince(speaker.lastSpokeAt) < 2 else { return false }
         let heardWords = Set(words(text))
         guard heardWords.count >= 3 else { return false }
         let spoken = Set(words(speaker.recentText.joined(separator: " ")))
-        return Double(heardWords.intersection(spoken).count) / Double(heardWords.count) > 0.8
+        return Double(heardWords.intersection(spoken).count) / Double(heardWords.count) > 0.8 || soundsLikePip(text)
     }
 
-    /// Whether every word of `text` is one Pip said lately (its own voice, heard back).
+    /// Whether every word of `text` is one Pip said lately (its own voice, heard back), or it reads
+    /// like a stretch of what Pip said.
     private func saidByPip(_ text: String) -> Bool {
-        Set(words(text)).isSubset(of: Set(words(speaker.recentText.joined(separator: " "))))
+        Set(words(text)).isSubset(of: Set(words(speaker.recentText.joined(separator: " ")))) || soundsLikePip(text)
     }
+
+    /// Three words or more that read like a stretch of what Pip just said, letter by letter: its
+    /// voice, heard back with the speech service's mistakes ("I point the" for its "I point that
+    /// way", 3 Nov: Pip stopped and answered itself). Measured on the logs: Pip's echoes 0.88-0.96,
+    /// the user's questions sharing its words at most 0.81.
+    private func soundsLikePip(_ text: String) -> Bool {
+        wordCount(text) >= 3 && Utterance.likeness(text, within: speaker.recentText.joined(separator: " ")) >= Self.echoLikeness
+    }
+    static let echoLikeness = 0.85
 
     /// One look: Pip answers `utterance`, or carries out `directive` (give a step, check a step).
     /// `onState` receives the model's state tag, which a check uses as its evidence.

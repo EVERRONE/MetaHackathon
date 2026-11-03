@@ -38,3 +38,21 @@ import Testing
         #expect(!Utterance.startsWithYes("Japan is far"))
     }
 }
+
+@Suite struct EchoLikenessTests {
+    /// Pip's own words heard back with one word wrong are still Pip's (3 Nov: "I point the").
+    @Test func pipsOwnWordsMisheardAreStillItsOwn() {
+        let said = "Yes, I point that way only for remembered places. Your fancy pen is ahead, lower down, about 1.3 metres."
+        #expect(Utterance.likeness("I point the", within: said) >= 0.85)
+        #expect(Utterance.likeness("your fancy pen is a head", within: said) >= 0.85)
+        #expect(Utterance.likeness("place a receptacle under the spout", within: "Place a receptacle under the coffee spout.") >= 0.85)
+    }
+
+    /// A question of the user's that shares Pip's words is not taken for its echo.
+    @Test func aQuestionThatSharesPipsWordsIsTheUsers() {
+        let said = "According to the JURA manual: plug in, add a receptacle, then press On/Off. Then press the On/Off button Q to switch it on."
+        #expect(Utterance.likeness("Where is the on off button?", within: said) < 0.85)
+        #expect(Utterance.likeness("No, that's the wrong book", within: "I see your book beside the light wooden box.") < 0.85)
+        #expect(Utterance.likeness("where is the let them book", within: "The Let Them Theory book is straight ahead, about four metres away.") < 0.85)
+    }
+}
