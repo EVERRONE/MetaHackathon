@@ -51,8 +51,12 @@ struct ContentView: View {
                 if let card = model.searchCard { SearchCardView(card: card, phrases: model.phrases) }
                 if let task = model.taskView { taskCard(task) }
                 if !model.shopping.isEmpty { shoppingCard }
-                if showDebug { debugPanel }
-                StatusHUD(ar: model.ar)
+                // The developer's lines (linking, EdgeTAM, clips) only with the eye: the screen the user
+                // sees, and the demo films, shows Pip's words, cards and outlines.
+                if showDebug {
+                    debugPanel
+                    StatusHUD(ar: model.ar)
+                }
 
                 Spacer()
 
