@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/pip-icon.png" width="128" alt="Pip's icon: a dot inside an open, glowing ring"></p>
+
 # Pip: points at exactly what to touch
 
 Pip is an iPhone app you talk to while you work with your hands. It looks through the camera,

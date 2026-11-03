@@ -32,7 +32,11 @@ targets:
         CFBundleDisplayName: Pip
         CFBundleShortVersionString: "0.1.0"
         CFBundleVersion: "1"
-        UILaunchScreen: {}
+        # Pip's mark and name on the night-blue field (scripts/make-brand.swift).
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+          UIImageName: LaunchMark
+          UIImageRespectsSafeAreaInsets: false
         UIApplicationSupportsIndirectInputEvents: true
         UIRequiredDeviceCapabilities: [arkit]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
@@ -49,6 +53,6 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGN_STYLE: Automatic
         ENABLE_USER_SCRIPT_SANDBOXING: YES
-        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # The models are loaded by name (PipCore's EdgeTAM), not through generated classes.
         COREML_CODEGEN_LANGUAGE: None

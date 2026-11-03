@@ -12,6 +12,8 @@ struct ContentView: View {
     @State private var showDebug = false
     @State private var showSteps = false
     @State private var showMemory = false
+    /// The launch picture, held while the camera starts.
+    @State private var splash = true
 
     var body: some View {
         ZStack {
@@ -78,8 +80,13 @@ struct ContentView: View {
                 }
                 micButton.padding(.bottom, 24)
             }
+
+            if splash { Splash().transition(.opacity.combined(with: .scale(scale: 1.12))).zIndex(1) }
         }
-        .onAppear { model.start() }
+        .onAppear {
+            model.start()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { withAnimation(.easeIn(duration: 0.45)) { splash = false } }
+        }
         .sheet(isPresented: $showMemory) { MemorySheet(model: model, memory: model.memory, ar: model.ar) }
         .sheet(isPresented: $showSteps) {
             if let task = model.taskView { StepsSheet(task: task) }
@@ -296,6 +303,18 @@ struct StatusHUD: View {
             .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
             .padding(.horizontal)
         }
+    }
+}
+
+/// The launch screen (the picture iOS shows at launch: LaunchMark on LaunchBackground, so nothing
+/// jumps), held a moment while the camera starts, then gone with a short zoom.
+struct Splash: View {
+    var body: some View {
+        ZStack {
+            Color("LaunchBackground")
+            Image("LaunchMark")
+        }
+        .ignoresSafeArea()
     }
 }
 
