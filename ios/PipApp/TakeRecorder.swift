@@ -24,8 +24,8 @@ final class TakeRecorder: ObservableObject {
     static let fps: Double = 30
     /// HEVC at the screen's own size: the camera image and the outlines stay sharp.
     static let bitRate = 16_000_000
-    /// Room for a few long takes.
-    static let minimumFree: Int64 = 3_000_000_000
+    /// Room for two long takes (a 5-minute take is about 700 MB).
+    static let minimumFree: Int64 = 1_500_000_000
 
     @Published private(set) var recording = false
     /// The last take saved, or what went wrong.
@@ -105,7 +105,8 @@ final class TakeRecorder: ObservableObject {
         try? fm.createDirectory(at: Self.folder, withIntermediateDirectories: true)
         if let free = (try? Self.folder.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage,
            free < Self.minimumFree {
-            status = "Not recording: less than 3 GB free on this iPhone."
+            status = "Not recording: less than 1.5 GB free on this iPhone."
+            onLog?("take: not recording, \(free / 1_000_000) MB free on this iPhone")
             return
         }
         let name = Self.stamp()

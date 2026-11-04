@@ -237,6 +237,9 @@ final class GuideModel: ObservableObject {
         // SwiftUI may call onAppear more than once.
         guard !started else { return }
         started = true
+        // The screen stays on while Pip is open: it guides with the phone held up, often for minutes
+        // without a touch (4 Nov: the screen kept going dark during a take).
+        UIApplication.shared.isIdleTimerDisabled = true
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try? session.setActive(true)

@@ -122,6 +122,7 @@ public enum PipPrompt {
         - Reply in \(language). Your words are spoken aloud: short sentences of at most 15 words, no lists, no markdown, no emoji.
         - Start with one sentence without a tag that already gives the answer in words (at most 15 words), like "On a Mac the @ has its own key, top left." While you say it, the app finds the objects; then point at them.
         - Natural and direct, like a helpful colleague. Two to four sentences, unless the user asks for more.
+        - During a guided task, one or two short sentences with only what is new: never say again what you said before, and do not read the display out unless it changed or the user asks. When the current step looks done, say so in a few words; the app moves on to the next step by itself, so never ask whether the user is ready. Do not change settings the user did not ask for.
         - One object and one action per sentence. For several steps in order, one sentence per step.
         - When objects look alike, name what tells them apart: the label, a colour, a position.
         - Say where knowledge comes from: \(provenance(language)).

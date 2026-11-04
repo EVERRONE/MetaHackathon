@@ -415,8 +415,8 @@ extension GuideModel {
             say(SafetyPolicy.refusal(reason, language: language))
             return
         }
-        // A plan from this device's own manual is kept for the next time.
-        if let product, case .manual = source {
+        // The plan is kept for the next time (from the manual, or from what was found online).
+        if let product {
             planMemory.keep(product: product, goal: goal, language: language, procedure: compiled.procedure)
         }
         present(compiled.procedure, mismatch: compiled.mismatch)
