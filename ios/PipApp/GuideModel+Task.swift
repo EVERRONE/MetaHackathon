@@ -361,6 +361,14 @@ extension GuideModel {
         }
         let compiler = ProcedureCompiler(client: client, language: language)
         var source = given ?? .none
+        // A plan Pip made before from this device's official manual, for a task like this one:
+        // used at once, without searching and drafting again.
+        if given == nil, let product, let known = planMemory.plan(product: product, goal: goal, language: language) {
+            log("plan from memory: \(known.procedure.title), made \(known.saved.formatted(date: .abbreviated, time: .shortened)) from \(known.procedure.source.reference ?? "no source")")
+            say(phrases.knownPlan(product))
+            present(known.procedure, mismatch: nil)
+            return
+        }
         if given != nil {
             preparing = phrases.drafting
         } else if let product {
@@ -407,13 +415,22 @@ extension GuideModel {
             say(SafetyPolicy.refusal(reason, language: language))
             return
         }
+        // A plan from this device's own manual is kept for the next time.
+        if let product, case .manual = source, compiled.mismatch == nil {
+            planMemory.keep(product: product, goal: goal, language: language, procedure: compiled.procedure)
+        }
+        present(compiled.procedure, mismatch: compiled.mismatch)
+    }
+
+    /// A plan ready (drafted now or kept from before): shown, and offered once Pip is free.
+    private func present(_ procedure: Procedure, mismatch: String?) {
         // A task that started meanwhile is not replaced.
         if runtime?.isActive == true { return }
-        runtime = ProcedureRuntime(procedure: compiled.procedure)
+        runtime = ProcedureRuntime(procedure: procedure)
         sessionLog = SessionLog()
-        sessionLog.add(.started, "\(compiled.procedure.title) · source: \(compiled.procedure.source.reference ?? "none")")
+        sessionLog.add(.started, "\(procedure.title) · source: \(procedure.source.reference ?? "none")")
         refreshTaskView()
-        if let note = compiled.mismatch { say(phrases.mismatch(note)) }
+        if let note = mismatch { say(phrases.mismatch(note)) }
         // Offered once Pip is free and the user not speaking: a "ja" or "nee" begun before the offer
         // (to Pip's question about the device) is no answer to it (1 Nov review: a "nee" said to
         // "is this the Azur?" threw the plan away). As the memory question waits (askConsentOnce).

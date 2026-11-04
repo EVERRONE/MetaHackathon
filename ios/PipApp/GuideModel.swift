@@ -110,6 +110,8 @@ final class GuideModel: ObservableObject {
     private let audio = AudioIO()
     /// Takes for the demo video: Pip's screen, its voice and the user's (see TakeRecorder).
     let takes = TakeRecorder()
+    /// Plans made from a device's official manual, kept for the next time (PlanMemory).
+    let planMemory = PlanMemory()
     let speaker: Speaker
     let client: PipClient
     private var transcriber: RealtimeTranscriber?
