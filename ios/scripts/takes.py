@@ -166,22 +166,63 @@ def wrap(text, width=42):
     return lines
 
 
+def two_lines(text, width=42):
+    """`text` on one line, or on two of about equal length."""
+    if len(text) <= width:
+        return [text]
+    words = text.split()
+    best = None
+    for i in range(1, len(words)):
+        a, b = " ".join(words[:i]), " ".join(words[i:])
+        if len(a) <= width and len(b) <= width and (best is None or max(len(a), len(b)) < max(map(len, best))):
+            best = [a, b]
+    return best or wrap(text, width)
+
+
+def pieces(text, width=42):
+    """A text as subtitles of at most two lines each: whole sentences together while they fit, a
+    longer sentence in runs of about equal length, so no piece is a lone word."""
+    out = []
+    for sentence in re.split(r"(?<=[.!?])\s+", text.strip()):
+        if not sentence:
+            continue
+        if out and len(two_lines(out[-1] + " " + sentence, width)) <= 2:
+            out[-1] += " " + sentence
+            continue
+        words = sentence.split()
+        k = 1
+        while True:
+            target = len(sentence) / k
+            runs, run = [], []
+            for w in words:
+                if run and len(runs) < k - 1 and len(" ".join(run + [w])) > target:
+                    runs.append(" ".join(run))
+                    run = [w]
+                else:
+                    run.append(w)
+            runs.append(" ".join(run))
+            if all(len(two_lines(r, width)) <= 2 for r in runs) or k >= len(words):
+                break
+            k += 1
+        out.extend(runs)
+    return out or [text]
+
+
 def srt_time(t):
     ms = int(round(max(0.0, t) * 1000))
     return "%02d:%02d:%02d,%03d" % (ms // 3600000, ms // 60000 % 60, ms // 1000 % 60, ms % 1000)
 
 
 def write_srt(path, cues):
-    """`cues`: (start, end, text). A long text is split into two-line pieces, timed by length."""
+    """`cues`: (start, end, text). A long text is split into pieces of two lines, timed by length."""
     blocks = []
     for start, end, text in cues:
-        lines = wrap(text)
-        pieces = [" ".join(lines[i:i + 2]) for i in range(0, len(lines), 2)] or [text]
-        total = sum(len(p) for p in pieces) or 1
+        parts = pieces(text)
+        total = sum(len(p) for p in parts) or 1
         t = start
-        for p in pieces:
+        for p in parts:
             d = (end - start) * len(p) / total
-            blocks.append((t, t + d, "\n".join(wrap(p))))
+            blocks.append((t, t + d, "\n".join(two_lines(p))))
             t += d
     with open(path, "w") as f:
         for i, (s, e, text) in enumerate(blocks, 1):
@@ -221,8 +262,10 @@ def build(folder):
     args = ["-i", screen]
     if stems:
         args += ["-i", mix, "-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-b:a", "256k", "-ac", 2]
-    ffmpeg(*args, "-vf", "fps=30", "-c:v", "libx264", "-preset", "fast", "-crf", 15, "-pix_fmt", "yuv420p",
-           "-t", f"{seconds:.3f}", "-movflags", "+faststart", video)
+    # ReplayKit's frames use the full range (0-255); video players, editors and YouTube expect the
+    # video range (16-235) and show a full-range file too dark and too bright where they ignore its tag.
+    ffmpeg(*args, "-vf", "fps=30,scale=out_range=tv", "-c:v", "libx264", "-preset", "fast", "-crf", 15,
+           "-pix_fmt", "yuv420p", "-color_range", "tv", "-t", f"{seconds:.3f}", "-movflags", "+faststart", video)
     if mix.exists():
         mix.unlink()
     print(f"  {video.name}: the screen at 30 fps with both voices")
