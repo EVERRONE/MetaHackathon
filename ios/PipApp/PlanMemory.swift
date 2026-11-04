@@ -8,7 +8,7 @@ import PipCore
 final class PlanMemory {
     /// Plans drafted under earlier rules are not used again (4 Nov: an 11-step wash, from the tap
     /// to the detergent, where the user wanted it switched on, checked and started).
-    static let rules = 3
+    static let rules = 4
 
     struct Entry: Codable {
         var rules: Int?

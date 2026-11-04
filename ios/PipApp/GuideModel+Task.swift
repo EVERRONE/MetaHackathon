@@ -121,7 +121,8 @@ extension GuideModel {
         }
         var input: ProcedureRuntime.Input?
         switch command {
-        case .yes?, .done?: input = .userDone
+        // Done on the user's word: the next step at once (the camera's check may come too late).
+        case .yes?, .done?: input = .userConfirmed
         case .back?: input = .back
         case .repeatStep?: input = .repeatStep
         case .skip?: input = .skip
@@ -130,8 +131,13 @@ extension GuideModel {
         case .resume?: input = rt.mode == .paused ? .resume : .userDone
         case .no?, .stop?, nil: input = nil
         }
+        // A bare "okay" while the step waits for the user is done too: the user said so (4 Nov).
+        if input == nil, command == nil, ack == .okay, rt.mode == .running,
+           rt.statuses.indices.contains(rt.index), rt.statuses[rt.index] == .awaitingAction || rt.statuses[rt.index] == .verifying {
+            input = .userConfirmed
+        }
         guard let input else {
-            // "okay" while Pip waits for the step: nothing to do.
+            // "thanks" while Pip waits for the step: nothing to do.
             if ack != nil {
                 phase = muted ? .muted : .listening
                 return true

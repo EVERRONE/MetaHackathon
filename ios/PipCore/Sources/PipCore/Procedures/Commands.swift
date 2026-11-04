@@ -23,6 +23,13 @@ public enum Command: Equatable, Sendable {
         (.no, ["nee", "neen", "nope", "no"]),
     ]
 
+    /// Asking for the next step, with fillers only round it.
+    static let nextAsks: [[String]] = [
+        ["what's", "the", "next", "step"], ["whats", "the", "next", "step"], ["what", "is", "the", "next", "step"],
+        ["what's", "next"], ["whats", "next"], ["what", "next"], ["what", "now"], ["and", "now"], ["next", "step"], ["next", "one"],
+        ["wat", "is", "de", "volgende", "stap"], ["wat", "is", "de", "volgende"], ["volgende", "stap"], ["wat", "nu"], ["en", "nu"],
+    ]
+
     /// Words that may surround a command without changing it.
     static let fillers: Set<String> = [
         "ok", "okay", "oke", "ja", "yes", "pip", "hey", "please", "alsjeblieft", "aub", "even", "dan", "nu", "now", "then",
@@ -44,6 +51,15 @@ public enum Command: Equatable, Sendable {
     /// The command in a short utterance, or nil if it is a question for the model.
     public static func parse(_ utterance: String) -> Command? {
         let words = Utterance.words(utterance)
+        // Asking for the next step is saying this one is done (4 Nov: "Yes, okay, so what's the next
+        // step?" and "So what now?" went to the model, which said the step was not done yet).
+        if !words.isEmpty, words.count <= 8, !words.contains(where: { negations.contains($0) }) {
+            for phrase in nextAsks {
+                guard let range = firstRange(of: phrase, in: words) else { continue }
+                let rest = words[..<range.lowerBound] + words[range.upperBound...]
+                if rest.allSatisfy({ fillers.contains($0) }) { return .done }
+            }
+        }
         guard !words.isEmpty, words.count <= 5 else { return nil }
         // A number or a place is more than a command ("terug naar stap 2", "next to the sink").
         let places: Set<String> = ["naar", "naast", "in", "into", "onder", "boven", "achter", "under", "behind", "above", "below",

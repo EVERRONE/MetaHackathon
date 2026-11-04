@@ -30,6 +30,10 @@ public struct ProcedureRuntime: Sendable {
         case start
         /// The user says they did it ("klaar", "done", "next").
         case userDone
+        /// The user says it is done and wants the next step ("ok", "done", "next"): the step counts as
+        /// done on their word, at once, without waiting for a check (4 Nov: "ok" and "what's the next
+        /// step?" waited a minute for the camera, which had the display out of view).
+        case userConfirmed
         /// A verification look: whether the expected result is visible, and how sure.
         case verified(seen: Bool, confidence: Double)
         /// The answer to a yes/no question: the step's result, or its safety condition.
@@ -126,6 +130,12 @@ public struct ProcedureRuntime: Sendable {
         case .userDone:
             guard statuses[index] == .awaitingAction || statuses[index] == .verifying else { return [] }
             return check()
+        case .userConfirmed:
+            // Never past a safety question: that needs its own yes.
+            guard statuses[index] == .awaitingAction || statuses[index] == .verifying else { return [] }
+            pendingQuestion = nil
+            failedLooks = 0
+            return complete(.userConfirmed)
         case .verified(let seen, let confidence):
             guard statuses[index] == .verifying else { return [] }
             if seen && confidence >= Self.minConfidence { return complete(.cameraVerified) }

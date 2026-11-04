@@ -58,6 +58,20 @@ private func sample(gate: String? = nil) -> Procedure {
         #expect(r.handle(.answer(true)) == [.instruct(step: 1)])
     }
 
+    @Test func doneOnTheUserWordMovesOnAtOnceButNeverPastASafetyQuestion() {
+        var r = ProcedureRuntime(procedure: sample(gate: "your hands are dry"))
+        _ = r.handle(.start)
+        // "ok", "done": the next step at once, without a camera check.
+        #expect(r.handle(.userConfirmed) == [.stepDone(step: 0, outcome: .userConfirmed), .askGate(step: 1, condition: "your hands are dry")])
+        // Waiting for the safety answer: "ok" does nothing.
+        #expect(r.handle(.userConfirmed) == [])
+        #expect(r.index == 1)
+        #expect(r.handle(.answer(true)) == [.instruct(step: 1)])
+        // Also while a check is running.
+        _ = r.handle(.userDone)
+        #expect(r.handle(.userConfirmed) == [.stepDone(step: 1, outcome: .userConfirmed), .instruct(step: 2)])
+    }
+
     @Test func hazardStopsEverything() {
         var r = ProcedureRuntime(procedure: sample())
         _ = r.handle(.start)
@@ -87,6 +101,12 @@ private func sample(gate: String? = nil) -> Procedure {
 @Suite struct CommandTests {
     @Test func recognisesShortCommandsInBothLanguages() {
         #expect(Command.parse("Klaar.") == .done)
+        // Asking for the next step is a done (4 Nov), a question about the step is not.
+        #expect(Command.parse("Yes, okay, so what's the next step?") == .done)
+        #expect(Command.parse("So what now?") == .done)
+        #expect(Command.parse("En nu?") == .done)
+        #expect(Command.parse("How do I start now?") == nil)
+        #expect(Command.parse("That's not the next step") == nil)
         #expect(Command.parse("ok, done") == .done)
         #expect(Command.parse("Volgende stap") == .done)
         #expect(Command.parse("Ga terug") == .back)
