@@ -91,6 +91,8 @@ if args.first == "ground", args.count >= 5 {
     let t0 = Date()
     var grounder = Grounder(client: client, frameJPEG: SetOfMarks.jpeg(frame)!)
     grounder.asked = env["PIP_ASKED"]
+    // PIP_ANSWER="…": the guide's whole answer so far (see Grounder.answer).
+    if let a = env["PIP_ANSWER"] { grounder.answer = { a } }
     // PIP_REFIND=1: finding a remembered object again at an expected point (see Grounder.refinding).
     grounder.refinding = env["PIP_REFIND"] != nil
     // PIP_MEASURE_AGAIN=1: measuring again an object back in view (see Grounder.measuringAgain).

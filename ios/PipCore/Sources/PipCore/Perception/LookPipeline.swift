@@ -160,6 +160,7 @@ public struct LookPipeline: Sendable {
         if request.directive == nil { grounder.asked = request.utterance }
         // What the model says each target is, as its words stream in (for objects without text).
         let notes = TargetNotes()
+        grounder.answer = { notes.answer() }
         let (inputs, feed) = AsyncStream<Input>.makeStream()
         let chatTask = Task {
             do {
@@ -262,6 +263,7 @@ public struct LookPipeline: Sendable {
                 raw += text
                 handle(parser.feed(text))
                 notes.set(parser.descriptions)
+                notes.setAnswer(raw)
             case .chat(.usage(let u)):
                 usage = u
             case .chat(.finished):
@@ -322,5 +324,20 @@ final class TargetNotes: @unchecked Sendable {
     func get(_ id: Int) -> String? {
         lock.lock(); defer { lock.unlock() }
         return notes[id]
+    }
+
+    private var raw = ""
+
+    /// The answer so far as it is said: without its tags.
+    func setAnswer(_ raw: String) {
+        lock.lock(); self.raw = raw; lock.unlock()
+    }
+
+    func answer() -> String? {
+        lock.lock(); let raw = self.raw; lock.unlock()
+        let said = raw.replacingOccurrences(of: #"\[\[[^\]]*\]\]"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return said.isEmpty ? nil : said
     }
 }

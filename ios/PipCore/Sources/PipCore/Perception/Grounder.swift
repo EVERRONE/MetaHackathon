@@ -67,6 +67,11 @@ public struct Grounder: Sendable {
     /// what the guide said about it, and that alone can be vague ("the key near the top right,
     /// beside delete", 1 Nov, for the power key the user asked about).
     public var asked: String?
+    /// The guide's whole answer so far, without its tags: a target's own words can be vague
+    /// ("that lower grey lever"), while another sentence says what sets it apart ("I see one
+    /// breaker down in the middle row"). On 4 Nov the second pointing, told only the vague words,
+    /// kept a breaker two to the left of the one that was down.
+    public var answer: (@Sendable () -> String?)?
     /// Finding an object again where it is expected (a place remembered in an earlier session, a
     /// snapshot's sighting), not where the model pointed: the expected point can be a hand's width
     /// off after a walk through the house (2 Nov: 15 cm, on the ink bottle beside the pen). The
@@ -163,11 +168,16 @@ public struct Grounder: Sendable {
         var chosen: SegmentInstance?
         var method = "none"
         if ProcessInfo.processInfo.environment["PIP_DEBUG_OCR"] != nil {
-            print("crop \(crop.width)x\(crop.height) local \(Int(local.x)),\(Int(local.y)) concept \(concept.count):", concept.map { "\($0.box) \(String(format: "%.2f", $0.confidence))" }.joined(separator: " "), "prompted:", instances.filter { $0.objectId != nil }.map { "\($0.box)" })
+            print("crop \(crop.width)x\(crop.height) local \(Int(local.x)),\(Int(local.y)) concept \(concept.count):", concept.map { "\($0.box) \(String(format: "%.2f", $0.confidence))" }.joined(separator: " "), "prompted:", instances.filter { $0.objectId != nil }.map { "#\($0.objectId ?? 0) \($0.box) a\($0.area) c\(String(format: "%.2f", $0.confidence))" })
         }
 
         // 1. Printed text near the model's point, nearest first. Spark's points can be off by about one
         //    object, never by many, so text further away (the "0" in "F10") is not this object.
+        // A row of things SAM took for one of them (4 Nov: a whole row of breakers as one
+        // "breaker", right across the crop; the outline went round the row): not an object of the
+        // kind. The masks at the points round the model's point, side by side in it, show it.
+        let pointMasks = instances.filter { $0.objectId != nil }
+        concept.removeAll { Self.isRow($0, holding: pointMasks, crop: CGSize(width: crop.width, height: crop.height)) }
         let sizes = concept.map { sqrt(Double($0.area)) }.sorted()
         let typical = sizes.isEmpty ? 80 : sizes[sizes.count / 2]
         let reach = max(1.6 * typical, 60)
@@ -197,6 +207,15 @@ public struct Grounder: Sendable {
            Grounding.distance(local, near.boxRect) < 0.6 * sqrt(Double(near.area)) {
             chosen = near
             method = "nearest"
+        }
+        // 4b. Nothing of the kind at or near the point and no mask of the point itself (4 Nov: a row
+        //     of breakers SAM took for one, the point on the edge between two): the most solid mask
+        //     of the points round it, nearest to the model's point.
+        if chosen == nil, let best = instances.filter({ ($0.objectId ?? 0) >= 2 && Double($0.area) < cropArea * 0.3 && Self.solid($0) })
+            .min(by: { Grounding.distance(local, $0.boxRect) < Grounding.distance(local, $1.boxRect) }),
+           Grounding.distance(local, best.boxRect) <= 1.5 * ringRadius {
+            chosen = best
+            method = "point ring"
         }
 
         // 5. The model's second point, on the enlarged crop: the object it lands on, or the nearest
@@ -574,7 +593,10 @@ public struct Grounder: Sendable {
         else { shows = " with \"\(spec.text.joined(separator: " / "))\" printed on it" }
         let context = asked.map { "The user asked: \"\($0)\". " } ?? ""
         let said = description.map { " and said: \"\($0)\"" } ?? ""
-        var question = "\(context)A guide answered by pointing at a \(spec.phrase)\(shows)\(said). In this zoomed-in photo, point at that \(spec.phrase). "
+        let whole = answer?()?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let told = whole.flatMap { $0.isEmpty || $0 == description ? nil : " Its whole answer so far: \"\(String($0.suffix(400)))\"." } ?? ""
+        var question = "\(context)A guide answered by pointing at a \(spec.phrase)\(shows)\(said).\(told) In this zoomed-in photo, point at that \(spec.phrase)"
+            + (told.isEmpty ? ". " : "; of several that look alike, the one the answer means (by its state, its label or where it is). ")
             + "Give the centre of that one \(spec.phrase) as x and y on a 0-1000 grid of this image (0,0 top left, 1000,1000 bottom right). If you cannot see it, answer x=-1, y=-1."
         var images: [ChatMessage.Part] = [.imageJPEG(jpeg)]
         if let reference = spec.reference {
@@ -638,6 +660,27 @@ public struct Grounder: Sendable {
     }
 
     /// A mask that looks like a whole object: SAM is sure of it, and it is not a sliver.
+    /// An instance right across the crop that holds, side by side, two masks of the points round the
+    /// model's point, each a sixth of it or less: a row of things, not one thing.
+    static func isRow(_ inst: SegmentInstance, holding pointMasks: [SegmentInstance], crop: CGSize) -> Bool {
+        let b = inst.boxRect
+        guard Double(b.width) >= 0.85 * Double(crop.width) || Double(b.height) >= 0.85 * Double(crop.height) else { return false }
+        let parts = pointMasks.map(\.boxRect).enumerated().filter { k, r in
+            let m = pointMasks[k]
+            let fill = Double(m.area) / max(1, Double(r.width * r.height))
+            return Double(m.area) <= Double(inst.area) / 6 && fill >= 0.35 && b.contains(CGPoint(x: r.midX, y: r.midY))
+        }.map(\.element)
+        for i in parts.indices {
+            for j in parts.indices where j > i {
+                let overlap = parts[i].intersection(parts[j])
+                let shared = overlap.isNull ? 0 : Double(overlap.width * overlap.height)
+                let union = Double(parts[i].width * parts[i].height + parts[j].width * parts[j].height) - shared
+                if union > 0, shared / union < 0.1 { return true }
+            }
+        }
+        return false
+    }
+
     public static func solid(_ i: SegmentInstance) -> Bool {
         let b = i.boxRect
         let fill = Double(i.area) / max(1, Double(b.width * b.height))
