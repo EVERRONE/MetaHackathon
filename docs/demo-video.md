@@ -1,33 +1,35 @@
 # Demo video: production plan (2:55)
 
-One continuous story: a person at the washing machine in the garage, and the someone who stands
-beside them. Every interaction with Pip is real and live; Pip's answers are not scripted and vary
-from take to take. Waiting is cut and marked on screen ("⏩ 18 s"), never hidden.
+One continuous story in a garage: a person whose lights went out, a washing machine, a bottle seen on
+the way, and the someone who stands beside them. Every interaction with Pip is real and live; Pip's
+answers are not scripted and vary from take to take. Waiting is cut and marked on screen ("⏩ 18 s"),
+never hidden. The point of the video is the vision: what Pip is for, and why it matters.
 
 ## The story, beat by beat
 
 A = Pip's own take: its screen (camera, outlines, captions, cards) with its voice and yours, recorded
 by Pip itself (see "Recording").
-B = a second camera filming the person, the phone in hand and the machine.
+B = a second camera filming the person, the phone in hand, the fuse box and the machine.
 
 | Time | Beat | Picture | Sound | On screen |
 |---|---|---|---|---|
-| 0:00-0:15 | **The human opening** | B: a wide shot of the garage: the electrical cabinet, the washing machine; then a close shot of a hand hesitating over the programme dial. Calm, warm light. | Voice-over, slow: "Think of someone who made you feel capable. Someone who stood beside you, showed you where to start, and gave you the confidence to try. We all need that someone sometimes." Soft piano under it. | — |
-| 0:15-0:28 | **Meet Pip, and the keys** | A full screen: you open Pip on the way to the machine; its mark and "Pip, Personal Interactive Partner" appear and open onto the camera. You put your keys on the shelf and hold the phone on them. | You: "Pip, remember my keys." Pip's real answer; the outline lands on the keys. | small: *real interaction, waiting cut and marked* · ⏩ *the wait for the answer* |
-| 0:28-1:00 | **It finds out which machine** | A: at the machine. If Pip asks for the type plate, show it (keep the question). The search card appears with the manufacturer's manual **for this exact model**. Pip offers the plan; the steps sheet for two seconds. | You: "Pip, walk me through setting this machine for a cotton wash." Pip's real answers. You: "Yes." | ⏩ *18 s: Pip finds and reads the official manual* · lower third: *Muse Spark + Meta web search: the manual for this exact model* |
-| 1:00-1:42 | **It points, you act, it checks** | A + B side by side: the ring on the programme dial (with the turning arrow); you turn it; for three seconds you move the phone round the dial, and the ring stays on it. Then the green check when Pip has seen the setting. Then the ring on the start button, you press it. | You: "Do you mean this setting?" Pip's real answer. | Lower thirds as it happens: *Muse Wonder decides what to point at · SAM 3.1 finds the exact part · locked in 3D on the LiDAR surface* · *Muse Spark checks the camera image* |
-| 1:42-1:52 | **The machine runs** | B: the drum turns. | The machine's sound, low. | — |
-| 1:52-2:22 | **The return: a normal question** | A: you, turning to leave: "Pip, where did I leave my keys?" The arrow at the screen's edge points the way and Pip says it in words; as you turn, the outline lands on the keys. Let the last words stand. | Pip's real answer, then a moment of silence. | ⏩ *the wait for the answer* · lower third: *the place kept in Pip's 3D map of the garage* |
-| 2:22-2:40 | **How it is built** | A short montage of the three moments (ring, green check, keys) with the cards. | Piano returns. | *Built in five days on Meta's models: Muse Wonder 1.0 · Muse Spark 1.3 · SAM 3.1 · Muse Voice Transcribe · Meta web search · and on the phone, EdgeTAM and DINOv2* |
-| 2:40-2:55 | **Back to the beginning** | B: the opening wide shot, the machine running, you walking out. | Voice-over: "We all need that someone sometimes." | **Pip** · *points at exactly what to touch* · github.com/EVERRONE/MetaHackathon · team |
+| 0:00-0:15 | **The human opening** | B: a wide shot of the garage: the fuse box, the washing machine; a hand hesitating at the panel. Calm, warm light. | Voice-over, slow: "Think of someone who made you feel capable. Someone who stood beside you, showed you where to start, and gave you the confidence to try. We all need that someone sometimes." Soft piano under it. | — |
+| 0:15-0:45 | **The lights are off** | A, with B for the hand: at the fuse box, "Pip, my lights are off. How do I turn them on again?" Pip asks you to come closer: hold the phone about 30 cm from the row, the row across the screen. The outline and the arrow on the breaker that is down; you push it up; the light comes back (B). | Your voice; Pip's real answers. | small: *real interaction, waiting cut and marked* · lower third: *Muse Wonder sees which breaker is down · SAM 3.1 finds that exact one · locked in 3D on the LiDAR surface* |
+| 0:45-0:55 | **On the way** | A and B: you walk to the washing machine past the blue bottle on the shelf; the phone looks at it for two seconds. Nothing is said. | Footsteps, the room. | — |
+| 0:55-1:50 | **The washing machine** | A: "Pip, walk me through setting this machine for a cotton wash." Show the type plate (the rim inside the door). The search card: the manufacturer's manual for this exact model. The ring on the dial (turning arrow), the temperature, the spin; the green check when Pip has seen it; Start. | Pip's real answers; you: "Yes." | ⏩ *the search* · lower thirds: *Muse Spark + Meta web search: the manual for this exact model* · *Muse Spark checks the camera image* |
+| 1:50-2:15 | **Where was it?** | A: "Pip, where's the blue cleaning product?" Pip looks back through what it saw; the arrow at the screen's edge points the way; as you turn, the outline on the bottle. Let the last words stand. | Pip's real answer. | ⏩ *Pip searches what it saw* · lower third: *Muse Wonder searched the snapshots on the phone* |
+| 2:15-2:40 | **Why Pip** | A montage of the moments: the arrow on the breaker, the ring on the dial, the green check, the outline on the bottle. | Voice-over: "Not everyone has that someone. A parent who lives alone. A newcomer who can't read the manual. Anyone afraid to break something. The knowledge is there, in every manual. Pip brings it to the thing in front of you: it sees what you see, points at exactly what to touch, and checks that you got it right. So everyone can take care of their own home, with confidence." | *Built on Meta's models: Muse Wonder 1.0 · Muse Spark 1.3 · SAM 3.1 · Muse Voice Transcribe · Meta web search · and on the phone, EdgeTAM and DINOv2* |
+| 2:40-2:55 | **Back to the beginning** | B: the opening wide shot, the machine running, the light on, you walking out. | Voice-over: "We all need that someone sometimes. Pip can be that someone." | **Pip** · *points at exactly what to touch* · github.com/EVERRONE/MetaHackathon · team |
 
 ## Why each beat is there
 
 - The first 15 seconds say who it is for; the product is on screen by 0:15.
 - Judges compare with assistants that only talk about what they see. The video shows what they do
-  not: the manual for **this exact model** with its source, the ring **on** the dial and staying
-  there when the phone moves, the check **by the camera**, and the memory of where you put
-  something.
+  not: the one breaker that is down among identical ones, the manual for **this exact model** with
+  its source, the ring **on** the dial and staying there when the phone moves, the check **by the
+  camera**, and the way back to something it saw in passing.
+- The vision carries it: not everyone has someone beside them; Pip brings the knowledge in every
+  manual to the thing in front of you.
 - Each Meta model is named at the moment it does its part, and all of them at the end.
 - Marked time jumps show it is live and honest.
 
@@ -46,31 +48,33 @@ B = a second camera filming the person, the phone in hand and the machine.
 **The set**
 - Garage lights on plus one warm lamp for the opening; no light behind the machine.
 - Glass door of the machine at an angle so it does not mirror the lamp.
-- Nothing personal in view (post, screens, other people). The keys in your pocket.
-- A place for the keys on the way to the machine: a shelf at chest height, in good light, a few
-  metres from the machine and out of its view, so that on the return Pip first shows the way.
+- Nothing personal in view (post, screens, other people).
+- The blue bottle on a shelf on the way to the machine, at chest height, in good light, a few
+  metres from the machine and out of its view, so that at the end Pip first shows the way.
+- One breaker switched off for the scene, and a light on that circuit in view of B.
 
 **The second camera**
 - A second phone on a tripod: 4K, 30 fps, HDR video off (Settings, Camera, Record Video), so its
   colours match the take's.
 - Exposure and focus locked (long press), landscape.
-- For beats 0:55-1:40 a helper films over your shoulder.
+- For the fuse box and the dial, a helper films over your shoulder.
 
 ## The shoot (in this order)
 
-1. **A dry run of the keys, not filmed:** remember them, walk to the machine, ask where they are.
-   Then forget them (below).
-2. **B-roll, 10 minutes:** the wide shots, the hand at the dial, the cabinet, the drum.
+1. **A first run, recorded:** the whole story once. Every run is a take, so a good one is kept.
+2. **B-roll, 10 minutes:** the wide shots, the hand at the panel and the dial, the drum.
 3. **The whole story, 2-3 complete takes, A and B at once.**
    - Start B first, then close Pip's settings: the take starts. Open them again to end it.
    - One clap in view of B at the start: the check on the lining up (it is done by the sound).
-   - The keys: put them down, hold the phone on them (30-60 cm), say "Pip, remember my keys" and
-     wait for the outline on them before you walk on.
-   - Do the whole interaction in one go, as it comes; ask for the keys at the end, from the machine.
+   - Stay in Pip during a take: another app or the lock button ends it.
+   - The fuse box: when Pip asks, come close, about 30 cm from the row, the row across the screen;
+     from further away the model can point a breaker beside the one that is down.
+   - The bottle: on the way, the phone on it for two seconds; say nothing.
+   - The machine: show the type plate (the rim inside the door), so the manual is this model's.
+   - Do the whole interaction in one go, as it comes; ask for the bottle at the end, from the
+     machine.
    - Keep the best take whole and cut only the waiting.
-   - Between takes, in Pip's settings (still open from ending the take): swipe the keys away
-     ("Forget"). Remembered again under the same name they replace the old place, but the model may
-     name them otherwise, and then Pip would know two places.
+   - Between takes: the breaker off again, the bottle back in its place.
 4. **The closing B-roll.**
 5. **The voice-over** in a quiet, soft room (a wardrobe works).
    - Phone 20 cm from the mouth.
@@ -101,7 +105,8 @@ its takes itself:
 
 - **Format:** 16:9, 1920×1080 (or 4K).
   - B full frame, with A as a phone-shaped window on the right.
-  - At the three key moments, A full screen and zoomed in: the ring, the green check, the keys.
+  - At the key moments, A full screen and zoomed in: the arrow on the breaker, the ring on the dial,
+    the green check, the outline on the bottle.
 - **Captions:** lower third for each Meta model at its moment (the timeline gives the moments);
   clean subtitles for your words and Pip's (the take's .srt files); ⏩ marks for every jump.
 - **Music:** soft piano under the opening and the end only (YouTube Audio Library or another source
@@ -114,7 +119,8 @@ its takes itself:
   - Title: *Pip, points at exactly what to touch (Meta AI Developer Hackathon)*.
   - Description: the repo link and the models.
   - Open the link in a private window to check it plays.
-- Tools: CapCut (desktop) or DaVinci Resolve, both free.
+- Made on the Mac from the takes (pulled and built with scripts/takes.py), the B clips (AirDropped
+  to ~/Movies/Pip takes/B), the voice-over (Voice Memos, AirDropped) and the music, if any.
 
 ## If a take goes wrong
 
@@ -126,8 +132,9 @@ its takes itself:
 - **The search finds no manual from the manufacturer:** the card says so in yellow; retake, or keep
   it if Pip says it honestly.
 - **Pip talks over you:** tap the microphone button once.
-- **No outline on the keys after "remember my keys":** hold the phone still on them, 30-60 cm away,
-  and say it again.
+- **The outline on the wrong breaker:** come closer to the row and ask again: "Which one is it?"
+- **Pip does not find the bottle:** walk past it again with the phone on it for two seconds, then ask
+  again.
 
 ## Schedule
 
@@ -136,8 +143,7 @@ its takes itself:
 - Then the logs: time per step, the source found, the outlines, the check.
 - What goes wrong is fixed and installed that night.
 
-**Wednesday**
-- 10:00-12:00 shoot; 12:00 voice-over.
-- 13:00-16:30 edit; 16:30 upload.
-- 17:00 the form (docs/submission.md); submitted by 18:00 CET.
-- The deadline is 03:00 CET (21:00 ET), so there is time for one more attempt.
+**Wednesday evening (the deadline is Thursday 03:00 CET, 21:00 ET)**
+- 19:45-21:00 shoot; 21:00 voice-over.
+- 21:30-01:00 edit; about 01:30 upload.
+- The form (docs/submission.md); submitted by 02:00 CET at the latest.
