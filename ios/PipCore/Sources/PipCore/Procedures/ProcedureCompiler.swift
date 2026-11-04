@@ -159,6 +159,7 @@ public struct ProcedureCompiler: Sendable {
 
         Rules:
         - Write in \(language). Steps are short, one action each, at most 15 steps; merge tiny actions.
+        - Only the steps that reach the goal from where the user stands now, at the device: leave out unpacking, installing, connecting water or power, and preparing what goes in (sorting the laundry, emptying pockets), unless the user's goal asks for it or the camera view shows it still has to be done.
         - objects: the physical things the steps act on, with a short id, a name, phrase (a generic 1–2 word English noun a detector understands: "panel", "screw", "knob", "breaker") and the text printed on it, if any.
         - For each step: targets (object ids), and check: camera when the result can be seen on camera (expected says concretely what is visible: "4 bolts stick out of each side panel"); user when only the user can tell ("the lights work again"); none when nobody can check it here (a torque, a voltage).
         - gate: a safety condition the user must confirm before that step, only where it matters ("the power to the circuit is switched off", "two people hold the frame"); empty otherwise.
