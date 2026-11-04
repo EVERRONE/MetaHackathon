@@ -47,6 +47,13 @@ final class TakeRecorder: ObservableObject {
     /// The take being written (only on `queue`).
     private var take: Take?
     private var pendingStart: DispatchWorkItem?
+    /// ReplayKit's capture is being stopped (main thread): a start waits for it. On 4 Nov, Pip left
+    /// and opened again within two seconds; the new start came while the old capture was still on,
+    /// was refused ("already in recording state"), and the take was lost.
+    private var stopping = false
+    private var startAfterStop = false
+    /// How often a start may still stop a capture left on and try again (each time Pip is opened).
+    private var restarts = 0
 
     // MARK: Starting and ending (main thread)
 
@@ -57,11 +64,13 @@ final class TakeRecorder: ObservableObject {
         pendingStart = nil
         if wanted {
             guard !recording else { return }
+            restarts = 2
             let work = DispatchWorkItem { [weak self] in self?.begin() }
             pendingStart = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
-        } else if recording {
-            end()
+        } else {
+            startAfterStop = false
+            if recording { end() }
         }
     }
 
@@ -79,6 +88,19 @@ final class TakeRecorder: ObservableObject {
     private func begin() {
         pendingStart = nil
         guard !recording else { return }
+        // The last capture is still stopping, or ReplayKit still records one this recorder let go
+        // (a start that was allowed after Pip had ended its take): first stopped, then this start.
+        if stopping {
+            startAfterStop = true
+            return
+        }
+        if restarts > 0, RPScreenRecorder.shared().isRecording {
+            restarts -= 1
+            onLog?("take: the screen was still being recorded; stopped first")
+            startAfterStop = true
+            stopCapture()
+            return
+        }
         let fm = FileManager.default
         try? fm.createDirectory(at: Self.folder, withIntermediateDirectories: true)
         if let free = (try? Self.folder.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage,
@@ -116,12 +138,38 @@ final class TakeRecorder: ObservableObject {
         onLog?("take: \(name) started")
     }
 
-    /// Screen recording refused or failed: nothing is kept.
+    /// Screen recording refused or failed: nothing is kept. Refused because a capture is still on:
+    /// that one is stopped and this take started again, once.
     private func failed(_ error: Error) {
         guard recording else { return }
         end(discard: true)
+        let e = error as NSError
+        if restarts > 0, e.domain == RPRecordingErrorDomain, e.code == RPRecordingErrorCode.attemptToStartInRecordingState.rawValue {
+            restarts -= 1
+            onLog?("take: the screen was still being recorded; stopped, and started again")
+            startAfterStop = true
+            return
+        }
         status = "Not recording: \(error.localizedDescription)"
         onLog?("take: screen recording failed: \(error.localizedDescription)")
+    }
+
+    /// Stops ReplayKit's capture; a start asked for meanwhile follows once it has stopped (or after
+    /// three seconds without an answer).
+    private func stopCapture() {
+        stopping = true
+        var settled = false
+        let settle: () -> Void = { [weak self] in
+            guard let self, !settled else { return }
+            settled = true
+            self.stopping = false
+            if self.startAfterStop {
+                self.startAfterStop = false
+                self.begin()
+            }
+        }
+        RPScreenRecorder.shared().stopCapture { _ in DispatchQueue.main.async(execute: settle) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: settle)
     }
 
     private func end(discard: Bool = false) {
@@ -135,7 +183,7 @@ final class TakeRecorder: ObservableObject {
             t?.closing = true
             return t
         }
-        RPScreenRecorder.shared().stopCapture { _ in }
+        stopCapture()
         guard let take else { return }
         if discard {
             queue.async { take.discard() }

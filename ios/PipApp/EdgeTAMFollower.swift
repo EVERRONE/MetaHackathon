@@ -96,9 +96,27 @@ final class EdgeTAMFollower {
                 Self.append(String(format: "%@\tload\t%.2f\n", Self.now(), seconds))
             case .failure(let e):
                 self?.log("edgetam: cannot load (attempt \(attempt)): \(e)")
+                // Pip left before the models were loaded: in the background Core ML cannot build
+                // them (4 Nov, twice), so they are loaded again once Pip is in front.
+                if UIApplication.shared.applicationState != .active {
+                    self?.preloadWhenActive()
+                    return
+                }
                 guard attempt < 3 else { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self?.preload(attempt: attempt + 1) }
             }
+        }
+    }
+
+    private var activeObserver: NSObjectProtocol?
+
+    private func preloadWhenActive() {
+        guard activeObserver == nil else { return }
+        activeObserver = NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            if let o = self.activeObserver { NotificationCenter.default.removeObserver(o) }
+            self.activeObserver = nil
+            self.preload()
         }
     }
 
