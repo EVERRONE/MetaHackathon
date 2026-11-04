@@ -1,36 +1,43 @@
 # Demo video: production plan (2:55)
 
-One continuous story in a garage: a person whose lights went out, a washing machine, a bottle seen on
-the way, and the someone who stands beside them. Every interaction with Pip is real and live; Pip's
-answers are not scripted and vary from take to take. Waiting is cut and marked on screen ("⏩ 18 s"),
-never hidden. The point of the video is the vision: what Pip is for, and why it matters.
+One continuous story of three minutes in a garage: a person, a washing machine, a fuse box, a
+bottle passed on the way, and the someone who stands beside them. Every interaction with Pip is real
+and live; Pip's answers are not scripted and vary from take to take. Waiting is cut and marked on
+screen ("⏩ 18 s"), never hidden.
+
+What the video must leave behind: Pip is not a chatbot that describes a photo. It understands the
+physical world around you: it knows your exact machine and its official manual, puts its guidance on
+the very part to touch, locked in 3D while you and the object move, checks your work through the
+camera, keeps you safe, and remembers your home. And it matters: most people have no one beside them
+when the lights go out or a machine will not start.
 
 ## The story, beat by beat
 
 A = Pip's own take: its screen (camera, outlines, captions, cards) with its voice and yours, recorded
 by Pip itself (see "Recording").
-B = a second camera filming the person, the phone in hand, the fuse box and the machine.
+B = a second camera filming the person, the phone in hand, the machine and the fuse box.
 
 | Time | Beat | Picture | Sound | On screen |
 |---|---|---|---|---|
-| 0:00-0:15 | **The human opening** | B: a wide shot of the garage: the fuse box, the washing machine; a hand hesitating at the panel. Calm, warm light. | Voice-over, slow: "Think of someone who made you feel capable. Someone who stood beside you, showed you where to start, and gave you the confidence to try. We all need that someone sometimes." Soft piano under it. | — |
-| 0:15-0:45 | **The lights are off** | A, with B for the hand: at the fuse box, "Pip, my lights are off. How do I turn them on again?" Pip asks you to come closer: hold the phone about 30 cm from the row, the row across the screen. The outline and the arrow on the breaker that is down; you push it up; the light comes back (B). | Your voice; Pip's real answers. | small: *real interaction, waiting cut and marked* · lower third: *Muse Wonder sees which breaker is down · SAM 3.1 finds that exact one · locked in 3D on the LiDAR surface* |
-| 0:45-0:55 | **On the way** | A and B: you walk to the washing machine past the blue bottle on the shelf; the phone looks at it for two seconds. Nothing is said. | Footsteps, the room. | — |
-| 0:55-1:50 | **The washing machine** | A: "Pip, walk me through setting this machine for a cotton wash." Show the type plate (the rim inside the door). The search card: the manufacturer's manual for this exact model. The ring on the dial (turning arrow), the temperature, the spin; the green check when Pip has seen it; Start. | Pip's real answers; you: "Yes." | ⏩ *the search* · lower thirds: *Muse Spark + Meta web search: the manual for this exact model* · *Muse Spark checks the camera image* |
-| 1:50-2:15 | **Where was it?** | A: "Pip, where's the blue cleaning product?" Pip looks back through what it saw; the arrow at the screen's edge points the way; as you turn, the outline on the bottle. Let the last words stand. | Pip's real answer. | ⏩ *Pip searches what it saw* · lower third: *Muse Wonder searched the snapshots on the phone* |
-| 2:15-2:40 | **Why Pip** | A montage of the moments: the arrow on the breaker, the ring on the dial, the green check, the outline on the bottle. | Voice-over: "Not everyone has that someone. A parent who lives alone. A newcomer who can't read the manual. Anyone afraid to break something. The knowledge is there, in every manual. Pip brings it to the thing in front of you: it sees what you see, points at exactly what to touch, and checks that you got it right. So everyone can take care of their own home, with confidence." | *Built on Meta's models: Muse Wonder 1.0 · Muse Spark 1.3 · SAM 3.1 · Muse Voice Transcribe · Meta web search · and on the phone, EdgeTAM and DINOv2* |
-| 2:40-2:55 | **Back to the beginning** | B: the opening wide shot, the machine running, the light on, you walking out. | Voice-over: "We all need that someone sometimes. Pip can be that someone." | **Pip** · *points at exactly what to touch* · github.com/EVERRONE/MetaHackathon · team |
+| 0:00-0:15 | **The human opening** | B: the garage, calm: the electrical cabinet, the washing machine, the shelf with the blue bottle; a hand that hesitates. | Voice-over, slow, as to one person: "Think of someone who made you feel capable. Someone who stood beside you, showed you where to start, and gave you the confidence to try. We all need that someone sometimes." Soft piano. | — |
+| 0:15-0:25 | **Meet Pip** | A large and readable: Pip opens onto the camera. You walk to the machine past the shelf; the phone takes in the blue bottle on the way. | You: "Pip, walk me through setting this machine for a cotton wash." | **Pip** · *Personal Interactive Partner* · small: *real and unscripted · waiting cut and marked* |
+| 0:25-1:00 | **It finds out which machine** | A: Pip works out which machine it is; it asks for the type plate and you show it (keep the question). The search card: the manufacturer's manual **for this exact model**, its source on screen; the steps for two seconds. | Pip's real answers. | ⏩ *Pip finds and reads the official manual* · *Muse Spark + Meta web search: the official manual for this exact model* |
+| 1:00-1:40 | **It points, you act, it checks** | A + B: the ring on the programme dial, with the turning arrow; you turn it and move the phone round, the ring stays on the dial. "Do you mean this setting?" The green check when the camera sees it is right. Start. | Your question, Pip's real answer. | *Muse Wonder decides what to point at · SAM 3.1 finds the exact part · locked in 3D on the LiDAR surface, followed on the phone by EdgeTAM* · *Muse Spark checks the step through the camera* |
+| 1:40-1:50 | **The machine runs** | B: the drum turns. | The machine, low. | — |
+| 1:50-2:05 | **Seen once, found again** | A: "Pip, where's the blue cleaning product I walked past?" The arrow at the screen's edge points the way; Pip says it in words; as you turn, the outline on the bottle. | Pip's real answer. | ⏩ *Pip searches what it saw* · *It remembers your home: Muse Wonder searches the phone's own snapshots* |
+| 2:05-2:30 | **The return to the beginning** | A + B at the cabinet of the opening: "Pip, my lights are off. How do I turn them on again?" You come close to the row; among identical breakers, the outline and the arrow on the one that is down; you push it up; the light comes back on (B). Let the last words stand. | Your voice, Pip's real answers, then a moment of silence. | *One tripped breaker among identical ones, found and locked in 3D* |
+| 2:30-2:50 | **Why it matters** | A short montage: the manual card, the ring on the dial, the green check, the arrow to the bottle, the outline on the breaker. | Voice-over: "Most of us don't have that someone close by when the lights go out or a machine won't start. Pip does more than answer. It knows your exact machine, reads its official manual, and puts its finger on the very part to touch, locked in 3D, checked by the camera, remembered for next time. For an ageing parent, a newcomer, anyone who wants to do it themselves. AI that finally understands your world." | — |
+| 2:50-2:58 | **Back to the beginning** | B: the opening shot, the machine running, the light on. | Voice-over: "We all need that someone sometimes. Now everyone can have one." | **Pip** · *We all need that someone sometimes.* · *Built in five days on Meta's models: Muse Wonder 1.0 · Muse Spark 1.3 · SAM 3.1 · Muse Voice Transcribe · Meta web search · on the phone, EdgeTAM and DINOv2* · github.com/EVERRONE/MetaHackathon · team |
 
 ## Why each beat is there
 
 - The first 15 seconds say who it is for; the product is on screen by 0:15.
-- Judges compare with assistants that only talk about what they see. The video shows what they do
-  not: the one breaker that is down among identical ones, the manual for **this exact model** with
-  its source, the ring **on** the dial and staying there when the phone moves, the check **by the
-  camera**, and the way back to something it saw in passing.
-- The vision carries it: not everyone has someone beside them; Pip brings the knowledge in every
-  manual to the thing in front of you.
+- Judges compare with assistants that only talk about what a photo shows. Every beat shows what those
+  cannot do: the official manual for **this exact model** with its source; the ring **on** the dial,
+  staying there while the phone moves; the check **by the camera**; the way back to something seen in
+  passing; the one tripped breaker among identical ones.
 - Each Meta model is named at the moment it does its part, and all of them at the end.
+- The story closes where it opened, at the cabinet; the voice-over says why it matters.
 - Marked time jumps show it is live and honest.
 
 ## Before the shoot
@@ -71,12 +78,13 @@ B = a second camera filming the person, the phone in hand, the fuse box and the 
      from further away the model can point a breaker beside the one that is down.
    - The bottle: on the way, the phone on it for two seconds; say nothing.
    - The machine: show the type plate (the rim inside the door), so the manual is this model's.
-   - Do the whole interaction in one go, as it comes; ask for the bottle at the end, from the
-     machine.
+   - Do the whole interaction in one go, as it comes: the machine, then the bottle, then back to the
+     fuse box.
    - Keep the best take whole and cut only the waiting.
    - Between takes: the breaker off again, the bottle back in its place.
 4. **The closing B-roll.**
-5. **The voice-over** in a quiet, soft room (a wardrobe works).
+5. **The voice-over** in a quiet, soft room (a wardrobe works): the opening, "Why it matters" and the
+   last line, as in the story above.
    - Phone 20 cm from the mouth.
    - Three takes, slow, warm, as if to one person.
 
