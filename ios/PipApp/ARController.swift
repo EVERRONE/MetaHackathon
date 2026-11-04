@@ -144,6 +144,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         arView.renderOptions.insert(.disableMotionBlur)
         arView.session.delegate = self
         arView.session.run(Self.configuration())
+        Self.smoothFocus()
         // Outlines are drawn in the same step as the camera image, so they do not lag or swim.
         renderSubscription = arView.scene.subscribe(to: SceneEvents.Update.self) { [weak self] _ in self?.renderNow() }
         follower.onSettled = { [weak self] id, box in self?.onMovedObjectSettled?(id, box) }
@@ -174,6 +175,17 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         // No scene mesh: it fed only the linking of map pieces by their surfaces (removed 1 Nov),
         // and meshing with classification costs GPU and Neural Engine time EdgeTAM needs.
         return config
+    }
+
+    /// The camera focuses with slow, smooth lens moves, as for filming: ARKit's quick continuous
+    /// focus kept hunting, visibly, in the garage (4 Nov), and every take shows it.
+    static func smoothFocus() {
+        guard let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera else { return }
+        do {
+            try device.lockForConfiguration()
+            if device.isSmoothAutoFocusSupported { device.isSmoothAutoFocusEnabled = true }
+            device.unlockForConfiguration()
+        } catch {}
     }
 
     func snapshot() -> FrameSnapshot? {
@@ -467,6 +479,7 @@ final class ARController: NSObject, ObservableObject, ARSessionDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self else { return }
             self.arView.session.run(Self.configuration())
+            Self.smoothFocus()
         }
     }
 
