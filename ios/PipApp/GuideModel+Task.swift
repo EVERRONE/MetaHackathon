@@ -416,7 +416,7 @@ extension GuideModel {
             return
         }
         // A plan from this device's own manual is kept for the next time.
-        if let product, case .manual = source, compiled.mismatch == nil {
+        if let product, case .manual = source {
             planMemory.keep(product: product, goal: goal, language: language, procedure: compiled.procedure)
         }
         present(compiled.procedure, mismatch: compiled.mismatch)

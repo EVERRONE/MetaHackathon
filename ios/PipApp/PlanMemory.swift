@@ -6,7 +6,12 @@ import PipCore
 /// before, instead of searching the manual and drafting the plan again (4 Nov: 59 s to find the
 /// washing machine's manual and 60 s for the plan, each time it was asked again).
 final class PlanMemory {
+    /// Plans drafted under earlier rules are not used again (4 Nov: an 11-step wash, from the tap
+    /// to the detergent, where the user wanted it switched on, checked and started).
+    static let rules = 2
+
     struct Entry: Codable {
+        var rules: Int?
         var product: String
         var goal: String
         var language: String
@@ -30,7 +35,7 @@ final class PlanMemory {
 
     func keep(product: String, goal: String, language: String, procedure: Procedure) {
         entries.removeAll { Self.same($0, product: product, goal: goal, language: language) }
-        entries.append(Entry(product: product, goal: goal, language: language, procedure: procedure, saved: Date()))
+        entries.append(Entry(rules: Self.rules, product: product, goal: goal, language: language, procedure: procedure, saved: Date()))
         if entries.count > 30 { entries.removeFirst(entries.count - 30) }
         save()
     }
@@ -47,7 +52,7 @@ final class PlanMemory {
     }
 
     private static func same(_ e: Entry, product: String, goal: String, language: String) -> Bool {
-        e.language == language && overlap(words(e.product), words(product)) >= 0.6 && overlap(words(e.goal), words(goal)) >= 0.5
+        e.rules == rules && e.language == language && overlap(words(e.product), words(product)) >= 0.6 && overlap(words(e.goal), words(goal)) >= 0.5
     }
 
     static func words(_ s: String) -> Set<String> {

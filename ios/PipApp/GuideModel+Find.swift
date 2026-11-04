@@ -254,6 +254,7 @@ extension GuideModel {
             // looks, or by what it looked like in this snapshot (see `ARController.carried`).
             var found = TargetSpec(x: 500, y: 500, phrase: spec.phrase, text: spec.text, description: looks ?? what)
             found.reference = reference ?? Grounder.reference(of: inst, in: image)
+            found.referenceDecides = reference != nil
             return .found(world: world, frame: frame, spec: found, same: same)
         }
         return .none

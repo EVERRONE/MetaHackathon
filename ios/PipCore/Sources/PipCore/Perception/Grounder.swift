@@ -24,6 +24,12 @@ public struct TargetSpec: Equatable, Sendable {
     /// its kind lies where it is expected (2 Nov, 20:40: of three pens side by side, the one nearest
     /// the camera was taken for "the first black pen, closest to you", and stored as it).
     public var reference: Data?
+    /// Whether the reference decides: true for a thing the user asked Pip to remember (that very
+    /// pen, not the one beside it). A thing only seen in passing has a snapshot of it, often blurred
+    /// from the walk: it helps to point at it, but it does not refuse what its description finds
+    /// (4 Nov: the blue cleaning product, back in view twice, was refused as "not the remembered
+    /// bottle" and lost its outline).
+    public var referenceDecides = true
 
     public init(x: Double, y: Double, phrase: String, text: [String] = [], on: String? = nil, small: Bool = false, description: String? = nil) {
         self.x = x
@@ -467,6 +473,8 @@ public struct Grounder: Sendable {
                 case .picked(let same):
                     chosen = same
                     method += " (as remembered: the one beside it)"
+                case .noneOfThem where !spec.referenceDecides, .failed where !spec.referenceDecides:
+                    method += " (by its description; its snapshot from the walk did not settle it)"
                 case .noneOfThem:
                     chosen = nil
                     method = "not the remembered \(spec.phrase) (\(method))"

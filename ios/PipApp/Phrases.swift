@@ -12,8 +12,8 @@ struct Phrases {
         dutch ? "Ik zoek de officiële handleiding van \(product)." : "I'm looking up the official manual for \(product)."
     }
     func knownPlan(_ product: String) -> String {
-        dutch ? "Deze \(product) ken ik al: ik gebruik het plan uit de officiële handleiding van vorige keer."
-              : "I know this \(product) already: I'll use the plan from its official manual, from last time."
+        dutch ? "Deze \(product) ken ik al: ik gebruik het plan dat ik er vorige keer voor maakte."
+              : "I know this \(product) already: I'll use the plan I made for it last time."
     }
     func reading(_ publisher: String) -> String {
         dutch ? "Gevonden, bij \(publisher). Ik lees de handleiding en maak een stappenplan." : "Found it, from \(publisher). I'm reading it and making a step plan."
@@ -94,7 +94,7 @@ struct Phrases {
     func unverified(_ answer: String) -> String {
         dutch ? "Online vond ik dit, niet van de fabrikant, dus controleer het even: \(answer)" : "I found this online, not from the manufacturer, so please double-check: \(answer)"
     }
-    func searchingMemory(_ what: String) -> String { let what = Self.yours(what); return dutch ? "Ik kijk terug waar ik \(what) zag." : "I'm looking back for \(what)." }
+    func searchingMemory(_ what: String) -> String { let what = Self.yours(what, dutch: dutch); return dutch ? "Ik kijk terug waar ik \(what) zag." : "I'm looking back for \(what)." }
     var searchingFurther: String { dutch ? "Ik kijk verder terug." : "I'm looking further back." }
 
     /// "zonet", "12 minuten geleden", "gisteren": how long ago, in the conversation language.
@@ -108,23 +108,27 @@ struct Phrases {
         return f.localizedString(for: date, relativeTo: Date())
     }
     func found(_ what: String, at date: Date, where place: String) -> String {
-        let what = Self.yours(what)
+        let what = Self.yours(what, dutch: dutch)
         return dutch ? "Ik zag \(what) \(ago(date)): \(place). Volg de pijl. Het kan intussen verplaatst zijn."
                      : "I saw \(what) \(ago(date)): \(place). Follow the arrow. It may have been moved since."
     }
     /// The model names what the user looks for in the third person ("the user's blue cleaning
     /// product", 4 Nov); said to the user, it is theirs.
-    static func yours(_ what: String) -> String {
+    static func yours(_ what: String, dutch: Bool = false) -> String {
         var s = what
         for (from, to) in [("the user's ", "your "), ("The user's ", "your "), ("user's ", "your "), ("de gebruiker zijn ", "je "), ("van de gebruiker", "van jou")] {
             s = s.replacingOccurrences(of: from, with: to)
         }
+        // "I saw blue cleaning product": what the user looks for is theirs.
+        let first = s.split(separator: " ").first.map { $0.lowercased() } ?? ""
+        let determiners: Set<String> = ["the", "a", "an", "your", "my", "his", "her", "their", "our", "this", "that", "de", "het", "een", "je", "jouw", "mijn", "uw"]
+        if !first.isEmpty, !determiners.contains(first) { s = (dutch ? "je " : "your ") + s }
         return s
     }
     /// Seen in a room this session has not recognised: where it was, from the snapshot, but no way
     /// there (Pip does not know where that room is from here).
     func foundElsewhere(_ what: String, at date: Date, place: String?) -> String {
-        let what = Self.yours(what)
+        let what = Self.yours(what, dutch: dutch)
         // Looking round helps Pip recognise where it is (2 Nov, 20:33: at a round table with glass
         // walls, the room was recognised once the kitchen island and cupboards came into view).
         if let place {
