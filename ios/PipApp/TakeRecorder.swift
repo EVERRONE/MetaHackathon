@@ -16,7 +16,7 @@ import UIKit
 ///
 /// A take runs while "Record takes" is on and the camera view is up: from closing the settings
 /// until opening them again or leaving Pip. Each is a folder in Documents/takes, put together on
-/// the Mac by scripts/takes.swift. Off, nothing runs and nothing is tapped.
+/// the Mac by scripts/takes.py. Off, nothing runs and nothing is tapped.
 final class TakeRecorder: ObservableObject {
     static let key = "pip.recordTakes"
     static var folder: URL { Diagnostics.documents.appendingPathComponent("takes") }

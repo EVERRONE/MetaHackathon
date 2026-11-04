@@ -7,9 +7,9 @@ outlines the exact button, key or part in the room (locked to it in 3D, millimet
 what to do with it, checks what happened, and remembers where things are, in this room and the
 next one.
 
-**Demo video (3 min):** _link added at submission_ · **Track:** Indie Developer · **Theme:** Build for Your World
+**Demo video (3 min):** [youtube.com/watch?v=zzNGSxwbZ0k](https://www.youtube.com/watch?v=zzNGSxwbZ0k) · **Track:** Indie Developer · **Theme:** Build for Your World
 
-Built during the Meta Global AI Developer Hackathon (30 Oct – 3 Nov 2026) on Meta's models:
+Built during the Meta Global AI Developer Hackathon (30 Oct – 4 Nov 2026) on Meta's models:
 Muse Wonder 1.0, Muse Spark 1.3, SAM 3.1, Muse Voice Transcribe, Meta's web search tool, and, on
 the phone, Meta's EdgeTAM and DINOv2.
 
@@ -31,8 +31,8 @@ while you and the object move, verifies the result, and stops when something is 
 ## What Pip does
 
 - **Hands-free conversation.** Live speech recognition (Muse Voice Transcribe) with echo
-  cancellation, so you can talk over Pip. It starts thinking at the end of your sentence and speaks
-  its first words about 2-4 s after you stop. It switches between English and Dutch on its own.
+  cancellation, so you can talk over Pip. It starts working on its answer as soon as you stop
+  talking. It switches between English and Dutch on its own.
 - **Points at the exact thing.** One streamed Muse Wonder call per question answers in speech with
   inline cue tags (outline, ring, move, rotate, place, danger, landmark). Each target is found while
   the sentence streams:
@@ -115,8 +115,8 @@ flowchart LR
 | **EdgeTAM** (on device, Core ML) | Following a pointed-at object frame by frame |
 | **DINOv2 ViT-S/14** (on device, Core ML) | Recognising a room across a change of light, and which stored views show the same place |
 
-The only non-Meta model is the voice: ElevenLabs Flash v2.5, because Meta has no text-to-speech
-model. The iPhone's own voice is the fallback.
+Pip speaks with ElevenLabs Flash v2.5, with the iPhone's own voice as the fallback, and reads
+printed labels with Apple's on-device text recognition.
 
 ## Measured
 
@@ -126,7 +126,8 @@ are in `docs/`.
 - **Pointing:** 49 recorded targets, 45 right, 4 refused, 0 wrong (`docs/research-precision.md`).
 - **Tracking:**
   - EdgeTAM runs on the phone at 9-10 fps (95-102 ms a frame) while ARKit stays at 60 fps.
-  - It agreed with SAM in 77 of 77 compared frames (median box overlap 0.87-0.94).
+  - It agreed with SAM 3.1 on whether the object was in view in 77 of 77 compared frames (median
+    box overlap 0.87-0.94).
   - Between updates, the 3D outline moves by a median of 0.7-2.3 mm (`docs/research-precision.md`).
 - **Look-alikes:** of three pens side by side, the remembered one is found again from its reference
   photo 3 of 3 times. With the neighbour's photo, the neighbour is found 3 of 3 times
@@ -136,15 +137,15 @@ are in `docs/`.
   - Remembered places carried into a new session were found on sight 2.3-5.0 cm from where Pip
     pointed. From the next room, Pip said "about six metres" for a pen that was 5.9 m away.
   - Recognising a room, replayed: 25.6 s → 7.9 s, 15.2 s → 5.8 s and 12.6 s → 6.1 s after this
-    week's changes. On the phone, a room was recognised 4 s after the model had loaded
-    (`docs/spatial-memory.md`).
-- **Tests:** 188 Swift tests (`swift test` in `ios/PipCore`) and 28 Worker tests (`npm test` in
+    week's changes. On the phone, the bedroom linked to the bathroom session 7 s after
+    DINOv2 had loaded (`docs/spatial-memory.md`).
+- **Tests:** 195 Swift tests (`swift test` in `ios/PipCore`) and 28 Worker tests (`npm test` in
   `worker/`).
 
 ## Built during the hackathon
 
 - **New work only.** Everything in this repository was written during the hackathon. The first
-  commit is from 30 Oct 2026, 17:34 CET, followed by more than 120 commits on `main` up to 3 Nov. No code
+  commit is from 30 Oct 2026, 17:34 CET, followed by more than 140 commits on `main` up to 4 Nov. No code
   comes from earlier projects. The commit history is the record.
 - **Written in this repo, with no third-party libraries in the app:**
   - the cue language and its timing with speech;
@@ -199,6 +200,17 @@ corners only.
 
 Replaying recordings on a Mac: `cd ios/PipCore && swift build -c release --product pipeval`, then
 for example `pipeval dinolive <memory/frames> <stored sessions> <live session>`.
+
+### Checking it without an iPhone
+
+The perception, the cue language, the procedures and the Worker are covered by tests that need no
+phone, no keys and no network: only a Mac with Xcode, and Node.js.
+
+```sh
+# from the repository root
+(cd ios/PipCore && swift test)            # 195 tests: pointing rules, tracking gates, 3D geometry, procedures, safety
+(cd worker && npm install && npm test)    # 28 tests: request checks, cost pricing, link safety, SAM mask geometry
+```
 
 ## Repository
 

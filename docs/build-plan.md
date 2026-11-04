@@ -126,7 +126,7 @@ v1.0 planned set-of-marks on the whole frame: SAM first, then Spark picks a numb
 ## 5. Speech and pointing in sync
 
 - Spark's stream is cut into sentences (`CueStreamParser`). Each sentence is rendered as soon as it is queued, so the next one is ready when the current one ends.
-- **Voice: ElevenLabs Flash v2.5** through the Worker's `/v1/speak` (first audio ~0.25 s; Flemish voice Sharon for Dutch, Alice for English). Meta has no text-to-speech model; ElevenLabs is the only non-Meta model and is listed as third party. The iPhone voice is the fallback.
+- **Voice: ElevenLabs Flash v2.5** through the Worker's `/v1/speak` (first audio ~0.25 s; Flemish voice Sharon for Dutch, Alice for English). ElevenLabs is the only non-Meta cloud model and is listed as third party. The iPhone voice is the fallback.
 - **Timing:** ElevenLabs returns the start time of every character; the iPhone voice returns word markers (`byteSampleOffset` is a byte offset into the audio: 4 bytes per Float32 frame, measured).
 - **Cue timing:**
   - a cue tag binds to the next word in the text (to the last word if it closes the sentence);
@@ -282,7 +282,7 @@ Weekdays corrected in v1.1 (4 November is a Wednesday). Status on Saturday 31 Oc
 1. **Platform:** native Swift app + TypeScript Worker, no Rust. ✅ Approved.
 2. **Deploy:** I deploy the Worker to `pip.unveil.be` myself (`wrangler login` on this Mac). ✅
 3. **Listening:** hands-free by default, with a mute button; push-to-talk as fallback. ✅
-4. **Test domains:** electrical panel, household appliance, mechanical object, lift / technical installation (Verolift). ✅ Four domains are available; the eval uses at least three.
-5. **Voice:** Meta has no text-to-speech model, so Pip speaks with ElevenLabs (Flash v2.5, through the Worker); every other model is Meta's. ✅ (31 Oct)
+4. **Test domains:** electrical panel, household appliance, mechanical object, lift / technical installation. ✅ Four domains are available; the eval uses at least three.
+5. **Voice:** Pip speaks with ElevenLabs (Flash v2.5, through the Worker); every other cloud model is Meta's. ✅ (31 Oct)
 6. **Hosting:** Cloudflare Workers Paid ($5/month) for the CPU that SAM mask decoding needs. ✅ (31 Oct)
 7. **Installs:** over the USB cable (Wi-Fi debugging did not connect). ✅ (31 Oct)

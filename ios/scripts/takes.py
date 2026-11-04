@@ -18,7 +18,7 @@ line up, and what was said and shown when). All three start at the take's first 
       room), and keeps it in the take's sync.json; --write also makes <clip>-synced.mp4, which
       starts with the take.
 
-Needs ffmpeg and ffprobe, and Xcode's devicectl for pull.
+Needs ffmpeg and ffprobe, and Xcode's devicectl for pull (with PIP_DEVICE set to the iPhone).
 """
 import array
 import cmath
@@ -31,7 +31,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEVICE = os.environ.get("PIP_DEVICE", "00008130-000161E43450001C")
+# The iPhone to pull from: its identifier from `xcrun devicectl list devices`.
+DEVICE = os.environ.get("PIP_DEVICE")
 BUNDLE = os.environ.get("PIP_BUNDLE", "be.unveil.pip.dev")
 DEFAULT_FOLDER = Path.home() / "Movies" / "Pip takes"
 # Each voice is brought to this loudness (EBU R128) before the two are mixed: speech at the same
@@ -69,6 +70,8 @@ def clock(t):
 # MARK: pull
 
 def devicectl(*args):
+    if not DEVICE:
+        sys.exit("Set PIP_DEVICE to the iPhone's identifier (xcrun devicectl list devices).")
     return run(["xcrun", "devicectl", "device", *args, "--device", DEVICE, "--domain-type", "appDataContainer",
                 "--domain-identifier", BUNDLE])
 
