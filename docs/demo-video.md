@@ -13,17 +13,13 @@ B = a second camera filming the person, the phone in hand and the machine.
 | Time | Beat | Picture | Sound | On screen |
 |---|---|---|---|---|
 | 0:00-0:15 | **The human opening** | B: a wide shot of the garage: the electrical cabinet, the washing machine; then a close shot of a hand hesitating over the programme dial. Calm, warm light. | Voice-over, slow: "Think of someone who made you feel capable. Someone who stood beside you, showed you where to start, and gave you the confidence to try. We all need that someone sometimes." Soft piano under it. | — |
-| 0:15-0:22 | **Meet Pip** | A full screen: you open Pip at the machine; its mark and "Pip, Personal Interactive Partner" appear and open onto the camera. | You: "Pip, walk me through setting this machine for a cotton wash." | small: *real interaction, waiting cut and marked* |
-| 0:22-0:55 | **It finds out which machine** | A: if Pip asks for the type plate, show it (keep the question). The search card appears with the manufacturer's manual **for this exact model**. Pip offers the plan; the steps sheet for two seconds. | Pip's real answers. You: "Yes." | ⏩ *18 s: Pip finds and reads the official manual* · lower third: *Muse Spark + Meta web search: the manual for this exact model* |
-| 0:55-1:40 | **It points, you act, it checks** | A + B side by side: the ring on the programme dial (with the turning arrow); you turn it; for three seconds you move the phone round the dial, and the ring stays on it. Then the green check when Pip has seen the setting. Then the ring on the start button, you press it. | You: "Do you mean this setting?" Pip's real answer. | Lower thirds as it happens: *Muse Wonder decides what to point at · SAM 3.1 finds the exact part · locked in 3D on the LiDAR surface* · *Muse Spark checks the camera image* |
-| 1:40-1:55 | **The machine runs** | B: the drum turns. While you turn away, you put your keys on the shelf, in the phone's view. | The machine's sound, low. | — |
-| 1:55-2:25 | **The return: a normal question** | A: you, leaving: "Pip, where did I leave my keys?" Pip looks back through what it saw and shows the place; the outline on the keys. Let the last words stand. | Pip's real answer, then a moment of silence. | ⏩ *8 s: Pip searches what it saw* · lower third: *Muse Wonder searched the snapshots on the phone* |
-| 2:25-2:40 | **How it is built** | A short montage of the three moments (ring, green check, keys) with the cards. | Piano returns. | *Built in five days on Meta's models: Muse Wonder 1.0 · Muse Spark 1.3 · SAM 3.1 · Muse Voice Transcribe · Meta web search · and on the phone, EdgeTAM and DINOv2* |
+| 0:15-0:28 | **Meet Pip, and the keys** | A full screen: you open Pip on the way to the machine; its mark and "Pip, Personal Interactive Partner" appear and open onto the camera. You put your keys on the shelf and hold the phone on them. | You: "Pip, remember my keys." Pip's real answer; the outline lands on the keys. | small: *real interaction, waiting cut and marked* · ⏩ *the wait for the answer* |
+| 0:28-1:00 | **It finds out which machine** | A: at the machine. If Pip asks for the type plate, show it (keep the question). The search card appears with the manufacturer's manual **for this exact model**. Pip offers the plan; the steps sheet for two seconds. | You: "Pip, walk me through setting this machine for a cotton wash." Pip's real answers. You: "Yes." | ⏩ *18 s: Pip finds and reads the official manual* · lower third: *Muse Spark + Meta web search: the manual for this exact model* |
+| 1:00-1:42 | **It points, you act, it checks** | A + B side by side: the ring on the programme dial (with the turning arrow); you turn it; for three seconds you move the phone round the dial, and the ring stays on it. Then the green check when Pip has seen the setting. Then the ring on the start button, you press it. | You: "Do you mean this setting?" Pip's real answer. | Lower thirds as it happens: *Muse Wonder decides what to point at · SAM 3.1 finds the exact part · locked in 3D on the LiDAR surface* · *Muse Spark checks the camera image* |
+| 1:42-1:52 | **The machine runs** | B: the drum turns. | The machine's sound, low. | — |
+| 1:52-2:22 | **The return: a normal question** | A: you, turning to leave: "Pip, where did I leave my keys?" The arrow at the screen's edge points the way and Pip says it in words; as you turn, the outline lands on the keys. Let the last words stand. | Pip's real answer, then a moment of silence. | ⏩ *the wait for the answer* · lower third: *the place kept in Pip's 3D map of the garage* |
+| 2:22-2:40 | **How it is built** | A short montage of the three moments (ring, green check, keys) with the cards. | Piano returns. | *Built in five days on Meta's models: Muse Wonder 1.0 · Muse Spark 1.3 · SAM 3.1 · Muse Voice Transcribe · Meta web search · and on the phone, EdgeTAM and DINOv2* |
 | 2:40-2:55 | **Back to the beginning** | B: the opening wide shot, the machine running, you walking out. | Voice-over: "We all need that someone sometimes." | **Pip** · *points at exactly what to touch* · github.com/EVERRONE/MetaHackathon · team |
-
-Alternative for 1:55-2:25, at the electrical cabinet of the opening: "Pip, which switch is the washing
-machine on?" Pip points at it among the identical ones and asks the safety question. Only if the
-switches are labelled.
 
 ## Why each beat is there
 
@@ -51,6 +47,8 @@ switches are labelled.
 - Garage lights on plus one warm lamp for the opening; no light behind the machine.
 - Glass door of the machine at an angle so it does not mirror the lamp.
 - Nothing personal in view (post, screens, other people). The keys in your pocket.
+- A place for the keys on the way to the machine: a shelf at chest height, in good light, a few
+  metres from the machine and out of its view, so that on the return Pip first shows the way.
 
 **The second camera**
 - A second phone on a tripod: 4K, 30 fps, HDR video off (Settings, Camera, Record Video), so its
@@ -60,15 +58,19 @@ switches are labelled.
 
 ## The shoot (in this order)
 
-1. **B-roll, 10 minutes:** the wide shots, the hand at the dial, the cabinet, the drum.
-2. **The wash, 2-3 complete takes, A and B at once.**
+1. **A dry run of the keys, not filmed:** remember them, walk to the machine, ask where they are.
+   Then forget them (below).
+2. **B-roll, 10 minutes:** the wide shots, the hand at the dial, the cabinet, the drum.
+3. **The whole story, 2-3 complete takes, A and B at once.**
    - Start B first, then close Pip's settings: the take starts. Open them again to end it.
    - One clap in view of B at the start: the check on the lining up (it is done by the sound).
-   - Do the whole interaction in one go, as it comes.
+   - The keys: put them down, hold the phone on them (30-60 cm), say "Pip, remember my keys" and
+     wait for the outline on them before you walk on.
+   - Do the whole interaction in one go, as it comes; ask for the keys at the end, from the machine.
    - Keep the best take whole and cut only the waiting.
-3. **The keys, right after a good take, in the same session.**
-   - Put the keys down while the phone sees the shelf.
-   - Then ask from the door.
+   - Between takes, in Pip's settings (still open from ending the take): swipe the keys away
+     ("Forget"). Remembered again under the same name they replace the old place, but the model may
+     name them otherwise, and then Pip would know two places.
 4. **The closing B-roll.**
 5. **The voice-over** in a quiet, soft room (a wardrobe works).
    - Phone 20 cm from the mouth.
@@ -124,6 +126,8 @@ its takes itself:
 - **The search finds no manual from the manufacturer:** the card says so in yellow; retake, or keep
   it if Pip says it honestly.
 - **Pip talks over you:** tap the microphone button once.
+- **No outline on the keys after "remember my keys":** hold the phone still on them, 30-60 cm away,
+  and say it again.
 
 ## Schedule
 
